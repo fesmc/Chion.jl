@@ -146,6 +146,7 @@ A column-based snowpack model with mass-following dynamic grid.
 - `density::Vector{Float64}`: Density of snow in each layer [kg/m³]
 
 """
+
 mutable struct SnowpackColumn
     # Constants
     c::SnowpackPhysicalConstants
@@ -161,9 +162,6 @@ mutable struct SnowpackColumn
     mass_min::Float64           # kg/m²
     
     #ζmax::Float64   # Maximum liquid water content
-
-    # Constants
-    seconds_per_day::Float64    # seconds/day
 
     # State variables
     mass::Vector{Float64}           # kg/m²
