@@ -162,7 +162,9 @@ mutable struct SnowpackColumn
     mass_max::Float64           # kg/m²
     mass_split::Float64         # kg/m²
     mass_min::Float64           # kg/m²
-    
+    rho_max::Float64            # kg/m³
+    f_base_max::Float64         # 1
+
     #ζmax::Float64   # Maximum liquid water content
 
     # State variables
@@ -180,6 +182,8 @@ mutable struct SnowpackColumn
         mass_max::Float64 = 500.0,
         mass_split::Float64 = 300.0,
         mass_min::Float64 = 100.0,
+        rho_max::Float64 = 900.0,
+        f_base_max::Float64 = 0.1,
         density_init::Float64 = 300.0,
         temperature_init::Float64 = 273.0,
     )   
@@ -196,7 +200,11 @@ mutable struct SnowpackColumn
         @assert mass_split < mass_max
         @assert mass_min < mass_split
 
-        new(c, Ntot, N, mass_max, mass_split, mass_min, 
+        # Make sure mass_split is more than 50% of mass_max, so that when
+        # surface layer splits, the surface contains less mass than the subsurface layer
+        @assert mass_split / mass_max >= 0.5
+        
+        new(c, Ntot, N, mass_max, mass_split, mass_min, rho_max, f_base_max,
             mass, mass_w, density, temperature, mass_base, runoff)
     end
 end
@@ -265,8 +273,6 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
         column.N = 1
     end
     
-    println("Accumulate: ", P_snow * dt)
-
     # Add mass to surface layer (first layer)
     column.mass[1] += P_snow * dt
     column.mass_w[1] += P_rain * dt
@@ -283,6 +289,14 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
         merge_surface_layer!(column)
     end
     
+    # Check if mass should be removed from basal layer due to saturation
+    if column.N == column.Ntot && column.mass[column.N] > (2*column.mass_max)
+        f = column.f_base_max
+        mass_to_base = f * column.mass[column.N]
+        column.mass[column.N] -= mass_to_base
+        column.mass_base += mass_to_base
+    end
+
     return
 end
 

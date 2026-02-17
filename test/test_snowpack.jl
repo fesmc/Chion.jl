@@ -9,13 +9,14 @@ cd(@__DIR__)
 import Pkg; Pkg.activate(".")
 #########################################################
 
-using SnowpackModel
+using Revise
+using Chion.SnowpackModel
 using Test
 
 
 column = SnowpackColumn()
 
-for j in 1:10000
+for j in 1:10011
     step!(column, 270.0, 10.0/column.c.seconds_per_day, 1.0)
 end
 
