@@ -9,8 +9,9 @@ module SnowpackModel
 
 using Printf
 
-export SnowpackColumn, step!, get_state
+export SnowpackColumn, step!
 export SnowpackPhysicalConstants
+export get_state, print_state
 
 """
 Physical constants for snow/ice model
@@ -137,12 +138,12 @@ A column-based snowpack model with mass-following dynamic grid.
 - `mass_max::Float64`: Maximum mass before layer split [kg/m²] (default: 500)
 - `mass_split::Float64`: Target mass for split layers [kg/m²] (default: 300)
 - `mass_min::Float64`: Minimum mass before layer merge [kg/m²] (default: 100)
-- `rho_ice::Float64`: Ice density [kg/m³] (default: 917)
+- `rho_i::Float64`: Ice density [kg/m³] (default: 917)
 
 # State variables
 - `mass::Vector{Float64}`: Mass of snow+water in each layer [kg/m²]
 - `mass_snow::Vector{Float64}`: Mass of snow in each layer [kg/m²]
-- `mass_water::Vector{Float64}`: Mass of water in each layer [kg/m²]
+- `mass_w::Vector{Float64}`: Mass of water in each layer [kg/m²]
 - `density::Vector{Float64}`: Density of snow in each layer [kg/m³]
 
 """
@@ -154,7 +155,6 @@ mutable struct SnowpackColumn
     # Grid parameters
     Ntot::Int
     N::Int
-    kbase::Int
 
     # Model parameters
     mass_max::Float64           # kg/m²
@@ -165,11 +165,12 @@ mutable struct SnowpackColumn
 
     # State variables
     mass::Vector{Float64}           # kg/m²
-    mass_snow::Vector{Float64}      # kg/m²
-    mass_ice::Vector{Float64}       # kg/m²
+    mass_w::Vector{Float64}         # kg/m²
     density::Vector{Float64}        # kg/m³
     temperature::Vector{Float64}    # K
-
+    mass_base::Float64              # kg/m²
+    runoff::Float64                 # kg/m²
+    
     function SnowpackColumn(;
         c::SnowpackPhysicalConstants = SnowpackPhysicalConstants(),
         Ntot::Int = 15,
@@ -181,18 +182,20 @@ mutable struct SnowpackColumn
         temperature_init::Float64 = 273.0,
     )   
 
-        # Get index of base layer
-        kbase = Ntot - N + 1
-
         # Initialize with no initial mass
         mass = zeros(Float64, Ntot)
-        mass_snow = zeros(Float64, Ntot)
-        mass_water = zeros(Float64, Ntot)
+        mass_w = zeros(Float64, Ntot)
         density = fill(density_init, Ntot)
         temperature = fill(temperature_init, Ntot)
+        mass_base = 0.0
+        runoff = 0.0
+        
+        # Consistency check
+        @assert mass_split < mass_max
+        @assert mass_min < mass_split
 
-        new(c, Ntot, N, kbase, mass_max, mass_split, mass_min, 
-            mass, mass_snow, mass_water, density, temperature)
+        new(c, Ntot, N, mass_max, mass_split, mass_min, 
+            mass, mass_w, density, temperature, mass_base, runoff)
     end
 end
 
@@ -204,11 +207,10 @@ Advance the snowpack column by one time step.
 
 # Arguments
 - `column`: The snowpack column to update
-- `mdot`: Mass rate at surface [kg/m²/s] (positive = accumulation, negative = melt)
+- `T2m` : Near-surface air temperature [K]
+- `P`: Precipitation rate at surface [kg/m²/s]
 - `dt`: Time step [d]
-
-# Returns
-- `mdot_base`: Mass flux at the base [kg/m²/s] (positive when ice accumulates)
+- `f_s`: Fraction of precipitation that is snow [1], default nothing, calculate internally
 
 # Process
 1. Apply surface mass flux
@@ -216,146 +218,74 @@ Advance the snowpack column by one time step.
 3. Propagate melt through layers if negative
 4. Check for ice formation at base
 """
-function step!(column::SnowpackColumn, mdot::Float64, dt::Float64)
+function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_s=nothing)
+
+    if isnothing(f_s)
+        # Determine fraction of snow and rain as a function of T2m
+        # following Born et al. (2019)
+        if T2m > column.c.T0
+            f_s = 0.0
+        else
+            f_s = 1.0
+        end
+    end
+
+    # Get separate contributions of rain and snow depending on arguments
+    P_rain = P * (1.0-f_s)
+    P_snow = P - P_rain
 
     # Convert timestep to seconds internally
-    dt_sec = dt * column.seconds_per_day
+    dt_sec = dt * column.c.seconds_per_day
 
-    dmass = mdot * dt_sec   # Total mass change for this timestep [kg/m²]
-    mdot_base = 0.0         # Mass flux out at base
+    # Handle accumulation first
+    apply_accumulation!(column, P_snow, P_rain, dt_sec)
+
+    # Caculate energy balance
+    # to do
+
+    # Handle melt
+    #apply_melt!(column, -dmass)
     
-    # Handle accumulation (positive mdot)
-    if dmass > 0
-        mdot_base = apply_accumulation!(column, dmass)
-    # Handle melt (negative mdot)
-    elseif dmass < 0
-        mdot_base = apply_melt!(column, -dmass)
-    end
-    
-    return mdot_base / dt_sec   # Convert back to rate
+    return
 end
 
 
 """
-    apply_accumulation!(column::SnowpackColumn, dmass::Float64) -> Float64
+    apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt::Float64) -> Float64
 
 Add mass to the surface layer and handle layer dynamics.
 
-Returns mass flux at base if layers need to be merged.
 """
-function apply_accumulation!(column::SnowpackColumn, dmass::Float64)
-    mdot_base = 0.0
+function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt::Float64)
     
     # If no active layers, create the first one
     if column.N == 0
         column.N = 1
     end
     
-    # Add mass to surface layer (layer end)
-    column.mass[end] += dmass
-    
-    # Check if surface layer needs splitting
-    while column.mass[end] > column.mass_max && column.N < column.Ntot
-        mdot_base += split_surface_layer!(column)
-    end
-    
-    # If all layers are full and surface still exceeds mass_max, merge bottom layers
-    if column.mass[end] > column.mass_max && column.N == column.Ntot
-        mdot_base += merge_bottom_layers!(column)
-        # Try splitting again after merging
-        if column.mass[end] > column.mass_max
-            mdot_base += split_surface_layer!(column)
-        end
-    end
-    
-    return mdot_base
-end
+    println("Accumulate: ", P_snow * dt)
 
+    # Add mass to surface layer (first layer)
+    column.mass[1] += P_snow * dt
+    column.mass_w[1] += P_rain * dt
 
-"""
-    apply_melt!(column::SnowpackColumn, dmass::Float64) -> Float64
+    # If all layers are full and surface exceeds mass_max, first merge bottom layers
+    if column.mass[1] > column.mass_max && column.N == column.Ntot
+        merge_bottom_layer!(column)
+    end
 
-Remove mass from the column, propagating melt through layers.
-Mass is removed from surface but redistributed through column until base.
-
-Returns mass flux at base if ice forms.
-"""
-function apply_melt!(column::SnowpackColumn, dmass::Float64)
-    mdot_base = 0.0
-    
-    if column.N == 0
-        return mdot_base
-    end
-    
-    remaining_melt = dmass
-    
-    # Remove from surface
-    if column.mass[1] >= remaining_melt
-        column.mass[1] -= remaining_melt
-        remaining_melt = 0.0
-    else
-        remaining_melt -= column.mass[1]
-        column.mass[1] = 0.0
-    end
-    
-    # Propagate remaining melt through layers (mass redistribution)
-    # In reality, melt percolates down and redistributes
-    # For now, we'll move mass from surface to deeper layers
-    if remaining_melt > 0
-        # Redistribute the melt mass downward through the column
-        layer = 2
-        while remaining_melt > 0 && layer <= column.N
-            # Add melt mass to this layer (it's moving down)
-            # This maintains total column mass
-            column.mass[layer] += remaining_melt
-            
-            # Check if this layer can hold it without exceeding ice density
-            thickness = column.mass[layer] / column.density[layer]
-            max_mass_at_ice = thickness * column.rho_ice
-            
-            if column.mass[layer] > max_mass_at_ice
-                # Layer has densified to ice - mass must exit at base
-                excess = column.mass[layer] - max_mass_at_ice
-                column.mass[layer] = max_mass_at_ice
-                column.density[layer] = column.rho_ice
-                mdot_base += excess
-                remaining_melt = 0.0
-            else
-                remaining_melt = 0.0
-            end
-            
-            layer += 1
-        end
-        
-        # If we've gone through all layers, add to base layer
-        if remaining_melt > 0 && column.N > 0
-            base_layer = column.N
-            column.mass[base_layer] += remaining_melt
-            
-            # Check for ice formation at base
-            thickness = column.mass[base_layer] / column.density[base_layer]
-            max_mass_at_ice = thickness * column.rho_ice
-            
-            if column.mass[base_layer] > max_mass_at_ice
-                excess = column.mass[base_layer] - max_mass_at_ice
-                column.mass[base_layer] = max_mass_at_ice
-                column.density[base_layer] = column.rho_ice
-                mdot_base += excess
-            end
-        end
-    end
-    
-    # Handle layer merging if surface layer is too small
-    while column.N > 0 && column.mass[1] < column.mass_min
+    # Check if surface layer needs splitting or merging
+    if column.mass[1] > column.mass_max
+        split_surface_layer!(column)
+    elseif column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
     
-    return mdot_base
+    return
 end
 
-
 """
-    split_surface_layer!(column::SnowpackColumn) -> Float64
+    split_surface_layer!(column::SnowpackColumn)
 
 Split the surface layer when it exceeds mass_max.
 Lower part contains mass_split, upper part contains remainder.
@@ -364,37 +294,47 @@ Shifts all layers down by one position.
 Returns mass flux at base if bottom layers need to be merged.
 """
 function split_surface_layer!(column::SnowpackColumn)
-    mdot_base = 0.0
     
-    if column.mass[end] <= column.mass_max
-        return mdot_base
-    end
+    # Only split the suface layer if the mass is too high
+    @assert column.mass[1] > column.mass_max
     
-    surface_mass = column.mass[end]
-    surface_density = column.density[end]
-    
-    # If all layers are full, merge bottom two first
-    if column.N == column.Ntot
-        mdot_base = merge_bottom_layers!(column)
-    end
-    
+    # This routine assumes that the bottom layer is currently empty (bottom-layer merging already applied)
+    @assert column.N < column.Ntot
+
+    surface_mass = column.mass[1]
+    surface_mass_w = column.mass_w[1]
+    surface_density = column.density[1]
+    surface_temperature = column.temperature[1]
+
+    # Activate another layer
+    column.N += 1
+
     # Shift all layers down
-    for i in column.N:-1:1
-        column.mass[i+1] = column.mass[i]
-        column.density[i+1] = column.density[i]
+    for i in column.N:-1:3
+        column.mass[i] = column.mass[i-1]
+        column.mass_w[i] = column.mass_w[i-1]
+        column.density[i] = column.density[i-1]
+        column.temperature[i] = column.temperature[i-1]
     end
     
-    # Split: lower layer (now at index 2) gets mass_split
+    # Subsurface layer (now at index 2) gets mass_split
     column.mass[2] = column.mass_split
+    column.mass[1] = surface_mass - column.mass_split
+    
+    # Then split water proportionally
+    water_fraction = column.mass_split / surface_mass
+    column.mass_w[2] = surface_mass_w * water_fraction
+    column.mass_w[1] = surface_mass_w * (1 - water_fraction)
+
+    # Density is equal in both layers
+    column.density[1] = surface_density
     column.density[2] = surface_density
     
-    # Upper layer (index 1) gets remainder
-    column.mass[1] = surface_mass - column.mass_split
-    column.density[1] = surface_density
+    # Temperature is equal in both layers
+    column.temperature[1] = surface_temperature
+    column.temperature[2] = surface_temperature
     
-    column.N += 1
-    
-    return mdot_base
+    return
 end
 
 
@@ -405,95 +345,142 @@ Merge surface layer with the second layer when surface mass < mass_min.
 If combined mass > 2*mass_split, only partial transfer to keep surface ≤ mass_split.
 """
 function merge_surface_layer!(column::SnowpackColumn)
-    if column.N <= 1
-        # Only one or no layers, nothing to merge with
-        if column.N == 1 && column.mass[1] < 1e-10
-            column.N = 0
-        end
+
+    if column.N == 1 && column.mass[1] < 1e-10
+        # Only one empty layer, disable it
+        column.N = 0
+        reset_column_at_index!(column,1)
+        return
+    elseif column.N == 1
+        # Only one layer, but nothing to merge with, skip merging
         return
     end
     
     surface_mass = column.mass[1]
-    second_mass = column.mass[2]
-    combined_mass = surface_mass + second_mass
+    subsurface_mass = column.mass[2]
+    combined_mass = surface_mass + subsurface_mass
     
     if combined_mass > 2 * column.mass_split
-        # Partial transfer: keep surface at mass_split
-        transfer_mass = column.mass_split - surface_mass
-        column.mass[1] = column.mass_split
-        column.mass[2] -= transfer_mass
-        
-        # Weighted average density for surface layer
         total = column.mass_split
+        transferred_to_surface = column.mass_split - surface_mass
+        transferred_water = transferred_to_surface / column.mass[2] * column.mass_w[2]
+        
+        # Partial transfer: keep surface at mass_split
+        column.mass[1] = column.mass_split
+        column.mass[2] = combined_mass - column.mass_split
+        
+        # Proportional transfer of water to the surface
+        column.mass_w[1] += transferred_water
+        column.mass_w[2] -= transferred_water
+
+        # Weighted average density for surface layer
         column.density[1] = (surface_mass * column.density[1] + 
-                            transfer_mass * column.density[2]) / total
+                            transferred_to_surface * column.density[2]) / total
+        
+        # Weighted average temperature for surface layer
+        column.temperature[1] = (surface_mass * column.temperature[1] + 
+                            transferred_to_surface * column.temperature[2]) / total
+        
     else
-        # Full merge
+        # Full merge into surface layer
+        column.mass[1] = combined_mass
+        column.mass_w[1] += column.mass_w[2]
+
         # Mass-weighted average density
         column.density[1] = (surface_mass * column.density[1] + 
-                            second_mass * column.density[2]) / combined_mass
-        column.mass[1] = combined_mass
+                            subsurface_mass * column.density[2]) / combined_mass
         
+        # Mass-weighted average temperature
+        column.temperature[1] = (surface_mass * column.temperature[1] + 
+                            subsurface_mass * column.temperature[2]) / combined_mass
+        
+        # Reduce number of active layers by 1
+        column.N -= 1
+
         # Shift all layers up
-        for i in 2:(column.N-1)
+        for i in 2:(column.N)
             column.mass[i] = column.mass[i+1]
+            column.mass_w[i] = column.mass_w[i+1]
             column.density[i] = column.density[i+1]
+            column.temperature[i] = column.temperature[i+1]
         end
         
-        # Clear the last active layer
-        column.mass[column.N] = 0.0
-        column.N -= 1
+        # Clear the lower, now inactive layer
+        reset_column_at_index!(column,column.N+1)
     end
+
+    return
 end
 
 
 """
-    merge_bottom_layers!(column::SnowpackColumn) -> Float64
+    merge_bottom_layer!(column::SnowpackColumn) -> Float64
 
 Merge the two lowest layers to make room for a new surface layer.
 This happens when all Ntot are full and surface needs to split.
 
 Returns mass flux at base if merged layer exceeds ice density.
 """
-function merge_bottom_layers!(column::SnowpackColumn)
-    mdot_base = 0.0
+function merge_bottom_layer!(column::SnowpackColumn)
+
+    # Only possible to merge bottom layers if all layers are active
+    @assert column.N == column.Ntot
     
-    if column.N < 2
-        return mdot_base
-    end
+    # Deactivate lowest active layer
+    column.N -= 1
+
+    # Merge layers N and N+1
+    N = column.N
+    Np1 = column.N + 1
     
-    # Merge layers N-1 and N
-    bottom = column.N
-    second_bottom = column.N - 1
-    
-    combined_mass = column.mass[bottom] + column.mass[second_bottom]
-    
-    # Mass-weighted average density
-    combined_density = (column.mass[bottom] * column.density[bottom] + 
-                       column.mass[second_bottom] * column.density[second_bottom]) / 
+    # Get total masses of combined layers
+    combined_mass = column.mass[N] + column.mass[Np1]
+    combined_mass_w = column.mass_w[N] + column.mass_w[Np1]
+
+    # Get mass-weighted average density
+    combined_density = (column.mass[N] * column.density[N] + 
+                       column.mass[Np1] * column.density[Np1]) / 
                        combined_mass
     
-    # Check if combined layer exceeds ice density
-    thickness = combined_mass / combined_density
-    max_mass_at_ice = thickness * column.rho_ice
+    # Get mass-weighted average temperature
+    combined_temperature = (column.mass[N] * column.temperature[N] + 
+                       column.mass[Np1] * column.temperature[Np1]) / 
+                       combined_mass
     
-    if combined_mass > max_mass_at_ice
+    if combined_density > column.c.rho_i
         # Ice forms - excess mass exits at base
-        mdot_base = combined_mass - max_mass_at_ice
-        column.mass[second_bottom] = max_mass_at_ice
-        column.density[second_bottom] = column.rho_ice
+
+        # Calculate mass of bottom layer at the density of ice (maximum allowed)
+        # If layer is too dense, then the excess mass will be sent to the mass_base buffer
+        mass_limited_to_ice_density = combined_mass * (column.c.rho_i / combined_density)
+
+        column.mass_base += combined_mass - mass_limited_to_ice_density
+        column.mass[N] = mass_limited_to_ice_density
+        column.mass_w[N] = combined_mass_w
+        column.density[N] = column.c.rho_i
+        column.temperature[N] = combined_temperature
     else
-        column.mass[second_bottom] = combined_mass
-        column.density[second_bottom] = combined_density
+        column.mass[N] = combined_mass
+        column.mass_w[N] = combined_mass_w
+        column.density[N] = combined_density
+        column.temperature[N] = combined_temperature
     end
     
-    # Clear the bottom layer
-    column.mass[bottom] = 0.0
-    column.N -= 1
-    
-    return mdot_base
+    # Reset lower, now unactive, layer to zero values
+    reset_column_at_index!(column,Np1)
+
+    return
 end
 
+function reset_column_at_index!(column,i::Int)
+
+    column.mass[i] = 0.0
+    column.mass_w[i] = 0.0
+    column.density[i] = 0.0
+    column.temperature[i] = column.c.T0
+
+    return
+end
 
 """
     get_state(column::SnowpackColumn) -> Dict
