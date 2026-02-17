@@ -9,9 +9,11 @@ module SnowpackModel
 
 using Printf
 
-export SnowpackColumn, step!
 export SnowpackPhysicalConstants
-export get_state, print_state
+export SnowpackColumn
+export step!
+export get_state
+export print_state
 
 """
 Physical constants for snow/ice model
@@ -173,7 +175,7 @@ mutable struct SnowpackColumn
     
     function SnowpackColumn(;
         c::SnowpackPhysicalConstants = SnowpackPhysicalConstants(),
-        Ntot::Int = 15,
+        Ntot::Int = 7,
         N::Int = 1,
         mass_max::Float64 = 500.0,
         mass_split::Float64 = 300.0,

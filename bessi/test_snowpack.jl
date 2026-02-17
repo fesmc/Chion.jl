@@ -9,8 +9,7 @@ cd(@__DIR__)
 import Pkg; Pkg.activate(".")
 #########################################################
 
-include("SnowpackModel.jl")
-using .SnowpackModel
+using SnowpackModel
 using Test
 
 
