@@ -15,6 +15,9 @@ export step!
 export get_state
 export print_state
 
+export calc_density_gradient_HL80
+export calc_density_gradient_powerlaw_ref
+
 """
 Physical constants for snow/ice model
 """
@@ -45,7 +48,8 @@ struct SnowpackPhysicalConstants
     R::Float64                  # Universal gas constant (J/(K·mol))
     T0::Float64                 # Freezing point of water (K)
     seconds_per_day::Float64    # Seconds per day
-        
+    seconds_per_month::Float64  # Seconds per month
+    seconds_per_year::Float64   # Seconds per year  
 end
 
 """
@@ -95,6 +99,8 @@ function SnowpackPhysicalConstants(;
     R::Float64=8.314,
     T0::Float64=273.15,
     seconds_per_day::Float64 = 86400.0
+    seconds_per_month::Float64 = 86400.0*30
+    seconds_per_year::Float64 = 86400.0*30*12
 )
     return SnowpackPhysicalConstants(
         # Densities
@@ -122,7 +128,9 @@ function SnowpackPhysicalConstants(;
         σ,
         R,
         T0,
-        seconds_per_day
+        seconds_per_day,
+        seconds_per_month,
+        seconds_per_year
     )
 end
 
@@ -174,7 +182,8 @@ mutable struct SnowpackColumn
     temperature::Vector{Float64}    # K
     mass_base::Float64              # kg/m²
     runoff::Float64                 # kg/m²
-    
+    Tsrf::Float64                   # K
+
     function SnowpackColumn(;
         c::SnowpackPhysicalConstants = SnowpackPhysicalConstants(),
         Ntot::Int = 7,
@@ -183,7 +192,7 @@ mutable struct SnowpackColumn
         mass_split::Float64 = 300.0,
         mass_min::Float64 = 100.0,
         rho_max::Float64 = 900.0,
-        f_base_max::Float64 = 0.1,
+        f_base_max::Float64 = 0.6,
         density_init::Float64 = 300.0,
         temperature_init::Float64 = 273.0,
     )   
@@ -195,7 +204,8 @@ mutable struct SnowpackColumn
         temperature = fill(temperature_init, Ntot)
         mass_base = 0.0
         runoff = 0.0
-        
+        Tsrf = c.T0
+
         # Consistency check
         @assert mass_split < mass_max
         @assert mass_min < mass_split
@@ -205,7 +215,7 @@ mutable struct SnowpackColumn
         @assert mass_split / mass_max >= 0.5
         
         new(c, Ntot, N, mass_max, mass_split, mass_min, rho_max, f_base_max,
-            mass, mass_w, density, temperature, mass_base, runoff)
+            mass, mass_w, density, temperature, mass_base, runoff, Tsrf)
     end
 end
 
@@ -228,7 +238,7 @@ Advance the snowpack column by one time step.
 3. Propagate melt through layers if negative
 4. Check for ice formation at base
 """
-function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_s=nothing)
+function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_s=nothing, P_ave=P)
 
     if isnothing(f_s)
         # Determine fraction of snow and rain as a function of T2m
@@ -244,15 +254,30 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     P_rain = P * (1.0-f_s)
     P_snow = P - P_rain
 
+    # Get mean accumulation
+    #bdot_ave = P_ave * column.c.seconds_per_year
+    bdot_ave = 0.3 # m yr⁻¹
+
+    
     # Convert timestep to seconds internally
     dt_sec = dt * column.c.seconds_per_day
 
     # Handle accumulation first
     apply_accumulation!(column, P_snow, P_rain, dt_sec)
 
+    # Calculate firn densification at each layer
+    column.density .= step_density.(column.density,column.temperature,bdot_ave,dt_sec,column.c.rho_i,column.c.T0)
+
+    println("density: ", extrema(column.density))
+
     # Caculate energy balance
     # to do
 
+    # For now set a linear temperature profile in the firn to depth
+    column.Tsrf = min(T2m,column.c.T0)
+    column.temperature[1] = Tsrf
+    column.temperature[column.N] = Tsrf - 10.0
+    
     # Handle melt
     #apply_melt!(column, -dmass)
     
@@ -290,7 +315,7 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
     end
     
     # Check if mass should be removed from basal layer due to saturation
-    if column.N == column.Ntot && column.mass[column.N] > (2*column.mass_max)
+    if column.N == column.Ntot && column.mass[column.N] > column.mass_max
         f = column.f_base_max
         mass_to_base = f * column.mass[column.N]
         column.mass[column.N] -= mass_to_base
@@ -487,6 +512,90 @@ function merge_bottom_layer!(column::SnowpackColumn)
 
     return
 end
+
+function step_density(density,T,bdot_ave,dt,rho_i,T0)
+
+    # Call the firn densification model
+    # (for now only the HL80 model is available)
+    #drdt = calc_density_gradient_HL80(density, T, bdot_ave; rho_i=rho_i)
+    drdt = calc_density_gradient_powerlaw_ref(density, T, bdot_ave; rho_i=rho_i)
+    
+    # Update density to current time
+    new_density = min( density + drdt * dt, rho_i)
+
+    return new_density
+end
+
+"""
+    drdt(rho, T, bdot; rho_ice=917.0, R=8.314)
+
+Return the densification rate dρ/dt [kg m⁻³ s⁻¹] following the 
+Herron and Langway (HL, 1980) formulation. Notation following
+Stevens et al. (2020) and the CFM.
+
+Parameters
+----------
+rho       : density [kg m⁻³]
+T         : temperature [K]
+b         : accumulation / overburden term [kg/m²/s] (as used in HL)
+rho_i     : ice density [kg m⁻³] (default 917)
+R         : gas constant [kJ mol⁻¹ K⁻¹] (default 8.314)
+
+Notes
+-----
+Piecewise definition:
+- ρ ≤ 550 kg m⁻³ : c = 11  * exp(-10160 / (R*T)) * b¹·⁰
+- ρ > 550 kg m⁻³ : c = 575 * exp(-21400 / (R*T)) * b⁰·⁵
+"""
+function calc_density_gradient_HL80(rho, T, bdot; rho_i=917.0, R=8.314)
+
+    if rho ≤ 550.0
+        c = (11.0/1e3) * exp(-10160 / (R * T)) * bdot^1.0
+    else
+        c = (575.0/1e3) * exp(-21400 / (R * T)) * bdot^0.5
+    end
+
+    return c * (rho_i - rho)
+end
+
+"""
+    calc_density_gradient_powerlaw_ref(
+        rho, T, bdot_ave;
+        rho_i=917.0,
+        R=8.314,
+        A=5e-4,
+        Q=12000.0,
+        α=0.7,
+        n=2.0,
+        bdot_ref=0.3
+    )
+
+Single-regime firn densification law with nondimensionalized accumulation.
+
+Parameters
+----------
+rho        : density [kg m⁻³]
+T          : temperature [K]
+bdot_ave   : average accumulation rate [m w.e. yr⁻¹]
+bdot_ref   : reference accumulation [m w.e. yr⁻¹]
+A          : densification prefactor [kg m⁻³ s⁻¹]
+Q          : activation energy [J mol⁻¹]
+α          : accumulation exponent (dimensionless)
+n          : density exponent (dimensionless)
+"""
+function calc_density_gradient_powerlaw_ref(
+    rho, T, bdot_ave;
+    rho_i=917.0,
+    R=8.314,
+    A=5e-4,
+    Q=12000.0,
+    α=0.7,
+    n=2.0,
+    bdot_ref=0.3
+)
+    return A * exp(-Q / (R*T)) * (bdot_ave / bdot_ref)^α * (1 - rho / rho_i)^n
+end
+
 
 function reset_column_at_index!(column,i::Int)
 
