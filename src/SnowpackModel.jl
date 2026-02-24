@@ -98,8 +98,8 @@ function SnowpackPhysicalConstants(;
     σ::Float64=5.670373e-8,
     R::Float64=8.314,
     T0::Float64=273.15,
-    seconds_per_day::Float64 = 86400.0
-    seconds_per_month::Float64 = 86400.0*30
+    seconds_per_day::Float64 = 86400.0,
+    seconds_per_month::Float64 = 86400.0*30,
     seconds_per_year::Float64 = 86400.0*30*12
 )
     return SnowpackPhysicalConstants(
@@ -275,8 +275,9 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
 
     # For now set a linear temperature profile in the firn to depth
     column.Tsrf = min(T2m,column.c.T0)
-    column.temperature[1] = Tsrf
-    column.temperature[column.N] = Tsrf - 10.0
+    column.temperature[1] = column.Tsrf
+    column.temperature[column.N] = column.Tsrf - 10.0
+    # Linear profile (to do)
     
     # Handle melt
     #apply_melt!(column, -dmass)
