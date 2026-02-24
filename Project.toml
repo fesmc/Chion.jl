@@ -1,0 +1,10 @@
+name = "Chion"
+uuid = "d76e9efd-0eaf-4f3e-a1bf-7ee81c31eef7"
+version = "0.1.0"
+authors = ["Alexander Robinson <alexander.robinson@awi.de"]
+
+[deps]
+Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
+
+[compat]
+Printf = "1.11.0"
