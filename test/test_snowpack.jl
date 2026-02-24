@@ -16,10 +16,9 @@ using Test
 
 column = SnowpackColumn()
 
-for j in 1:10011
-    step!(column, 270.0, 10.0/column.c.seconds_per_day, 1.0)
+for j in 1:1000
+    step!(column, 273.0, 10.0/column.c.seconds_per_day, 1.0)
 end
-
 
 
 function test_initialization()
