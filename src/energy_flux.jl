@@ -25,12 +25,19 @@ function _snow_thermal_conductivity(rho::Float64, K_ice::Float64, diff_model::In
     end
 end
 
-
+@inline function shortwave_absorbed(S_boa::Float64, Ts::Float64, Tmelt::Float64;
+                                   alpha_dry::Float64=0.8,
+                                   alpha_wet::Float64=0.6)
+    # wet when at/near melting
+    α = (Ts >= Tmelt) ? alpha_wet : alpha_dry
+    return (1.0 - α) * S_boa
+end
+@inline interfaceK(Ki, dzi, Kj, dzj) = (Ki*dzi + Kj*dzj) / _safe_positive((dzi + dzj)^2)
 """
     go_energy_flux!(
         column::SnowpackColumn,
         T2m::Float64,
-        K_sw::Float64,
+        S_boa::Float64,
         H_lh::Float64,
         K_lh::Float64,
         dt_sec::Float64;
@@ -39,8 +46,8 @@ end
 
 Update snow temperatures with an implicit conductive solve and surface flux terms.
 
-Inputs follow BESSI naming:
-- `K_sw`: absorbed shortwave flux [W m^-2]
+Inputs:
+- `S_boa`: incoming solar radiation at the bottom of the atmosphere [W m^-2]
 - `H_lh`: latent-heat linear coefficient [W m^-2 K^-1]
 - `K_lh`: latent-heat constant term [W m^-2]
 
@@ -52,7 +59,7 @@ Returns:
 function go_energy_flux!(
     column::SnowpackColumn,
     T2m::Float64,
-    K_sw::Float64,
+    S_boa::Float64,
     H_lh::Float64,
     K_lh::Float64,
     dt_sec::Float64;
@@ -70,6 +77,10 @@ function go_energy_flux!(
     eps_air = column.c.ϵ_air
     eps_snow = column.c.ϵ_snow
     K_ice = column.c.Ki
+   
+    BB_up = zeros(Float64, nn)
+    BB_down = zeros(Float64, nn)
+    BB_mid = zeros(Float64, nn)
 
     temps = copy(column.temperature[1:nn])
     backup = copy(temps)
@@ -80,14 +91,15 @@ function go_energy_flux!(
     end
 
     mbox = _safe_positive(column.mass[1])
-    prefactor = dt_sec / ci / mbox
-    K1 = prefactor * (
+    inv = dt_sec / ci / mbox
+    Qsw = shortwave_absorbed(S_boa, temps[1], kelvin; alpha_dry=column.c.alpha_dry, alpha_wet=column.c.alpha_wet)
+    K1 = inv * (
         T2m * D_sf +
         sigma * (eps_air * T2m^4 + eps_snow * 3.0 * temps[1]^4) +
-        K_sw +
+        Qsw +
         K_lh
     )
-    H = prefactor * (D_sf + sigma * eps_snow * 4.0 * temps[1]^3 + H_lh)
+    H = inv * (D_sf + sigma * eps_snow * 4.0 * temps[1]^3 + H_lh)
 
     china_syndrome = false
     Q_heat = 0.0
@@ -103,7 +115,7 @@ function go_energy_flux!(
         else
             heating = dt_sec * (
                 new_temp * (-D_sf - sigma * eps_snow * 4.0 * temps[1]^3 - H_lh) +
-                (T2m * D_sf + sigma * (eps_air * T2m^4 + eps_snow * 3.0 * temps[1]^4) + K_sw + K_lh)
+                (T2m * D_sf + sigma * (eps_air * T2m^4 + eps_snow * 3.0 * temps[1]^4) + Qsw + K_lh)
             )
         end
 
@@ -116,26 +128,27 @@ function go_energy_flux!(
     for i in 1:nn
         K_snow[i] = _snow_thermal_conductivity(rho[i], K_ice, diff_model)
     end
-    @inline interfaceK(Ki, dzi, Kj, dzj) = (Ki*dzi + Kj*dzj) / _safe_positive((dzi + dzj)^2)
-    BB_up = zeros(Float64, nn)
-    BB_down = zeros(Float64, nn)
-    BB_mid = zeros(Float64, nn)
 
-    BB_up[1] = -2.0 * dt_sec / _safe_positive(rho[1]) / ci / _safe_positive(dz[1]) * interfaceK(K_snow[1], dz[1], K_snow[2], dz[2])
+    @inbounds begin
+            # i = 1 boundary
+            k12 = interfaceK(K_snow[1], dz[1], K_snow[2], dz[2])
+            BB_up[1] = -2.0 * dt_sec / (_safe_positive(rho[1]) * ci * _safe_positive(dz[1])) * k12
+            BB_mid[1] = 1.0 - BB_up[1]
 
-    BB_down[nn] = -2.0 * dt_sec / _safe_positive(rho[nn]) / ci / _safe_positive(dz[nn]) * interfaceK(K_snow[nn], dz[nn], K_snow[nn-1], dz[nn-1])
+            # i = nn boundary
+            kn = interfaceK(K_snow[nn], dz[nn], K_snow[nn-1], dz[nn-1])
+            BB_down[nn] = -2.0 * dt_sec / (_safe_positive(rho[nn]) * ci * _safe_positive(dz[nn])) * kn
+            BB_mid[nn] = 1.0 - BB_down[nn]
 
-
-    BB_mid[1] = 1.0 - BB_up[1]
-    BB_mid[nn] = 1.0 - BB_down[nn]
-
-    if nn > 2
-        for i in 2:(nn - 1)
-            BB_down[i] = -2.0 * dt_sec / _safe_positive(rho[i]) / ci / _safe_positive(dz[i]) * interfaceK(K_snow[i], dz[i], K_snow[i-1], dz[i-1])
-            BB_up[i] = -2.0 * dt_sec / _safe_positive(rho[i]) / ci / _safe_positive(dz[i]) * interfaceK(K_snow[i], dz[i], K_snow[i+1], dz[i+1])
-            BB_mid[i] = 1.0 - BB_down[i] - BB_up[i]
+            # interior
+            for i in 2:nn-1
+                kdn = interfaceK(K_snow[i], dz[i], K_snow[i-1], dz[i-1])
+                kup = interfaceK(K_snow[i], dz[i], K_snow[i+1], dz[i+1])
+                BB_down[i] = -2.0 * dt_sec / (_safe_positive(rho[i]) * ci * _safe_positive(dz[i])) * kdn
+                BB_up[i]   = -2.0 * dt_sec / (_safe_positive(rho[i]) * ci * _safe_positive(dz[i])) * kup
+                BB_mid[i]  = 1.0 - BB_down[i] - BB_up[i]
+            end
         end
-    end
 
     BB_mid1_backup = BB_mid[1]
     BB_mid[1] += H
@@ -153,6 +166,7 @@ function go_energy_flux!(
         rhs2 = copy(backup)
         rhs2[1] = kelvin
         BB_mid[1] = BB_mid1_backup
+        A = Tridiagonal(BB_down[2:end], BB_mid, BB_up[1:(end - 1)])
         new_temp = A \ rhs2
         
 
@@ -172,7 +186,7 @@ function go_energy_flux!(
         end
         heating = dt_sec * (
             new_temp[1] * (-D_sf - sigma * eps_snow * 4.0 * temps[1]^3 - H_lh) +
-            (T2m * D_sf + sigma * (eps_air * T2m^4 + eps_snow * 3.0 * temps[1]^4) + K_sw + K_lh)
+            (T2m * D_sf + sigma * (eps_air * T2m^4 + eps_snow * 3.0 * temps[1]^4) + Qsw + K_lh)
         )
     end
 
