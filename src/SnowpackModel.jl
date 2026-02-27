@@ -11,6 +11,7 @@ using Printf
 export SnowpackPhysicalConstants
 export SnowpackColumn
 export step!
+export go_percolation!
 export get_state
 export print_state
 
@@ -219,7 +220,9 @@ mutable struct SnowpackColumn
 end
 
 include("energy_flux.jl")
+include("energy_flux_enthalpy.jl")
 include("mass_balance.jl")
+include("percolation.jl")
 
 
 """
@@ -291,6 +294,12 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
         apply_melt!(column, melt_mass)
     end
 
+    # Fortran flow: melting -> percolation -> refreezing.
+    # Refreezing is not implemented yet, but percolation is applied here.
+    if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
+        go_percolation!(column)
+    end
+
     
     return
 end
@@ -314,14 +323,14 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
     column.mass_w[1] += P_rain * dt
 
     # If all layers are full and surface exceeds mass_max, first merge bottom layers
-    if column.mass[1] > column.mass_max && column.N == column.Ntot
-        merge_bottom_layer!(column)
+    while column.mass[1] > column.mass_max
+        if column.N == column.Ntot
+            merge_bottom_layer!(column)
+        end
+        split_surface_layer!(column)
     end
 
-    # Check if surface layer needs splitting or merging
-    if column.mass[1] > column.mass_max
-        split_surface_layer!(column)
-    elseif column.mass[1] < column.mass_min
+    while column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
     
