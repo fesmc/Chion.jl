@@ -182,7 +182,7 @@ function go_energy_flux!(
 
     if T_new[1] > Tₘ
         china_syndrome = true
-        Q_heat = max((Tₘ - T_prev[1]) * cᵢ * mₛ, 0.0)
+        Q_heat = (Tₘ - T_prev[1]) * cᵢ * mₛ
 
         rhs_melt = copy(T_prev)
         rhs_melt[1] = Tₘ
@@ -190,7 +190,7 @@ function go_energy_flux!(
         A = Tridiagonal(a_lower[2:end], a_diag, a_upper[1:(end - 1)])
         T_new = A \ rhs_melt
 
-        Q_heat += max((Tₘ - T_new[1]) * cᵢ * mₛ, 0.0)
+        Q_heat += (Tₘ - T_new[1]) * cᵢ * mₛ
         T_new[1] = Tₘ
         _clamp_to_melt!(T_new, Tₘ)
         heating = Q_heat

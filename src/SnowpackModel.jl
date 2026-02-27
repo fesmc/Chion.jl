@@ -8,7 +8,6 @@ This initial version focuses on mass conservation and layer dynamics.
 module SnowpackModel
 
 using Printf
-
 export SnowpackPhysicalConstants
 export SnowpackColumn
 export step!
@@ -98,8 +97,8 @@ function SnowpackPhysicalConstants(;
     σ::Float64=5.670373e-8,
     R::Float64=8.314,
     T0::Float64=273.15,
-    seconds_per_day::Float64 = 86400.0
-    seconds_per_month::Float64 = 86400.0*30
+    seconds_per_day::Float64 = 86400.0,
+    seconds_per_month::Float64 = 86400.0*30,
     seconds_per_year::Float64 = 86400.0*30*12
 )
     return SnowpackPhysicalConstants(
@@ -219,6 +218,9 @@ mutable struct SnowpackColumn
     end
 end
 
+include("energy_flux.jl")
+include("mass_balance.jl")
+
 
 """
     step!(column::SnowpackColumn, mdot::Float64, dt::Float64) -> Float64
@@ -268,18 +270,27 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     # Calculate firn densification at each layer
     column.density .= step_density.(column.density,column.temperature,bdot_ave,dt_sec,column.c.rho_i,column.c.T0)
 
-    println("density: ", extrema(column.density))
-
     # Caculate energy balance
-    # to do
+    S_boa = 400.0
+    H_lh = 8.0
+    K_lh = 2200.0
+    energy = go_energy_flux!(column, T2m, S_boa, H_lh, K_lh, dt_sec; diff_model=1)
 
     # For now set a linear temperature profile in the firn to depth
-    column.Tsrf = min(T2m,column.c.T0)
-    column.temperature[1] = Tsrf
-    column.temperature[column.N] = Tsrf - 10.0
-    
+    #column.Tsrf = min(T2m,column.c.T0)
+    #column.temperature[1] = column.Tsrf
+    #column.temperature[column.N] = column.Tsrf - 10.0
     # Handle melt
-    #apply_melt!(column, -dmass)
+    if energy.china_syndrome
+        Ts = column.temperature[1]
+        Qp_lw = column.c.σ * (column.c.ϵ_air * T2m^4 - column.c.ϵ_snow * Ts^4)
+        Qp_sh = column.c.D_sh * (T2m - Ts)
+        Qp_lh = K_lh - H_lh * Ts
+        QQ = max((S_boa + Qp_lw + Qp_sh + Qp_lh) * dt_sec - energy.Q_heat, 0.0)
+        melt_mass = QQ / column.c.Lm
+        apply_melt!(column, melt_mass)
+    end
+
     
     return
 end
@@ -324,6 +335,9 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
 
     return
 end
+
+
+
 
 """
     split_surface_layer!(column::SnowpackColumn)
