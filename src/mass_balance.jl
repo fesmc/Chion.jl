@@ -1,53 +1,69 @@
-module MassBalance
+"""
+Mass-balance helpers for `SnowpackColumn`.
+"""
 
-export compute_mass_balance, apply_melt
+@inline _safe_nonnegative(x::Float64) = x > 0.0 ? x : 0.0
 
-using ..SnowLayers: Snowpack, SnowLayer
+function _remove_surface_layer!(column::SnowpackColumn)
+    if column.N <= 0
+        return
+    elseif column.N == 1
+        reset_column_at_index!(column, 1)
+        column.N = 0
+        return
+    end
 
-# Compute snow accumulation and melt per time step
-function compute_mass_balance(snowfall::Float64, melt_energy::Float64)
-    latent_heat_fusion = 334000  # J/kg
+    @inbounds for i in 1:(column.N - 1)
+        column.mass[i] = column.mass[i + 1]
+        column.mass_w[i] = column.mass_w[i + 1]
+        column.density[i] = column.density[i + 1]
+        column.temperature[i] = column.temperature[i + 1]
+    end
 
-    melt_mass = melt_energy > 0 ? melt_energy / latent_heat_fusion : 0.0
-    net_snow = snowfall - melt_mass
-
-    return net_snow, melt_mass
+    reset_column_at_index!(column, column.N)
+    column.N -= 1
+    return
 end
 
-# Apply melt to the snowpack layers
-function apply_melt(pack::Snowpack, melt_mass::Float64)
-    remaining_melt = melt_mass
-    
-    # Melt active layers from top to bottom
-    for layer in pack.layers
-        if layer.active
-            layer_mass = layer.thickness * layer.density
-            
-            if remaining_melt >= layer_mass
-                # Entire layer melts
-                remaining_melt -= layer_mass
-                deactivate_layer!(layer)
-            else
-                # Partial melting
-                melted_thickness = remaining_melt / layer.density
-                layer.thickness -= melted_thickness
-                remaining_melt = 0.0
-            end
-            
-            if remaining_melt <= 0.0
-                break
-            end
+"""
+    apply_melt!(column::SnowpackColumn, melt_mass::Float64) -> Float64
+
+Remove melt mass from the active snowpack (surface down), returning melted mass [kg m^-2].
+Melted mass is added to `column.runoff`.
+"""
+function apply_melt!(column::SnowpackColumn, melt_mass::Float64)
+    remaining_melt = _safe_nonnegative(melt_mass)
+    if remaining_melt <= 0.0 || column.N <= 0
+        return 0.0
+    end
+
+    melted_total = 0.0
+
+    while remaining_melt > 0.0 && column.N > 0
+        m_layer = column.mass[1]
+        if m_layer <= 1.0e-12
+            _remove_surface_layer!(column)
+            continue
+        end
+
+        dm = min(m_layer, remaining_melt)
+        wfrac = clamp(column.mass_w[1] / m_layer, 0.0, 1.0)
+        column.mass[1] -= dm
+        column.mass_w[1] = _safe_nonnegative(column.mass_w[1] - dm * wfrac)
+
+        remaining_melt -= dm
+        melted_total += dm
+
+        if column.mass[1] <= 1.0e-10
+            _remove_surface_layer!(column)
+        elseif column.N > 1 && column.mass[1] < column.mass_min
+            merge_surface_layer!(column)
+        else
+            break
         end
     end
-end
 
-# Deactivate a fully melted layer
-function deactivate_layer!(layer::SnowLayer)
-    layer.thickness = 0.0
-    layer.density = 0.0
-    layer.temperature = 0.0
-    layer.liquid_water = 0.0
-    layer.active = false
-end
-
+    column.runoff += melted_total
+    column.Tsrf = column.N > 0 ? column.temperature[1] : column.c.T0
+    return melted_total
 end

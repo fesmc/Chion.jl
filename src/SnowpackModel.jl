@@ -12,11 +12,13 @@ export SnowpackPhysicalConstants
 export SnowpackColumn
 export step!
 export go_percolation!
+export go_refreezing!
 export get_state
 export print_state
 
 export calc_density_gradient_HL80
 export calc_density_gradient_powerlaw_ref
+export go_densification!
 
 """
 Physical constants for snow/ice model
@@ -220,9 +222,10 @@ mutable struct SnowpackColumn
 end
 
 include("energy_flux.jl")
-include("energy_flux_enthalpy.jl")
+include("densification.jl")
 include("mass_balance.jl")
 include("percolation.jl")
+include("refreezing.jl")
 
 
 """
@@ -259,19 +262,24 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     P_rain = P * (1.0-f_s)
     P_snow = P - P_rain
 
-    # Get mean accumulation
-    #bdot_ave = P_ave * column.c.seconds_per_year
-    bdot_ave = 0.3 # m yr⁻¹
-
-    
     # Convert timestep to seconds internally
     dt_sec = dt * column.c.seconds_per_day
+
+    # For first snowfall, seed surface temperature with air temperature
+    # (Fortran behavior when first box is empty and snow starts).
+    if P_snow > 0.0 && column.N > 0 && column.mass[1] == 0.0
+        column.temperature[1] = T2m
+    end
 
     # Handle accumulation first
     apply_accumulation!(column, P_snow, P_rain, dt_sec)
 
-    # Calculate firn densification at each layer
-    column.density .= step_density.(column.density,column.temperature,bdot_ave,dt_sec,column.c.rho_i,column.c.T0)
+    # Fortran passes At = accum + rainman [kg m^-2 s^-1] to densification,
+    # and only runs densification when at least 3 boxes are snow-filled.
+    At = (P_snow > 0.0 ? P_snow : 0.0) + ((column.N > 0 && column.mass[1] > 0.0) ? P_rain : 0.0)
+    if column.N >= 3 && column.mass[3] > 0.0
+        go_densification!(column, At, dt_sec)
+    end
 
     # Caculate energy balance
     S_boa = 400.0
@@ -295,9 +303,14 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     end
 
     # Fortran flow: melting -> percolation -> refreezing.
-    # Refreezing is not implemented yet, but percolation is applied here.
+    # Apply percolation first if liquid water exists.
     if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
         go_percolation!(column)
+    end
+
+    # Then refreeze liquid water into the cold content of each active layer.
+    if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
+        go_refreezing!(column)
     end
 
     
@@ -312,15 +325,32 @@ Add mass to the surface layer and handle layer dynamics.
 
 """
 function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt::Float64)
-    
-    # If no active layers, create the first one
+    # Fortran behavior: rain is only added to liquid water if snow exists.
+    # If no active snow and no new snowfall, keep column empty.
     if column.N == 0
-        column.N = 1
+        if P_snow > 0.0
+            column.N = 1
+        else
+            return
+        end
     end
-    
-    # Add mass to surface layer (first layer)
-    column.mass[1] += P_snow * dt
-    column.mass_w[1] += P_rain * dt
+
+    # Add snowfall mass and mix density with fresh-snow density .
+    if P_snow > 0.0
+        old_mass = column.mass[1]
+        add_snow = P_snow * dt
+        masssum = old_mass + add_snow
+        old_rho = column.density[1] > 0.0 ? column.density[1] : column.c.rho_s
+        if masssum > 0.0
+            column.density[1] = masssum / (old_mass / old_rho + add_snow / column.c.rho_s)
+        end
+        column.mass[1] = masssum
+    end
+
+    # Add rainwater only when snowpack exists.
+    if column.mass[1] > 0.0 && P_rain > 0.0
+        column.mass_w[1] += P_rain * dt
+    end
 
     # If all layers are full and surface exceeds mass_max, first merge bottom layers
     while column.mass[1] > column.mass_max
@@ -330,7 +360,7 @@ function apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Fl
         split_surface_layer!(column)
     end
 
-    while column.mass[1] < column.mass_min
+    while column.N > 1 && column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
     

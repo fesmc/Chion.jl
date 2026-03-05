@@ -43,6 +43,11 @@ end
 )
     # wet when at/near melting
     α = (Tₛ >= Tₘ) ? alpha_wet : alpha_dry
+    println("alpha", α)
+    println("Tₛ", Tₛ)
+    println("Tₘ", Tₘ)
+    
+
     return (1.0 - α) * S_boa
 end
 
@@ -98,9 +103,9 @@ function go_energy_flux!(
     a_lower = zeros(Float64, n_layers)
     a_diag = zeros(Float64, n_layers)
 
-    T = copy(column.temperature[1:n_layers])
+    @views T = column.temperature[1:n_layers]
     T_prev = copy(T)
-    ρ = copy(column.density[1:n_layers])
+    @views ρ = column.density[1:n_layers]
     Δz = zeros(Float64, n_layers)
     for i in 1:n_layers
         Δz[i] = column.mass[i] / _safe_positive(ρ[i])
@@ -134,7 +139,7 @@ function go_energy_flux!(
         T_new = (T[1] + surface_rhs_term) / _safe_positive(1.0 + surface_diag_term)
         if T_new > Tₘ
             china_syndrome = true
-            Q_heat = max((Tₘ - T_prev[1]) * cᵢ * mₛ, 0.0)
+            Q_heat = (Tₘ - T_prev[1]) * cᵢ * mₛ
             T_new = Tₘ
             heating = Q_heat
         else
@@ -154,20 +159,23 @@ function go_energy_flux!(
     @inbounds begin
         # i = 1 boundary
         k₁₂ = interface_conductance(Kₛ[1], Δz[1], Kₛ[2], Δz[2])
-        a_upper[1] = -2.0 * dt_sec / (_safe_positive(ρ[1]) * cᵢ * _safe_positive(Δz[1])) * k₁₂
+        β₁ = -2.0 * dt_sec / (_safe_positive(ρ[1]) * cᵢ * _safe_positive(Δz[1]))
+        a_upper[1] = β₁ * k₁₂
         a_diag[1] = 1.0 - a_upper[1]
 
         # i = n_layers boundary
         kₙ = interface_conductance(Kₛ[n_layers], Δz[n_layers], Kₛ[n_layers - 1], Δz[n_layers - 1])
-        a_lower[n_layers] = -2.0 * dt_sec / (_safe_positive(ρ[n_layers]) * cᵢ * _safe_positive(Δz[n_layers])) * kₙ
+        βₙ = -2.0 * dt_sec / (_safe_positive(ρ[n_layers]) * cᵢ * _safe_positive(Δz[n_layers]))
+        a_lower[n_layers] = βₙ * kₙ
         a_diag[n_layers] = 1.0 - a_lower[n_layers]
 
         # interior
         for i in 2:n_layers-1
             k_lower = interface_conductance(Kₛ[i], Δz[i], Kₛ[i - 1], Δz[i - 1])
             k_upper = interface_conductance(Kₛ[i], Δz[i], Kₛ[i + 1], Δz[i + 1])
-            a_lower[i] = -2.0 * dt_sec / (_safe_positive(ρ[i]) * cᵢ * _safe_positive(Δz[i])) * k_lower
-            a_upper[i] = -2.0 * dt_sec / (_safe_positive(ρ[i]) * cᵢ * _safe_positive(Δz[i])) * k_upper
+            βᵢ = -2.0 * dt_sec / (_safe_positive(ρ[i]) * cᵢ * _safe_positive(Δz[i]))
+            a_lower[i] = βᵢ * k_lower
+            a_upper[i] = βᵢ * k_upper
             a_diag[i] = 1.0 - a_lower[i] - a_upper[i]
         end
     end
