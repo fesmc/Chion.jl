@@ -239,6 +239,9 @@ Advance the snowpack column by one time step.
 - `P`: Precipitation rate at surface [kg/m²/s]
 - `dt`: Time step [d]
 - `f_s`: Fraction of precipitation that is snow [1], default nothing, calculate internally
+- `p_snow`: Optional direct snowfall rate [kg/m²/s], overrides `P/f_s` partition when provided
+- `p_rain`: Optional direct rainfall rate [kg/m²/s], overrides `P/f_s` partition when provided
+- `s_boa`: Optional downward shortwave forcing [W m^-2], used when `q_sw_net` is not provided
 
 # Process
 1. Apply surface mass flux
@@ -246,21 +249,40 @@ Advance the snowpack column by one time step.
 3. Propagate melt through layers if negative
 4. Check for ice formation at base
 """
-function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_s=nothing, P_ave=P)
-
-    if isnothing(f_s)
-        # Determine fraction of snow and rain as a function of T2m
-        # following Born et al. (2019)
-        if T2m > column.c.T0
-            f_s = 0.0
-        else
-            f_s = 1.0
+function step!(
+    column::SnowpackColumn,
+    T2m::Float64,
+    P::Float64,
+    dt::Float64;
+    f_s=nothing,
+    P_ave=P,
+    p_snow::Union{Nothing, Float64}=nothing,
+    p_rain::Union{Nothing, Float64}=nothing,
+    s_boa::Union{Nothing, Float64}=nothing,
+    q_sw_net::Union{Nothing, Float64}=nothing,
+    q_lw_down::Union{Nothing, Float64}=nothing,
+    q_sh::Union{Nothing, Float64}=nothing,
+    q_lh::Union{Nothing, Float64}=nothing,
+)
+    if !isnothing(p_snow) || !isnothing(p_rain)
+        # Direct forcing path: caller provides separated rain/snow rates.
+        P_snow = isnothing(p_snow) ? 0.0 : p_snow
+        P_rain = isnothing(p_rain) ? 0.0 : p_rain
+    else
+        if isnothing(f_s)
+            # Determine fraction of snow and rain as a function of T2m
+            # following Born et al. (2019)
+            if T2m > column.c.T0
+                f_s = 0.0
+            else
+                f_s = 1.0
+            end
         end
-    end
 
-    # Get separate contributions of rain and snow depending on arguments
-    P_rain = P * (1.0-f_s)
-    P_snow = P - P_rain
+        # Backward-compatible partitioning from total precipitation and f_s.
+        P_rain = P * (1.0-f_s)
+        P_snow = P - P_rain
+    end
 
     # Convert timestep to seconds internally
     dt_sec = dt * column.c.seconds_per_day
@@ -282,10 +304,17 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     end
 
     # Caculate energy balance
-    S_boa = 400.0
-    H_lh = 8.0
-    K_lh = 2200.0
-    energy = go_energy_flux!(column, T2m, S_boa, H_lh, K_lh, dt_sec; diff_model=1)
+    S_boa = isnothing(s_boa) ? 400.0 : max(s_boa, 0.0)
+    energy = go_energy_flux!(
+        column, T2m, S_boa, nothing, nothing, dt_sec;
+        P_snow=P_snow,
+        P_rain=P_rain,
+        diff_model=1,
+        q_sw_net=q_sw_net,
+        q_lw_down=q_lw_down,
+        q_sh=q_sh,
+        q_lh=q_lh,
+    )
 
     # For now set a linear temperature profile in the firn to depth
     #column.Tsrf = min(T2m,column.c.T0)
@@ -294,10 +323,17 @@ function step!(column::SnowpackColumn, T2m::Float64, P::Float64, dt::Float64; f_
     # Handle melt
     if energy.china_syndrome
         Ts = column.temperature[1]
-        Qp_lw = column.c.σ * (column.c.ϵ_air * T2m^4 - column.c.ϵ_snow * Ts^4)
-        Qp_sh = column.c.D_sh * (T2m - Ts)
-        Qp_lh = K_lh - H_lh * Ts
-        QQ = max((S_boa + Qp_lw + Qp_sh + Qp_lh) * dt_sec - energy.Q_heat, 0.0)
+        if isnothing(q_sw_net) && isnothing(q_lw_down) && isnothing(q_sh) && isnothing(q_lh)
+            # Backward-compatible melt energy diagnosis for default parameterized forcing.
+            Qp_lw = column.c.σ * (column.c.ϵ_air * T2m^4 - column.c.ϵ_snow * Ts^4)
+            Qp_sh = column.c.D_sh * (T2m - Ts)
+            Qp_lh = energy.K_lh - energy.H_lh * Ts
+            QQ = max((S_boa + Qp_lw + Qp_sh + Qp_lh) * dt_sec - energy.Q_heat, 0.0)
+        else
+            # For externally prescribed fluxes, use the same linearized net-flux form
+            # as in the temperature solve.
+            QQ = max((energy.F_const - energy.F_lin * Ts) * dt_sec - energy.Q_heat, 0.0)
+        end
         melt_mass = QQ / column.c.Lm
         apply_melt!(column, melt_mass)
     end

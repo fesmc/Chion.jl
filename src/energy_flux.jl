@@ -43,34 +43,63 @@ end
 )
     # wet when at/near melting
     α = (Tₛ >= Tₘ) ? alpha_wet : alpha_dry
-    println("alpha", α)
-    println("Tₛ", Tₛ)
-    println("Tₘ", Tₘ)
-    
-
     return (1.0 - α) * S_boa
 end
 
 @inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
     (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
 
+@inline function _latent_heat_coeffs_fortran_style(
+    column::SnowpackColumn,
+    T₂m::Float64,
+    P_snow::Float64,
+    P_rain::Float64,
+)
+    # Match Fortran logic from accumulation branch:
+    # - snowfall: H_lh = accum*c_i, K_lh = accum*c_i*T_air
+    # - rainfall on existing snow: H_lh = 0, K_lh = rainman*c_w*(T_air-T0)
+    if P_snow > 0.0
+        H_lh = P_snow * column.c.ci
+        K_lh = P_snow * column.c.ci * T₂m
+    elseif column.N > 0 && column.mass[1] > 0.0 && P_rain > 0.0
+        H_lh = 0.0
+        K_lh = P_rain * column.c.cw * (T₂m - column.c.T0)
+    else
+        H_lh = 0.0
+        K_lh = 0.0
+    end
+    return H_lh, K_lh
+end
+
 """
     go_energy_flux!(
         column::SnowpackColumn,
         T₂m::Float64,
         S_boa::Float64,
-        H_lh::Float64,
-        K_lh::Float64,
+        H_lh::Union{Nothing, Float64},
+        K_lh::Union{Nothing, Float64},
         dt_sec::Float64;
+        P_snow::Float64=0.0,
+        P_rain::Float64=0.0,
         diff_model::Int = 2,
+        q_sw_net::Union{Nothing, Float64}=nothing,
+        q_lw_down::Union{Nothing, Float64}=nothing,
+        q_sh::Union{Nothing, Float64}=nothing,
+        q_lh::Union{Nothing, Float64}=nothing,
     ) -> NamedTuple
 
 Update snow temperatures with an implicit conductive solve and surface flux terms.
 
 Inputs:
 - `S_boa`: incoming solar radiation at the bottom of the atmosphere [W m^-2]
-- `H_lh`: latent-heat linear coefficient [W m^-2 K^-1]
-- `K_lh`: latent-heat constant term [W m^-2]
+- `H_lh`: optional latent-heat linear coefficient [W m^-2 K^-1]
+- `K_lh`: optional latent-heat constant term [W m^-2]
+- `P_snow`: snowfall rate [kg m^-2 s^-1], used to diagnose `H_lh`,`K_lh` when they are `nothing`
+- `P_rain`: rainfall rate [kg m^-2 s^-1], used to diagnose `H_lh`,`K_lh` when they are `nothing`
+- `q_sw_net`: optional observed net shortwave (down-up) [W m^-2]
+- `q_lw_down`: optional observed downward longwave [W m^-2]
+- `q_sh`: optional observed sensible heat flux, downward positive [W m^-2]
+- `q_lh`: optional observed latent heat flux, downward positive [W m^-2]
 
 Returns:
 - `china_syndrome`: surface reached melt point and melt routine should run
@@ -81,14 +110,34 @@ function go_energy_flux!(
     column::SnowpackColumn,
     T₂m::Float64,
     S_boa::Float64,
-    H_lh::Float64,
-    K_lh::Float64,
+    H_lh::Union{Nothing, Float64},
+    K_lh::Union{Nothing, Float64},
     dt_sec::Float64;
+    P_snow::Float64=0.0,
+    P_rain::Float64=0.0,
     diff_model::Int = 2,
+    q_sw_net::Union{Nothing, Float64}=nothing,
+    q_lw_down::Union{Nothing, Float64}=nothing,
+    q_sh::Union{Nothing, Float64}=nothing,
+    q_lh::Union{Nothing, Float64}=nothing,
 )
+    H_lh_eff, K_lh_eff = if isnothing(H_lh) || isnothing(K_lh)
+        _latent_heat_coeffs_fortran_style(column, T₂m, P_snow, P_rain)
+    else
+        H_lh, K_lh
+    end
+
     n_layers = column.N
     if n_layers <= 0 || column.mass[1] <= 0.0
-        return (china_syndrome = false, Q_heat = 0.0, heating = 0.0)
+        return (
+            china_syndrome = false,
+            Q_heat = 0.0,
+            heating = 0.0,
+            F_const = 0.0,
+            F_lin = 0.0,
+            H_lh = H_lh_eff,
+            K_lh = K_lh_eff,
+        )
     end
 
     Tₘ = column.c.T0
@@ -113,21 +162,27 @@ function go_energy_flux!(
 
     mₛ = _safe_positive(column.mass[1])
     λₛ = dt_sec / cᵢ / mₛ
-    Q_sw = shortwave_absorbed(
+
+    Q_sw = isnothing(q_sw_net) ? shortwave_absorbed(
         S_boa,
         T[1],
         Tₘ;
         alpha_dry=column.c.alpha_dry,
         alpha_wet=column.c.alpha_wet,
-    )
-    ### Taylor expansion of T
-    F_const = (
-        T₂m * Dₛₕ +
-        σ * (ϵₐ * T₂m^4 + ϵₛ * 3.0 * T[1]^4) +
-        Q_sw +
-        K_lh
-    )
-    F_lin = Dₛₕ + σ * ϵₛ * 4.0 * T[1]^3 + H_lh
+    ) : q_sw_net
+
+    lw_const = isnothing(q_lw_down) ? (σ * (ϵₐ * T₂m^4 + ϵₛ * 3.0 * T[1]^4)) : (q_lw_down + σ * ϵₛ * 3.0 * T[1]^4)
+    lw_lin = σ * ϵₛ * 4.0 * T[1]^3
+
+    sh_const = isnothing(q_sh) ? (T₂m * Dₛₕ) : q_sh
+    sh_lin = isnothing(q_sh) ? Dₛₕ : 0.0
+
+    lh_const = isnothing(q_lh) ? K_lh_eff : q_lh
+    lh_lin = isnothing(q_lh) ? H_lh_eff : 0.0
+
+    # Net surface flux linearized as: F_const - F_lin * Ts
+    F_const = sh_const + lw_const + Q_sw + lh_const
+    F_lin = sh_lin + lw_lin + lh_lin
     surface_rhs_term = λₛ * F_const
     surface_diag_term = λₛ * F_lin
 
@@ -148,7 +203,15 @@ function go_energy_flux!(
 
         column.temperature[1] = min(T_new, Tₘ)
         column.Tsrf = column.temperature[1]
-        return (china_syndrome = china_syndrome, Q_heat = Q_heat, heating = heating)
+        return (
+            china_syndrome = china_syndrome,
+            Q_heat = Q_heat,
+            heating = heating,
+            F_const = F_const,
+            F_lin = F_lin,
+            H_lh = H_lh_eff,
+            K_lh = K_lh_eff,
+        )
     end
 
     Kₛ = zeros(Float64, n_layers)
@@ -210,5 +273,13 @@ function go_energy_flux!(
     column.temperature[1:n_layers] .= T_new
     column.Tsrf = column.temperature[1]
 
-    return (china_syndrome = china_syndrome, Q_heat = Q_heat, heating = heating)
+    return (
+        china_syndrome = china_syndrome,
+        Q_heat = Q_heat,
+        heating = heating,
+        F_const = F_const,
+        F_lin = F_lin,
+        H_lh = H_lh_eff,
+        K_lh = K_lh_eff,
+    )
 end
