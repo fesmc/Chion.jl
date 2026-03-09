@@ -58,7 +58,7 @@ function go_densification!(
             ddens = 25400.0 * exp(-60000.0 / 8.13 / T) * ρ * f * dp^3
         else
             denom = 1.0 - (1.0 - ρ / ρᵢ)^(1.0 / 3.0)
-            if abs(denom) > 1.0e-12
+            if abs(denom) > EPS_TINY
                 f = 3.0 / 16.0 * (1.0 - ρ / ρᵢ) / denom^3
                 columnsnow = mm > 1 ? sum(snowman[1:mm-1]) : 0.0
                 P_ice = 9.81 * (columnsnow + m / 2.0) / 1.0e6

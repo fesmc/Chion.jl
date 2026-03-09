@@ -5,8 +5,7 @@ Port of BESSI `go_energy_flux_new` to the Chion column nomenclature.
 =#
 using LinearAlgebra
 
-const _TINY = 1.0e-12
-@inline _safe_positive(x::Float64) = x > _TINY ? x : _TINY
+@inline _safe_positive(x::Float64) = x > EPS_TINY ? x : EPS_TINY
 
 @inline function _clamp_to_melt!(T::Vector{Float64}, Tₘ::Float64)
     @inbounds for i in eachindex(T)
