@@ -40,9 +40,9 @@ Q_{\mathrm{sh}}= D_{\mathrm{sh}}(T_{\mathrm{air}}-T_{\mathrm{s}})
 
 with 
 ```math
-D_{\mathrm{sh}}= 1.29\cdot 10^{-2}\mathrm{K}^{-1}\cdot Apu
+D_{\mathrm{sh}}= 1.29\cdot 10^{-2}\mathrm{K}^{-1}\cdot Apu.
 ```
-
+Here ``D_{\mathrm{sh}}=10\,\mathrm{Wm^{-2}K^{-1}}``.
 
 ### Precipitation Heat 
 ```math
@@ -72,7 +72,7 @@ In other words, ``H_{\mathrm{lh}}`` is the slope (derivative) of the precipitati
 
 In the case of rainfall (no snow), ``H_{\mathrm{lh}}=0`` and, therefore, rain contributes a temperature-independent heat source.
 
-### Latent Heat 
+### Longwave Radiaton 
 
 
 
@@ -94,9 +94,9 @@ Collecting all the ``T^{n+1}_s`` (in)dependent terms gives
 ```math
 Q_{\mathrm{const}} =
 D_{sh}T_{2m}
-\sigma\left(\epsilon_{air}T_{2m}^4 + 3\epsilon_{snow}(T_s^n)^4\right)
-Q_{sw}
-K_{lh}
++\sigma\left(\epsilon_{air}T_{2m}^4 + 3\epsilon_{snow}(T_s^n)^4\right)
++Q_{sw}
++K_{lh}
 ```
 
 ```math
@@ -207,37 +207,12 @@ r_2\\
 r_n
 \end{bmatrix}.
 ```
-## Conductive Solve
 
-For each layer ``i``, thickness is:
-
-```math
-\Delta z_i = \frac{m_i}{\rho_i}
-```
-
-Interface conductance between ``i`` and ``j``:
-
-```math
-k_{ij}=\frac{K_i\Delta z_i + K_j\Delta z_j}{(\Delta z_i+\Delta z_j)^2}
-```
-
-The implicit step is solved as a tridiagonal system:
-
-```math
-\mathbf{A}\,T^{n+1}=b
-```
-
-with top-row modification from linearized surface flux terms.
 
 ## Melt-Point Constraint
 
-If the solved surface temperature exceeds ``T_0``, the routine:
+If the solved surface temperature exceeds ``T_0=0^\circ\mathrm{C}``, the surface temperature is clamped to ``T_0`` and the excessive heat is stored to calculate the the energy used to bring the surface to melt. The solver is then run an additional time to avoid unphysical temperature fluxes into deeper snow layers.  
 
-1. flags `china_syndrome = true`
-2. computes `Q_heat` (energy used to bring/cap the surface at melt)
-3. clamps temperatures to ``T \le T_0``
-
-Melt mass is then handled externally in `step!` via `apply_melt!`.
 
 ## Thermal Conductivity Options
 
@@ -249,14 +224,6 @@ Melt mass is then handled externally in `step!` via `apply_melt!`.
 
 ## API
 
-```@docs
-go_energy_flux!(
-    column::SnowpackColumn,
-    T₂m::Float64,
-    S_boa::Float64,
-    H_lh::Float64,
-    K_lh::Float64,
-    dt_sec::Float64;
-    diff_model::Int = 2,
-)
+```@docs; canonical=false
+go_energy_flux!
 ```
