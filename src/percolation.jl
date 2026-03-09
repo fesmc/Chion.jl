@@ -87,15 +87,14 @@ function go_percolation!(
     max_lwc::Float64 = 0.05,
     rho_i_tol::Float64 = 10.0,
 )
-    n = column.N
-    if n <= 0
+    if column.N <= 0 || column.mass[1] <= 0.0
         return 0.0
     end
 
-    @views runoff = go_percolation!(
-        column.mass[1:n],
-        column.mass_w[1:n],
-        column.density[1:n],
+    runoff = go_percolation!(
+        column.mass,
+        column.mass_w,
+        column.density,
         column.c.rho_i,
         column.c.rho_w;
         max_lwc=max_lwc,

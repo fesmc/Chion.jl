@@ -28,8 +28,8 @@ end
 """
     apply_melt!(column::SnowpackColumn, melt_mass::Float64) -> Float64
 
-Remove melt mass from the active snowpack (surface down), returning melted mass [kg m^-2].
-Melted mass is added to `column.runoff`.
+Remove melt mass from the active snowpack (surface down), returning melted snow mass [kg m^-2].
+Melted snow is converted to liquid water in-pack; runoff is only produced when no receiving snow layer exists.
 """
 function apply_melt!(column::SnowpackColumn, melt_mass::Float64)
     remaining_melt = _safe_nonnegative(melt_mass)
@@ -38,32 +38,42 @@ function apply_melt!(column::SnowpackColumn, melt_mass::Float64)
     end
 
     melted_total = 0.0
+    runoff_from_melt = 0.0
 
     while remaining_melt > 0.0 && column.N > 0
         m_layer = column.mass[1]
         if m_layer <= 1.0e-12
+            if column.N > 1
+                column.mass_w[2] += column.mass_w[1]
+                column.mass_w[1] = 0.0
+            else
+                runoff_from_melt += column.mass_w[1]
+            end
             _remove_surface_layer!(column)
             continue
         end
 
         dm = min(m_layer, remaining_melt)
-        wfrac = clamp(column.mass_w[1] / m_layer, 0.0, 1.0)
         column.mass[1] -= dm
-        column.mass_w[1] = _safe_nonnegative(column.mass_w[1] - dm * wfrac)
+        column.mass_w[1] += dm
 
         remaining_melt -= dm
         melted_total += dm
 
         if column.mass[1] <= 1.0e-10
+            if column.N > 1
+                column.mass_w[2] += column.mass_w[1]
+                column.mass_w[1] = 0.0
+            else
+                runoff_from_melt += column.mass_w[1]
+            end
             _remove_surface_layer!(column)
         elseif column.N > 1 && column.mass[1] < column.mass_min
             merge_surface_layer!(column)
-        else
-            break
         end
     end
 
-    column.runoff += melted_total
+    column.runoff += runoff_from_melt
     column.Tsrf = column.N > 0 ? column.temperature[1] : column.c.T0
     return melted_total
 end
