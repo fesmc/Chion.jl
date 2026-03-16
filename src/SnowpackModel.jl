@@ -26,9 +26,12 @@ Physical constants for snow/ice model
 """
 struct SnowpackPhysicalConstants
     # Densities (kg/m³)
-    rho_s::Float64      # Density of fresh snow
+    rho_s::Float64      # Legacy constant fresh-snow density [kg/m³]
     rho_i::Float64      # Density of ice
     rho_w::Float64      # Density of water
+    rho_s_a::Float64    # Fresh-snow density parameter a [kg/m³]
+    rho_s_b::Float64    # Fresh-snow density parameter b [kg/m³/K]
+    rho_s_c::Float64    # Fresh-snow density parameter c [kg/m³/(m/s)^0.5]
     
     # Thermal properties
     Ki::Float64         # Thermal conductivity of ice (W/(m·K))
@@ -52,7 +55,14 @@ struct SnowpackPhysicalConstants
     T0::Float64                 # Freezing point of water (K)
     seconds_per_day::Float64    # Seconds per day
     seconds_per_month::Float64  # Seconds per month
-    seconds_per_year::Float64   # Seconds per year  
+    seconds_per_year::Float64   # Seconds per year
+    low_density_densification::Symbol # :bessi or :htessel for rho < 550 kg m^-3
+end
+
+@inline function _normalize_low_density_densification(scheme::Symbol)
+    scheme in (:bessi, :htessel) ||
+        error("Unsupported low-density densification scheme '$scheme'. Use :bessi or :htessel.")
+    return scheme
 end
 
 """
@@ -65,6 +75,10 @@ Initialize physical constants with default or custom values.
 - `alpha_dry`: Albedo of fresh snow, default=0.8, range=[0.75, 0.9]
 - `alpha_wet`: Albedo of wet snow, default=0.6, range=[0.5, 0.7]
 - `ϵ_air`: Emissivity of air, default=0.75, range=[0.6, 0.9]
+- `rho_s_a`: Fresh-snow density parameter `a`, default=109
+- `rho_s_b`: Fresh-snow density parameter `b`, default=6
+- `rho_s_c`: Fresh-snow density parameter `c`, default=26
+- `low_density_densification`: Scheme for `rho < 550 kg m^-3`, one of `:bessi` or `:htessel`
 
 # Example
 ```julia
@@ -77,9 +91,12 @@ c = SnowpackPhysicalConstants(D_sh=20.0, alpha_dry=0.85, ϵ_air=0.8)
 """
 function SnowpackPhysicalConstants(;
     # Densities (kg/m³)
-    rho_s::Float64=150.0,
+    rho_s::Float64=250.0,
     rho_i::Float64=917.0,
     rho_w::Float64=1000.0,
+    rho_s_a::Float64=109.0,
+    rho_s_b::Float64=6.0,
+    rho_s_c::Float64=26.0,
     
     # Thermal properties
     Ki::Float64=2.1,
@@ -103,13 +120,17 @@ function SnowpackPhysicalConstants(;
     T0::Float64=273.15,
     seconds_per_day::Float64 = DEFAULT_SECONDS_PER_DAY,
     seconds_per_month::Float64 = DEFAULT_SECONDS_PER_MONTH,
-    seconds_per_year::Float64 = DEFAULT_SECONDS_PER_YEAR
+    seconds_per_year::Float64 = DEFAULT_SECONDS_PER_YEAR,
+    low_density_densification::Symbol=:bessi,
 )
     return SnowpackPhysicalConstants(
         # Densities
         rho_s,
         rho_i,
         rho_w,
+        rho_s_a,
+        rho_s_b,
+        rho_s_c,
         
         # Thermal properties
         Ki,
@@ -133,7 +154,8 @@ function SnowpackPhysicalConstants(;
         T0,
         seconds_per_day,
         seconds_per_month,
-        seconds_per_year
+        seconds_per_year,
+        _normalize_low_density_densification(low_density_densification),
     )
 end
 
@@ -185,6 +207,7 @@ mutable struct SnowpackColumn
     mass_base::Float64              # kg/m²
     runoff::Float64                 # kg/m²
     Tsrf::Float64                   # K
+    snow_cover::Float64             # 1
 
     function SnowpackColumn(;
         c::SnowpackPhysicalConstants = SnowpackPhysicalConstants(),
@@ -207,6 +230,7 @@ mutable struct SnowpackColumn
         mass_base = 0.0
         runoff = 0.0
         Tsrf = c.T0
+        snow_cover = 0.0
 
         # Consistency check
         @assert mass_split < mass_max
@@ -217,7 +241,7 @@ mutable struct SnowpackColumn
         @assert mass_split / mass_max >= 0.5
         
         new(c, Ntot, N, mass_max, mass_split, mass_min, rho_max, f_base_max,
-            mass, mass_w, density, temperature, mass_base, runoff, Tsrf)
+            mass, mass_w, density, temperature, mass_base, runoff, Tsrf, snow_cover)
     end
 end
 
@@ -226,6 +250,59 @@ include("densification.jl")
 include("mass_balance.jl")
 include("percolation.jl")
 include("refreezing.jl")
+
+@inline function _bulk_snow_density(column::SnowpackColumn)
+    if column.N <= 0
+        return 0.0
+    end
+
+    total_mass = 0.0
+    total_thickness = 0.0
+    @inbounds for i in 1:column.N
+        m = column.mass[i]
+        ρ = column.density[i]
+        if m > 0.0 && ρ > EPS_TINY
+            total_mass += m
+            total_thickness += m / ρ
+        end
+    end
+
+    if total_mass <= 0.0 || total_thickness <= EPS_TINY
+        return 0.0
+    end
+    return total_mass / total_thickness
+end
+
+@inline function _total_snow_water_mass(column::SnowpackColumn)
+    if column.N <= 0
+        return 0.0
+    end
+
+    total_wet_mass = 0.0
+    @inbounds for i in 1:column.N
+        total_wet_mass += max(column.mass[i], 0.0) + max(column.mass_w[i], 0.0)
+    end
+    return total_wet_mass
+end
+
+@inline function _snow_cover_fraction(column::SnowpackColumn)
+    if column.N <= 0
+        return 0.0
+    end
+
+    W_s = _total_snow_water_mass(column)
+    W_s <= 0.0 && return 0.0
+
+    rho_sn = _bulk_snow_density(column)
+    rho_sn <= EPS_TINY && return 0.0
+
+    return min(1.0, (W_s / rho_sn) / 0.1)
+end
+
+@inline function update_snow_cover!(column::SnowpackColumn)
+    column.snow_cover = _snow_cover_fraction(column)
+    return column.snow_cover
+end
 
 
 """
@@ -242,6 +319,7 @@ Advance the snowpack column by one time step.
 - `p_snow`: Optional direct snowfall rate [kg/m²/s], overrides `P/f_s` partition when provided
 - `p_rain`: Optional direct rainfall rate [kg/m²/s], overrides `P/f_s` partition when provided
 - `s_boa`: Optional downward shortwave forcing [W m^-2], used when `q_sw_net` is not provided
+- `wind_speed`: Optional near-surface wind speed [m/s], default = `5.0`
 
 # Process
 1. Apply surface mass flux
@@ -259,6 +337,7 @@ function step!(
     p_snow::Union{Nothing, Float64}=nothing,
     p_rain::Union{Nothing, Float64}=nothing,
     s_boa::Union{Nothing, Float64}=nothing,
+    wind_speed::Float64=5.0,
     q_sw_net::Union{Nothing, Float64}=nothing,
     q_lw_down::Union{Nothing, Float64}=nothing,
     q_sh::Union{Nothing, Float64}=nothing,
@@ -294,12 +373,14 @@ function step!(
     end
 
     # Handle accumulation first
-    apply_accumulation!(column, P_snow, P_rain, dt_sec)
-
+    apply_accumulation!(column, P_snow, P_rain, dt_sec; T_air=T2m, wind_speed=wind_speed)
+    update_snow_cover!(column)
+    liquid_water_before_energy = column.c.low_density_densification == :htessel ?
+        copy(column.mass_w[1:column.N]) : Float64[]
     # Fortran passes At = accum + rainman [kg m^-2 s^-1] to densification,
     # and only runs densification when at least 3 boxes are snow-filled.
     At = (P_snow > 0.0 ? P_snow : 0.0) + ((column.N > 0 && column.mass[1] > 0.0) ? P_rain : 0.0)
-    if column.N >= 3 && column.mass[3] > 0.0
+    if column.N >= 1 && column.mass[1] > 0.0
         go_densification!(column, At, dt_sec)
     end
 
@@ -344,13 +425,72 @@ function step!(
         go_percolation!(column)
     end
 
+    if column.c.low_density_densification == :htessel && !isempty(liquid_water_before_energy) &&
+       column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
+        _apply_htessel_liquid_water_compaction!(column, liquid_water_before_energy, dt_sec)
+    end
+
     # Then refreeze liquid water into the cold content of each active layer.
     if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
         go_refreezing!(column)
     end
 
-    
+    update_snow_cover!(column)
     return
+end
+
+function step_density(density, T, bdot_ave, dt, rho_i, T0)
+    # Call the firn densification model
+    # (for now only the powerlaw_ref model is used)
+    drdt = calc_density_gradient_powerlaw_ref(density, T, bdot_ave; rho_i=rho_i)
+
+    # Update density to current time
+    new_density = min(density + drdt * dt, rho_i)
+
+    return new_density
+end
+
+"""
+    calc_density_gradient_HL80(rho, T, bdot; rho_i=917.0, R=8.314)
+
+Return the densification rate dρ/dt [kg m⁻³ s⁻¹] following the
+Herron and Langway (HL, 1980) formulation.
+"""
+function calc_density_gradient_HL80(rho, T, bdot; rho_i=917.0, R=8.314)
+    if rho ≤ 550.0
+        c = (11.0 / 1e3) * exp(-10160 / (R * T)) * bdot^1.0
+    else
+        c = (575.0 / 1e3) * exp(-21400 / (R * T)) * bdot^0.5
+    end
+
+    return c * (rho_i - rho)
+end
+
+"""
+    calc_density_gradient_powerlaw_ref(
+        rho, T, bdot_ave;
+        rho_i=917.0,
+        R=8.314,
+        A=5e-4,
+        Q=12000.0,
+        α=0.7,
+        n=2.0,
+        bdot_ref=0.3
+    )
+
+Single-regime firn densification law with nondimensionalized accumulation.
+"""
+function calc_density_gradient_powerlaw_ref(
+    rho, T, bdot_ave;
+    rho_i=917.0,
+    R=8.314,
+    A=5e-4,
+    Q=12000.0,
+    α=0.7,
+    n=2.0,
+    bdot_ref=0.3,
+)
+    return A * exp(-Q / (R * T)) * (bdot_ave / bdot_ref)^α * (1 - rho / rho_i)^n
 end
 
 
@@ -363,34 +503,48 @@ Get the current state of the snowpack column.
 Returns a dictionary with:
 - `N`: Number of active layers
 - `mass`: Mass in each active layer [kg/m²]
+- `mass_w`: Liquid water mass in each active layer [kg/m²]
 - `density`: Density in each active layer [kg/m³]
 - `total_mass`: Total mass in column [kg/m²]
+- `total_liquid_water`: Total liquid water mass in column [kg/m²]
+- `total_wet_mass`: Total snow plus liquid water mass in column [kg/m²]
 - `thickness`: Thickness of each active layer [m]
 - `total_thickness`: Total column thickness [m]
+- `snow_cover`: Diagnosed snow cover fraction [1]
 """
 function get_state(column::SnowpackColumn)
+    snow_cover = _snow_cover_fraction(column)
     if column.N == 0
         return Dict(
             "N" => 0,
             "mass" => Float64[],
+            "mass_w" => Float64[],
             "density" => Float64[],
             "total_mass" => 0.0,
+            "total_liquid_water" => 0.0,
+            "total_wet_mass" => 0.0,
             "thickness" => Float64[],
-            "total_thickness" => 0.0
+            "total_thickness" => 0.0,
+            "snow_cover" => snow_cover,
         )
     end
     
     active_mass = column.mass[1:column.N]
+    active_mass_w = column.mass_w[1:column.N]
     active_density = column.density[1:column.N]
     thickness = active_mass ./ active_density
     
     return Dict(
         "N" => column.N,
         "mass" => active_mass,
+        "mass_w" => active_mass_w,
         "density" => active_density,
         "total_mass" => sum(active_mass),
+        "total_liquid_water" => sum(active_mass_w),
+        "total_wet_mass" => sum(active_mass) + sum(active_mass_w),
         "thickness" => thickness,
-        "total_thickness" => sum(thickness)
+        "total_thickness" => sum(thickness),
+        "snow_cover" => snow_cover,
     )
 end
 
@@ -409,6 +563,7 @@ function print_state(column::SnowpackColumn)
     println("Active layers: ", state["N"])
     println("Total mass: ", round(state["total_mass"], digits=2), " kg/m²")
     println("Total thickness: ", round(state["total_thickness"], digits=3), " m")
+    println("Snow cover: ", round(state["snow_cover"], digits=3))
     println()
     
     if state["N"] > 0

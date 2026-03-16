@@ -37,12 +37,16 @@ end
     S_boa::Float64,
     Tₛ::Float64,
     Tₘ::Float64;
+    snow_cover::Float64=1.0,
     alpha_dry::Float64=0.8,
     alpha_wet::Float64=0.6,
+    alpha_ice::Float64=0.35,
 )
     # wet when at/near melting
-    α = (Tₛ >= Tₘ) ? alpha_wet : alpha_dry
-    return (1.0 - α) * S_boa
+    α_snow = (Tₛ >= Tₘ) ? alpha_wet : alpha_dry
+    fs = clamp(snow_cover, 0.0, 1.0)
+    #α = fs * α_snow + (1.0 - fs) * alpha_ice
+    return (1.0 - α_snow) * S_boa
 end
 
 @inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
@@ -126,6 +130,8 @@ function go_energy_flux!(
         H_lh, K_lh
     end
 
+    update_snow_cover!(column)
+
     n_layers = column.N
     if n_layers <= 0 || column.mass[1] <= 0.0
         return (
@@ -166,8 +172,10 @@ function go_energy_flux!(
         S_boa,
         T[1],
         Tₘ;
+        snow_cover=column.snow_cover,
         alpha_dry=column.c.alpha_dry,
         alpha_wet=column.c.alpha_wet,
+        alpha_ice=column.c.alpha_ice,
     ) : q_sw_net
 
     lw_const = isnothing(q_lw_down) ? (σ * (ϵₐ * T₂m^4 + ϵₛ * 3.0 * T[1]^4)) : (q_lw_down + σ * ϵₛ * 3.0 * T[1]^4)

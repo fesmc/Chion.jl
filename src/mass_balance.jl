@@ -5,6 +5,12 @@ Mass-balance and layer-structure helpers for `SnowpackColumn`.
 @inline _safe_nonnegative(x::Float64) = x > 0.0 ? x : 0.0
 @inline _mass_weighted_mean(m1::Float64, x1::Float64, m2::Float64, x2::Float64) =
     (m1 * x1 + m2 * x2) / (m1 + m2)
+@inline function _fresh_snow_density(column::SnowpackColumn, T_air::Float64, wind_speed::Float64)
+    c = column.c
+    V = max(wind_speed, 0.0)
+    ρfresh = c.rho_s_a + c.rho_s_b * (T_air - c.T0) + c.rho_s_c * sqrt(V)
+    return clamp(ρfresh, 50.0, c.rho_i)
+end
 
 function reset_column_at_index!(column::SnowpackColumn, i::Int)
     column.mass[i] = 0.0
@@ -169,15 +175,21 @@ function merge_bottom_layer!(column::SnowpackColumn)
 end
 
 """
-    apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt_sec::Float64)
+    apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt_sec::Float64;
+                        T_air::Float64=column.c.T0, wind_speed::Float64=5.0)
 
 Apply snowfall/rainfall forcing and enforce dynamic layer bounds.
+Fresh-snow density is parameterized as
+`a + b*(T_air - T0) + c*sqrt(wind_speed)` using `column.c.rho_s_a/b/c`.
 """
 function apply_accumulation!(
     column::SnowpackColumn,
     P_snow::Float64,
     P_rain::Float64,
     dt_sec::Float64,
+    ;
+    T_air::Float64=column.c.T0,
+    wind_speed::Float64=5.0,
 )
     # Fortran behavior: rain alone does not create a new snow layer.
     if column.N == 0
@@ -192,9 +204,10 @@ function apply_accumulation!(
         old_mass = column.mass[1]
         add_snow = P_snow * dt_sec
         masssum = old_mass + add_snow
-        old_rho = column.density[1] > 0.0 ? column.density[1] : column.c.rho_s
+        fresh_rho = _fresh_snow_density(column, T_air, wind_speed)
+        old_rho = column.density[1] > 0.0 ? column.density[1] : fresh_rho
         if masssum > 0.0
-            column.density[1] = masssum / (old_mass / old_rho + add_snow / column.c.rho_s)
+            column.density[1] = masssum / (old_mass / old_rho + add_snow / fresh_rho)
         end
         column.mass[1] = masssum
     end

@@ -2,6 +2,63 @@
 Firn densification translated from BESSI `go_densification`.
 """
 
+@inline function _overburden_pressure(snowman, mm::Int)
+    columnsnow = mm > 1 ? sum(@view snowman[1:mm-1]) : 0.0
+    return 9.81 * (columnsnow + snowman[mm] / 2.0)
+end
+
+@inline _bessi_low_density_rate(ρ::Float64, T::Float64, ρᵢ::Float64, At::Float64) =
+    0.011 * exp(-10160.0 / 8.13 / T) * (ρᵢ - ρ) * max(At, 0.0)
+
+@inline _htessel_snow_viscosity(T0::Float64, T::Float64, ρ::Float64) =
+    3.7e7 * exp(8.1e-2 * (T0 - T) + 1.8e-2 * ρ)
+
+@inline _htessel_thermal_metamorphism(T0::Float64, T::Float64, ρ::Float64) =
+    2.8e-6 * exp(-4.2e-2 * (T0 - T) - 460.0 * max(0.0, ρ - 150.0))
+
+@inline function _htessel_low_density_rate(
+    column::SnowpackColumn,
+    snowman,
+    mm::Int,
+    T::Float64,
+    ρ::Float64,
+)
+    σ = _overburden_pressure(snowman, mm)
+    η = _htessel_snow_viscosity(column.c.T0, T, ρ)
+    ξ = _htessel_thermal_metamorphism(column.c.T0, T, ρ)
+    return ρ * (σ / η + ξ)
+end
+
+function _apply_htessel_liquid_water_compaction!(
+    column::SnowpackColumn,
+    liquid_water_before_energy::AbstractVector{Float64},
+    dt_sec::Float64,
+)
+    n = column.N
+    if n <= 0 || dt_sec <= 0.0
+        return
+    end
+
+    @views snowman = column.mass[1:n]
+    @views rho = column.density[1:n]
+    @views mass_w = column.mass_w[1:n]
+    ρᵢ = column.c.rho_i
+
+    for mm in 1:n
+        ρ = rho[mm]
+        m = snowman[mm]
+        if ρ < 550.0 && m > EPS_TINY
+            prev = mm <= length(liquid_water_before_energy) ? liquid_water_before_energy[mm] : 0.0
+            gain = max(mass_w[mm] - prev, 0.0)
+            if gain > 0.0
+                # HTESSEL eq. (8): retained meltwater increases density at fixed solid mass.
+                rho[mm] = min(max(ρ, ρ + ρ * gain / m), ρᵢ)
+            end
+        end
+    end
+    return
+end
+
 """
     go_densification!(column::SnowpackColumn, At::Float64, dt_sec::Float64;
                       hl::Bool=false, rho_e::Float64=815.0, P_atm::Float64=101325.0)
@@ -30,6 +87,7 @@ function go_densification!(
     @views snowman = column.mass[1:n]
     @views temp = column.temperature[1:n]
     @views rho = column.density[1:n]
+    low_density_scheme = column.c.low_density_densification
 
     for mm in 1:n
         ρ = rho[mm]
@@ -39,7 +97,11 @@ function go_densification!(
 
         if ρ < 550.0
             if m > 0.0
-                ddens = 0.011 * exp(-10160.0 / 8.13 / T) * (ρᵢ - ρ) * max(At, 0.0)
+                if low_density_scheme == :htessel
+                    ddens = _htessel_low_density_rate(column, snowman, mm, T, ρ)
+                else
+                    ddens = _bessi_low_density_rate(ρ, T, ρᵢ, At)
+                end
             end
         elseif hl
             if mm > 1 && m > 0.0
