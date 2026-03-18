@@ -19,12 +19,23 @@ With snowfall rate ``P_{snow}`` and rainfall rate ``P_{rain}`` in ``[\mathrm{kg\
 
 If the column is empty (``N=0``), a new layer is created only when ``P_{snow}>0``. Rain alone does not create a snow layer.
 
-Snowfall is added to layer 1 (`column.mass[1]`) and its density is mixed with fresh-snow density ``\rho_s``:
+Snowfall is added to layer 1 (`column.mass[1]`) and its density is mixed with fresh-snow density ``\rho_\mathrm{fresh}``.
+The fresh-snow density is taken from the HTESSEL model:
 
+```math
+\rho_\mathrm{fresh} = a + b\,(T_\mathrm{air} - T_0) + c\,\sqrt{V},
+```
+
+with the constants ``a=109\,\mathrm{kgm^{-3}}``, ``b=6\,\mathrm{kgm^{-3}}``, ``c=26\,\mathrm{kgm^{-3.5}s^{0.5}}`` and the optional wind speed ``V`` in ``[\mathrm{m\,s^{-1}}]`` (fallback ``V=5\,\mathrm{m/s}``). 
+The snow density is limited to a minimum of ``50\,\mathrm{kgm^{-3}}``.
+
+![Fresh-snow density vs wind speed](../assets/fresh_snow_density_vs_wind.png)
+
+The new snow density is given by
 ```math
 \rho_1^{new} =
 \frac{m_1^{old}+\Delta m_{snow}}
-{m_1^{old}/\rho_1^{old} + \Delta m_{snow}/\rho_s}.
+{m_1^{old}/\rho_1^{old} + \Delta m_{snow}/\rho_\mathrm{fresh}}.
 ```
 
 Rainfall is added to liquid water mass in the surface layer (`column.mass_w[1]`) only if snow mass exists there.
