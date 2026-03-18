@@ -11,6 +11,7 @@ Liquid-water refreezing following the original BESSI-style routine.
         kelvin::Float64,
         c_i::Float64,
         L_lh::Float64,
+        rho_i::Float64,
     ) -> NamedTuple
 
 Translate the Fortran `go_refreezing` logic to Julia.
@@ -27,6 +28,7 @@ function go_refreezing!(
     kelvin::Float64,
     c_i::Float64,
     L_lh::Float64,
+    rho_i::Float64,
 )
     n_snowlayer = length(snowman)
     @assert length(lwmass) == n_snowlayer
@@ -47,7 +49,7 @@ function go_refreezing!(
 
                 heat_fusion += icecube * L_lh
                 snow_temp[ii] = kelvin
-                rho_snow[ii] = rho_snow[ii] * (icecube + snowman[ii]) / snowman[ii]
+                rho_snow[ii] = min(rho_snow[ii] * (icecube + snowman[ii]) / snowman[ii], rho_i)
                 snowman[ii] += icecube
                 lwmass[ii] -= icecube
                 refreeze += icecube
@@ -59,7 +61,7 @@ function go_refreezing!(
                     snow_temp[ii] * snowman[ii]
                 ) / (lwmass[ii] + snowman[ii])
 
-                rho_snow[ii] = rho_snow[ii] * (lwmass[ii] + snowman[ii]) / snowman[ii]
+                rho_snow[ii] = min(rho_snow[ii] * (lwmass[ii] + snowman[ii]) / snowman[ii], rho_i)
                 snowman[ii] += lwmass[ii]
                 refreeze += lwmass[ii]
                 heat_fusion += lwmass[ii] * L_lh
@@ -90,5 +92,6 @@ function go_refreezing!(column::SnowpackColumn)
         column.c.T0,
         column.c.ci,
         column.c.Lm,
+        column.c.rho_i,
     )
 end
