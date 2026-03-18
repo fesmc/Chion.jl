@@ -226,12 +226,13 @@ function apply_accumulation!(
     while column.N > 1 && column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
-
     if column.N == column.Ntot && column.mass[column.N] > column.mass_max
-        mass_to_base = column.f_base_max * column.mass[column.N]
+        f = column.f_base_max
+        mass_to_base = f * column.mass[column.N]
         column.mass[column.N] -= mass_to_base
         column.mass_base += mass_to_base
     end
+
 
     return
 end
