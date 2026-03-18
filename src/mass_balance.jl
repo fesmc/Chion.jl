@@ -174,6 +174,29 @@ function merge_bottom_layer!(column::SnowpackColumn)
     return
 end
 
+function _free_slot_for_surface_split!(column::SnowpackColumn)
+    @assert column.N == column.Ntot
+
+    if column.Ntot == 1
+        overflow = max(column.mass[1] - column.mass_max, 0.0)
+        if overflow > 0.0
+            continuous_bottom_deplete!(column, overflow)
+        end
+        return
+    end
+
+    # When the column is already full, retire the deepest active layer to the
+    # base so a new surface split can occur without cycling merge/split forever.
+    bottom_mass = column.mass[column.N]
+    if bottom_mass > 0.0
+        continuous_bottom_deplete!(column, bottom_mass)
+    else
+        reset_column_at_index!(column, column.N)
+        column.N -= 1
+    end
+    return
+end
+
 """
     apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt_sec::Float64;
                         T_air::Float64=column.c.T0, wind_speed::Float64=5.0)
@@ -218,7 +241,8 @@ function apply_accumulation!(
 
     while column.mass[1] > column.mass_max
         if column.N == column.Ntot
-            merge_bottom_layer!(column)
+            _free_slot_for_surface_split!(column)
+            column.N == 0 && break
         end
         split_surface_layer!(column)
     end
