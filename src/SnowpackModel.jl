@@ -368,7 +368,7 @@ function step!(
     dt_sec = dt * column.c.seconds_per_day
 
     # For first snowfall, seed surface temperature with air temperature
-    # (Fortran behavior when first box is empty and snow starts).
+    # (BESSI behavior when first box is empty and snow starts).
     if P_snow > 0.0 && column.N > 0 && column.mass[1] == 0.0
         column.temperature[1] = T2m
     end
@@ -378,7 +378,7 @@ function step!(
     update_snow_cover!(column)
     liquid_water_before_energy = column.c.low_density_densification == :htessel ?
         copy(column.mass_w[1:column.N]) : Float64[]
-    # Fortran passes At = accum + rainman [kg m^-2 s^-1] to densification,
+    # BESSI passes At = accum + rainman [kg m^-2 s^-1] to densification,
     # and only runs densification when at least 3 boxes are snow-filled.
     At = (P_snow > 0.0 ? P_snow : 0.0) + ((column.N > 0 && column.mass[1] > 0.0) ? P_rain : 0.0)
     if column.N >= 1 && column.mass[1] > 0.0
@@ -420,7 +420,7 @@ function step!(
         apply_melt!(column, melt_mass)
     end
 
-    # Fortran flow: melting -> percolation -> refreezing.
+    # BESSI flow: melting -> percolation -> refreezing.
     # Apply percolation first if liquid water exists.
     if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
         go_percolation!(column)
@@ -438,60 +438,6 @@ function step!(
 
     update_snow_cover!(column)
     return
-end
-
-function step_density(density, T, bdot_ave, dt, rho_i, T0)
-    # Call the firn densification model
-    # (for now only the powerlaw_ref model is used)
-    drdt = calc_density_gradient_powerlaw_ref(density, T, bdot_ave; rho_i=rho_i)
-
-    # Update density to current time
-    new_density = min(density + drdt * dt, rho_i)
-
-    return new_density
-end
-
-"""
-    calc_density_gradient_HL80(rho, T, bdot; rho_i=917.0, R=8.314)
-
-Return the densification rate dρ/dt [kg m⁻³ s⁻¹] following the
-Herron and Langway (HL, 1980) formulation.
-"""
-function calc_density_gradient_HL80(rho, T, bdot; rho_i=917.0, R=8.314)
-    if rho ≤ 550.0
-        c = (11.0 / 1e3) * exp(-10160 / (R * T)) * bdot^1.0
-    else
-        c = (575.0 / 1e3) * exp(-21400 / (R * T)) * bdot^0.5
-    end
-
-    return c * (rho_i - rho)
-end
-
-"""
-    calc_density_gradient_powerlaw_ref(
-        rho, T, bdot_ave;
-        rho_i=917.0,
-        R=8.314,
-        A=5e-4,
-        Q=12000.0,
-        α=0.7,
-        n=2.0,
-        bdot_ref=0.3
-    )
-
-Single-regime firn densification law with nondimensionalized accumulation.
-"""
-function calc_density_gradient_powerlaw_ref(
-    rho, T, bdot_ave;
-    rho_i=917.0,
-    R=8.314,
-    A=5e-4,
-    Q=12000.0,
-    α=0.7,
-    n=2.0,
-    bdot_ref=0.3,
-)
-    return A * exp(-Q / (R * T)) * (bdot_ave / bdot_ref)^α * (1 - rho / rho_i)^n
 end
 
 
