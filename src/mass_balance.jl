@@ -226,15 +226,69 @@ function apply_accumulation!(
     while column.N > 1 && column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
-    if column.N == column.Ntot && column.mass[column.N] > column.mass_max
-        f = column.f_base_max
-        mass_to_base = f * column.mass[column.N]
-        column.mass[column.N] -= mass_to_base
-        column.mass_base += mass_to_base
+    dmass = sum(column.mass[1:column.N]) - 15 * column.mass_split * 1.5 #15 for the BESSI layer original
+    if dmass > 0
+        continuous_bottom_deplete!(column, dmass)
     end
 
 
+
     return
+end
+
+"""
+    continuous_bottom_deplete!(column::SnowpackColumn, d_m_in::Float64) -> NamedTuple
+
+Julia translation of the Fortran `continous_snowman_depleet` routine.
+Remove `d_m_in` solid mass [kg m^-2] from the bottom upward, adding the solid
+part to `mass_base` and routing removed liquid water to `runoff`.
+"""
+function continuous_bottom_deplete!(column::SnowpackColumn, d_m_in::Float64)
+    d_m = _safe_nonnegative(d_m_in)
+    ice_to_base = 0.0
+    runoff = 0.0
+
+    while d_m > EPS_TINY && column.N > 0
+        nn = column.N
+        m = column.mass[nn]
+
+        if m <= EPS_EMPTY_LAYER
+            reset_column_at_index!(column, nn)
+            column.N -= 1
+            continue
+        end
+
+        if d_m > m
+            d_m -= m
+            ice_to_base += m
+            runoff += column.mass_w[nn]
+
+            column.mass_base += m
+            column.runoff += column.mass_w[nn]
+
+            reset_column_at_index!(column, nn)
+            column.N -= 1
+        else
+            d_lw = d_m * column.mass_w[nn] / m
+            column.mass[nn] -= d_m
+            column.mass_w[nn] -= d_lw
+
+            ice_to_base += d_m
+            runoff += d_lw
+
+            column.mass_base += d_m
+            column.runoff += d_lw
+            d_m = 0.0
+        end
+    end
+
+    while column.N > 0 && column.mass[column.N] <= EPS_EMPTY_LAYER
+        reset_column_at_index!(column, column.N)
+        column.N -= 1
+    end
+
+    column.Tsrf = column.N > 0 ? column.temperature[1] : column.c.T0
+    return (ice_to_base = ice_to_base, runoff = runoff)
 end
 
 function _remove_surface_layer!(column::SnowpackColumn)
