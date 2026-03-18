@@ -12,6 +12,7 @@ step!
 go_densification!
 go_energy_flux!
 go_percolation!
+continuous_bottom_deplete!
 go_refreezing!
 apply_accumulation!
 apply_melt!

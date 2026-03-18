@@ -16,6 +16,7 @@ using .SnowpackModel    # Needed so we can export names from sub-modules at the 
 
 export SnowpackColumn, step!
 export SnowpackPhysicalConstants
+export continuous_bottom_deplete!
 export get_state, print_state
 
 export calc_density_gradient_HL80
