@@ -14,6 +14,7 @@ export SnowpackColumn
 export step!
 export go_percolation!
 export go_refreezing!
+export continuous_bottom_deplete!
 export get_state
 export print_state
 
