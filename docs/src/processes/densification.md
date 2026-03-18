@@ -4,7 +4,7 @@ CurrentModule = Chion.SnowpackModel
 
 # Densification
 
-`go_densification!` updates layer density ``\rho`` using a multi-regime parameterization adapted from BESSI using an explicit Euler step.
+`go_densification!` updates layer density ``\rho`` using a multi-regime parameterization. For low-density snow (``\rho < 550\ \mathrm{kg\,m^{-3}}``) the model can use either the legacy BESSI law or the newer HTESSEL parameterisation, selected through `SnowpackPhysicalConstants(low_density_densification=...)`. Higher-density firn follows the existing BESSI-style parameterisation.
 
 ## Model Formulation
 
@@ -16,9 +16,13 @@ For each active layer ``m``, density ``\rho`` at time ``n+1`` is updated by:
 
 where ``\rho_i`` is the ice density and ``\Delta t`` is the timestep. The density is clamped to stay non-decreasing and below the density of ice ``\rho_i``.
 
-The densification process is divided in three distinct regimes. 
+The densification process is divided into low-density and higher-density branches.
 
 ### Regime 1: Low density (``\rho < 550``)
+
+Two alternative parameterisations are available. We decided to implement an alternative to the BESSI choice low-density densification parameterisation. This is mostly due to the fact that BESSI's low-density law is underestimating compactification for seasonal snowpacks. In BESSI, the fresh-snow density was fixed at ``350\,\mathrm{kg\,m^{-3}}``, which is unrealisticly high for most fresh-snow regimes. 
+
+#### Option A: BESSI (default, `low_density_densification = :bessi`)
 
 ```math
 \dot{\rho} =
@@ -26,17 +30,51 @@ The densification process is divided in three distinct regimes.
 (\rho_i-\rho)\,\max(A_t,0)
 ```
 
-### Regime 2: HL option (``\rho \ge 550``, `hl=true`)
-Not in use right now, not in BESSI description paper either. 
+This is the original low-density branch. It depends on the accumulation proxy ``A_t`` and produces no compaction when ``A_t \le 0``.
+
+#### Option B: HTESSEL (`low_density_densification = :htessel`)
+
+For the HTESSEL option, the densification rate is given by
+
 ```math
-\dot{\rho} =
-0.575 \exp\!\left(-\frac{21400}{8.13\,T}\right)
-(\rho_i-\rho)\,C_{yr}^{1/2}\,\max(A_t,0)^{1/2}
+\dot{\rho} = \rho \left(\frac{\sigma}{\eta} + \xi \right),
 ```
 
-with ``C_{yr}=1000/(3600\cdot24\cdot365)``.
+where ``\sigma`` is the overburden stress at the layer midpoint,
 
-### Regime 3: Intermediate density (``550 \le \rho < 800``, `hl=false`)
+```math
+\sigma = g\left(M_{\mathrm{overburden}} + \frac{m}{2}\right),
+```
+
+with ``g = 9.81\ \mathrm{m\,s^{-2}}``, overlying mass ``M_{\mathrm{overburden}}`` and layer mass ``m``. The effective snow viscosity is
+
+```math
+\eta = 3.7\times 10^7
+\exp\!\left(8.1\times 10^{-2}(T_0-T) + 1.8\times 10^{-2}\rho\right),
+```
+
+and the thermal-metamorphism term is
+
+```math
+\xi = 2.8\times 10^{-6}
+\exp\!\left(-4.2\times 10^{-2}(T_0-T) - 460\max(0,\rho-150)\right).
+```
+
+Here ``T_0`` is the freezing point of water. In this branch the low-density densification rate depends on temperature, density and overburden stress, not only on the accumulation proxy ``A_t``.
+
+When HTESSEL is active, retained meltwater also produces an additional compaction step for low-density snow after the energy and melt update. If liquid water in a layer increases from ``m_w^{\mathrm{before}}`` to ``m_w^{\mathrm{after}}`` while the solid mass ``m`` stays fixed, the bulk density is updated as
+
+```math
+\rho^{\mathrm{new}} =
+\min\left(\rho_i,\; \max\left(\rho,\; \rho + \rho\frac{\Delta m_w}{m}\right)\right),
+\quad
+\Delta m_w = \max\left(m_w^{\mathrm{after}} - m_w^{\mathrm{before}}, 0\right).
+```
+
+This extra compaction is only applied for ``\rho < 550\ \mathrm{kg\,m^{-3}}``.
+
+
+### Regime 2: Intermediate density (``550 \le \rho < 800``, `hl=false`)
 For densities between ``550 \le \rho < 800``, a semi-empirical model is used[^barnola]
 ```math
 \frac{\dot{\rho}}{\rho} = A\,f\,(\Delta P)^n
@@ -67,7 +105,7 @@ P_{\mathrm{bubble}}=
 
 with the mass above ``M_{\mathrm{overburden}}``, the midpoint of the current layer ``m/2`` and the atmospheric pressure ``P_{\mathrm{atm}}``.
 
-### Regime 4: High density (``\rho \ge 800``, `hl=false`)
+### Regime 3: High density (``\rho \ge 800``, `hl=false`)
 At pressures above ``\rho \ge 800``, the same empirical law is used but with a different form of the function ``f``:
 
 ```math
@@ -78,9 +116,10 @@ f(\rho)=\frac{3}{16}\,
 
 ## Inputs
 
-- `At`: accumulation proxy used by the low-density and HL regimes.
+- `At`: accumulation proxy used by the BESSI low-density branch and the optional HL branch. It is ignored by the HTESSEL low-density parameterisation.
 - `hl`: switches to Herron-Langway behavior above ``550\ \mathrm{kg\,m^{-3}}``.
 - `rho_e`, `P_atm`: parameters used in bubble-pressure correction.
+- `column.c.low_density_densification`: selects `:bessi` or `:htessel` for the ``\rho < 550\ \mathrm{kg\,m^{-3}}`` branch.
 
 ## API
 

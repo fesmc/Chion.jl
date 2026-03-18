@@ -47,7 +47,43 @@ After mass addition, the model enforces layer limits:
 1. If surface mass exceeds `mass_max`, split the surface layer (`split_surface_layer!`).
 2. If all layers are already active (`N == Ntot`), first merge the two bottom layers (`merge_bottom_layer!`) to make space.
 3. If surface mass drops below `mass_min`, merge with layer 2 (`merge_surface_layer!`).
-4. If the basal layer exceeds `mass_max` while `N == Ntot`, a fraction `f_base_max` is moved to `mass_base`.
+4. After the layer-structure updates, the model computes a total-column excess mass
+
+```math
+d m = \sum_{k=1}^{N} m_k - 15 \, m_{\mathrm{split}} \, 1.5.
+```
+
+If `dm > 0`, that excess is removed from the bottom upward with
+`continuous_bottom_deplete!`.
+
+### Basal Firn-to-Ice Transfer
+
+The basal transfer now follows the logic of the original BESSI routine for the depletion step, and it is triggered
+from a total-column excess-mass criterion.
+
+Given a requested basal handoff `d_m_in` in ``\mathrm{kg\,m^{-2}}]``, the model removes that solid mass from the bottom upward:
+
+1. Start at the deepest active layer.
+2. If `d_m_in` exceeds the solid mass in that layer, remove the whole layer.
+3. Otherwise remove only `d_m_in` from that layer.
+4. On partial removal, remove liquid water proportionally:
+
+```math
+\Delta m_w = d_m \frac{m_w}{m}.
+```
+
+5. Add removed solid mass to `mass_base`.
+6. Add removed liquid water to `runoff`.
+
+The present trigger uses the 15-layer reference column as implemented in BESSI, even if the
+active column uses a different total number of layers `Ntot`. In other words, the current code
+uses the same excess-mass reference as BESSI:
+
+```math
+d m = M_{\mathrm{column}} - 15 \, m_{\mathrm{split}} \, 1.5.
+```
+
+The basal handoff is now mass-conserving and depth-aware:
 
 ## Ablation
 
@@ -91,4 +127,8 @@ apply_melt!
 
 ```@docs; canonical=false
 apply_accumulation!
+```
+
+```@docs; canonical=false
+continuous_bottom_deplete!
 ```

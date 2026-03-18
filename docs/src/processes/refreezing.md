@@ -65,16 +65,6 @@ The function returns:
 
 ## API
 
-```@docs
-go_refreezing!(
-    lwmass::AbstractVector{Float64},
-    snowman::AbstractVector{Float64},
-    rho_snow::AbstractVector{Float64},
-    snow_temp::AbstractVector{Float64},
-    kelvin::Float64,
-    c_i::Float64,
-    L_lh::Float64,
-)
-
-go_refreezing!(column::SnowpackColumn)
+```@docs; canonical=false
+go_refreezing!
 ```
