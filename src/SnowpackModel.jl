@@ -435,6 +435,7 @@ function step!(
         q_lw_down=q_lw_down,
         q_sh=q_sh,
         q_lh=q_lh,
+        tridiagonal_solver=:thomas,
     )
 
     if energy.needs_melt
