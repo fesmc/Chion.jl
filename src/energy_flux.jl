@@ -54,6 +54,60 @@ end
 @inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
     (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
 
+@inline function _normalize_tridiagonal_solver(solver::Symbol)
+    solver in (:linear_algebra, :thomas) ||
+        error("Unsupported tridiagonal solver '$solver'. Use :linear_algebra or :thomas.")
+    return solver
+end
+
+function _solve_tridiagonal_thomas!(
+    lower_diagonal::AbstractVector{Float64},
+    main_diagonal::AbstractVector{Float64},
+    upper_diagonal::AbstractVector{Float64},
+    right_hand_side::AbstractVector{Float64},
+)
+    n = length(main_diagonal)
+    @assert length(lower_diagonal) == n - 1
+    @assert length(upper_diagonal) == n - 1
+    @assert length(right_hand_side) == n
+
+    @inbounds for row_index in 2:n
+        elimination_factor = lower_diagonal[row_index - 1] / main_diagonal[row_index - 1]
+        main_diagonal[row_index] -= elimination_factor * upper_diagonal[row_index - 1]
+        right_hand_side[row_index] -= elimination_factor * right_hand_side[row_index - 1]
+    end
+
+    right_hand_side[n] /= main_diagonal[n]
+    @inbounds for row_index in (n - 1):-1:1
+        right_hand_side[row_index] = (
+            right_hand_side[row_index] - upper_diagonal[row_index] * right_hand_side[row_index + 1]
+        ) / main_diagonal[row_index]
+    end
+
+    return right_hand_side
+end
+
+function _solve_tridiagonal_system(
+    lower_diagonal::AbstractVector{Float64},
+    main_diagonal::AbstractVector{Float64},
+    upper_diagonal::AbstractVector{Float64},
+    right_hand_side::AbstractVector{Float64};
+    solver::Symbol=:linear_algebra,
+)
+    normalized_solver = _normalize_tridiagonal_solver(solver)
+    if normalized_solver == :linear_algebra
+        system_matrix = Tridiagonal(lower_diagonal, main_diagonal, upper_diagonal)
+        return system_matrix \ right_hand_side
+    end
+
+    return _solve_tridiagonal_thomas!(
+        copy(lower_diagonal),
+        copy(main_diagonal),
+        copy(upper_diagonal),
+        copy(right_hand_side),
+    )
+end
+
 @inline function _energy_flux_result(
     ;
     needs_melt::Bool,
@@ -114,6 +168,7 @@ end
         snowfall_rate::Float64=0.0,
         rainfall_rate::Float64=0.0,
         diffusion_model::Int = 2,
+        tridiagonal_solver::Symbol = :linear_algebra,
         q_sw_net::Union{Nothing, Float64}=nothing,
         q_lw_down::Union{Nothing, Float64}=nothing,
         q_sh::Union{Nothing, Float64}=nothing,
@@ -132,6 +187,7 @@ Inputs:
 - `q_lw_down`: optional observed downward longwave [W m^-2]
 - `q_sh`: optional observed sensible heat flux, downward positive [W m^-2]
 - `q_lh`: optional observed latent heat flux, downward positive [W m^-2]
+- `tridiagonal_solver`: one of `:linear_algebra` or `:thomas`
 
 Legacy keyword aliases `P_snow`, `P_rain`, and `diff_model` are still accepted.
 
@@ -153,6 +209,7 @@ function go_energy_flux!(
     P_rain::Union{Nothing, Float64}=nothing,
     diffusion_model::Union{Nothing, Int}=nothing,
     diff_model::Union{Nothing, Int}=nothing,
+    tridiagonal_solver::Symbol=:linear_algebra,
     q_sw_net::Union{Nothing, Float64}=nothing,
     q_lw_down::Union{Nothing, Float64}=nothing,
     q_sh::Union{Nothing, Float64}=nothing,
@@ -169,6 +226,7 @@ function go_energy_flux!(
     resolved_snowfall_rate = isnothing(resolved_snowfall_rate) ? 0.0 : resolved_snowfall_rate
     resolved_rainfall_rate = isnothing(resolved_rainfall_rate) ? 0.0 : resolved_rainfall_rate
     resolved_diffusion_model = isnothing(resolved_diffusion_model) ? 2 : resolved_diffusion_model
+    resolved_tridiagonal_solver = _normalize_tridiagonal_solver(tridiagonal_solver)
 
     latent_heat_linear_coefficient_eff, latent_heat_constant_term_eff =
         if isnothing(latent_heat_linear_coefficient) || isnothing(latent_heat_constant_term)
@@ -359,8 +417,13 @@ function go_energy_flux!(
 
     right_hand_side = copy(temperature_profile)
     right_hand_side[1] += surface_rhs_term
-    system_matrix = Tridiagonal(a_lower[2:end], a_diag, a_upper[1:(end - 1)])
-    updated_temperature = system_matrix \ right_hand_side
+    updated_temperature = _solve_tridiagonal_system(
+        a_lower[2:end],
+        a_diag,
+        a_upper[1:(end - 1)],
+        right_hand_side;
+        solver=resolved_tridiagonal_solver,
+    )
 
     if updated_temperature[1] > melting_temperature
         needs_melt = true
@@ -371,8 +434,13 @@ function go_energy_flux!(
         right_hand_side_melt = copy(previous_temperature_profile)
         right_hand_side_melt[1] = melting_temperature
         a_diag[1] = a_diag₁_backup
-        system_matrix = Tridiagonal(a_lower[2:end], a_diag, a_upper[1:(end - 1)])
-        updated_temperature = system_matrix \ right_hand_side_melt
+        updated_temperature = _solve_tridiagonal_system(
+            a_lower[2:end],
+            a_diag,
+            a_upper[1:(end - 1)],
+            right_hand_side_melt;
+            solver=resolved_tridiagonal_solver,
+        )
 
         energy_to_melting += (
             melting_temperature - updated_temperature[1]
