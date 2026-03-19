@@ -4,7 +4,7 @@ CurrentModule = Chion.SnowpackModel
 
 # Densification
 
-`go_densification!` updates layer density ``\rho`` using a multi-regime parameterization. For low-density snow (``\rho < 550\ \mathrm{kg\,m^{-3}}``) the model can use either the legacy BESSI law or the newer HTESSEL parameterisation, selected through `SnowpackPhysicalConstants(low_density_densification=...)`. Higher-density firn follows the existing BESSI-style parameterisation.
+`go_densification!` updates layer density ``\rho`` using a multi-regime parameterization. For low-density snow (``\rho < 550\ \mathrm{kg\,m^{-3}}``) the model can use either the BESSI law or the HTESSEL parameterisation, selected through `SnowpackPhysicalConstants(low_density_densification=...)`. Higher-density firn follows the BESSI-style parameterisation.
 
 ## Model Formulation
 
@@ -116,21 +116,14 @@ f(\rho)=\frac{3}{16}\,
 
 ## Inputs
 
-- `At`: accumulation proxy used by the BESSI low-density branch and the optional HL branch. It is ignored by the HTESSEL low-density parameterisation.
+- `accumulation_rate`: accumulation proxy used by the BESSI low-density branch and the optional HL branch. It is ignored by the HTESSEL low-density parameterisation.
 - `hl`: switches to Herron-Langway behavior above ``550\ \mathrm{kg\,m^{-3}}``.
 - `rho_e`, `P_atm`: parameters used in bubble-pressure correction.
 - `column.c.low_density_densification`: selects `:bessi` or `:htessel` for the ``\rho < 550\ \mathrm{kg\,m^{-3}}`` branch.
 
 ## API
 
-```@docs
-go_densification!(
-    column::SnowpackColumn,
-    At::Float64,
-    dt_sec::Float64;
-    hl::Bool=false,
-    rho_e::Float64=815.0,
-    P_atm::Float64=101325.0,
-)
+```@docs; canonical=false
+go_densification!
 ```
 [^barnola]: https://b.tellusjournals.se/articles/10.3402/tellusb.v43i2.15249 

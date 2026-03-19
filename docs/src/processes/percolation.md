@@ -50,22 +50,10 @@ The loop follows the original BESSI-style control flow and stops at the first em
 
 ## API
 
-```@docs
-go_percolation!(
-    snowman::AbstractVector{Float64},
-    lwmass::AbstractVector{Float64},
-    rho_snow::AbstractVector{Float64},
-    rho_i::Float64,
-    rho_w::Float64;
-    max_lwc::Float64 = 0.05,
-    rho_i_tol::Float64 = 10.0,
-)
 
-go_percolation!(
-    column::SnowpackColumn;
-    max_lwc::Float64 = 0.05,
-    rho_i_tol::Float64 = 10.0,
-)
+```@docs; canonical=false
+go_percolation!
+
 ```
 
 ## Notes

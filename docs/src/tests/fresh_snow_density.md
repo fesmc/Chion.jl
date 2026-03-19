@@ -21,7 +21,7 @@ with default coefficients
 - ``b = 6\,\mathrm{kg m^{-3} K^{-1}}``
 - ``c = 26\,\mathrm{kg m^{-3} (m s^{-1})^{-1/2}}``
 
-where `V` is the absolute wind speed, `T_air` is air temperature, `T0` is the freezing point, and `rho_i` is ice density.
+where `V` is the absolute wind speed, `air_temperature` is air temperature, `T0` is the freezing point, and `rho_i` is ice density.
 
 ## What The Test Checks
 

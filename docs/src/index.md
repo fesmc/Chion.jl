@@ -19,8 +19,6 @@ apply_melt!
 split_surface_layer!
 merge_surface_layer!
 merge_bottom_layer!
-calc_density_gradient_HL80
-calc_density_gradient_powerlaw_ref
 get_state
 print_state
 ```

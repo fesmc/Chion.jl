@@ -22,10 +22,10 @@ with the heat capacity of ice ``c_i`` and the mass per area of the surface box `
 ### Shortwave Radiation 
 The shortwave radiation is given by
 ```math
-Q_{sw} = (1-\alpha)S_{boa}
+Q_{sw} = (1-\alpha)\,Q_{\mathrm{sw,down}}
 ```
 
-where the albedo ``\alpha`` is temperature dependent. For ``T_s=0^\circ\mathrm{C}``, the albedo is given by ``\alpha=\alpha_{wet}`` and ``\alpha_{dry}`` otherwise. ``S_{boa}`` is the incoming solar radiation at the bottom of the atmosphere that is absorbed by the surface snow layer.
+where the albedo ``\alpha`` is temperature dependent. For ``T_s=0^\circ\mathrm{C}``, the albedo is given by ``\alpha=\alpha_{wet}`` and ``\alpha_{dry}`` otherwise. ``Q_{\mathrm{sw,down}}`` is the incoming shortwave radiation absorbed by the surface snow layer.
 
 ### Longwave radiation
 
@@ -67,8 +67,8 @@ K_{\mathrm{lh}} = P \,\rho_w \, c_x
 H_{\mathrm{lh}} = P \,\rho_w \, c_x \, T_{\mathrm{air} }
 ```
 
-with the heat capacity of snow or rain ``c_x``. 
-In other words, ``H_{\mathrm{lh}}`` is the slope (derivative) of the precipitation heat flux w.r.t. surface temperature and ``K_{\mathrm{lh}}`` is the  ``T_s``-independent part.
+with the heat capacity of snow or rain ``c_x``.
+In other words, ``H_{\mathrm{lh}}`` is the slope (derivative) of the precipitation heat flux with respect to surface temperature and ``K_{\mathrm{lh}}`` is the ``T_s``-independent part.
 
 In the case of rainfall (no snow), ``H_{\mathrm{lh}}=0`` and, therefore, rain contributes a temperature-independent heat source.
 
@@ -93,8 +93,8 @@ Collecting all the ``T^{n+1}_s`` (in)dependent terms gives
 
 ```math
 Q_{\mathrm{const}} =
-D_{sh}T_{2m}
-+\sigma\left(\epsilon_{air}T_{2m}^4 + 3\epsilon_{snow}(T_s^n)^4\right)
+D_{sh}T_{air}
++\sigma\left(\epsilon_{air}T_{air}^4 + 3\epsilon_{snow}(T_s^n)^4\right)
 +Q_{sw}
 +K_{lh}
 ```
@@ -216,11 +216,13 @@ If the solved surface temperature exceeds ``T_0=0^\circ\mathrm{C}``, the surface
 
 ## Thermal Conductivity Options
 
-`diff_model` selects:
+`diffusion_model` selects:
 
 - `1`: Yen (1981)
 - `2`: Sturm (1997) piecewise
 - `3` (or other): Van Dusen (1929)
+
+`go_energy_flux!` also accepts `tridiagonal_solver = :linear_algebra` or `:thomas` to choose the backend used for the implicit tridiagonal solve.
 
 ## API
 

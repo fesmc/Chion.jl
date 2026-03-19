@@ -4,7 +4,7 @@ CurrentModule = Chion.SnowpackModel
 
 # Refreezing
 
-`go_refreezing!` converts liquid water to ice using layer cold content and updates temperature, density, and masses consistently.
+`go_refreezing!` converts liquid water to ice using layer cold content and updates temperature, density, solid mass, and liquid water mass consistently.
 
 ## Model Formulation
 
@@ -60,8 +60,8 @@ T_i \leftarrow
 
 The function returns:
 
-- `refreeze`: total refrozen mass ``[\mathrm{kg\,m^{-2}}]``
-- `heat_fusion`: latent heat released ``[\mathrm{J\,m^{-2}}]``
+- `refrozen_mass`: total refrozen mass ``[\mathrm{kg\,m^{-2}}]``
+- `released_latent_heat`: latent heat released ``[\mathrm{J\,m^{-2}}]``
 
 ## API
 

@@ -38,7 +38,7 @@ The new snow density is given by
 {m_1^{old}/\rho_1^{old} + \Delta m_{snow}/\rho_\mathrm{fresh}}.
 ```
 
-Rainfall is added to liquid water mass in the surface layer (`column.mass_w[1]`) only if snow mass exists there.
+Rainfall is added to liquid water mass in the surface layer (`column.mass_w[1]`).
 
 ### Layer-Structure Rules
 
@@ -106,7 +106,7 @@ If no receiving snow layer exists, remaining liquid water is routed to runoff:
 
 So `apply_melt!` is a phase-change/removal routine; most runoff is produced later by `go_percolation!` when liquid water exceeds retention limits.
 
-Surface temperature state is synchronized after melt (`Tsrf = temperature[1]` when snow exists, else `T0`).
+Surface temperature state is synchronized after melt (`column.Tsrf = column.temperature[1]` when snow exists, else `T0`).
 
 ## Interaction in `step!`
 
