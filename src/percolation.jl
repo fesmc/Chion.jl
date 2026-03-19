@@ -4,73 +4,79 @@ Liquid-water percolation following the original BESSI-style routine.
 
 """
     go_percolation!(
-        snowman::Vector{Float64},
-        lwmass::Vector{Float64},
-        rho_snow::Vector{Float64},
-        rho_i::Float64,
-        rho_w::Float64;
+        solid_mass::Vector{Float64},
+        liquid_water_mass::Vector{Float64},
+        snow_density::Vector{Float64},
+        ice_density::Float64,
+        water_density::Float64;
         max_lwc::Float64 = 0.05,
         rho_i_tol::Float64 = 10.0,
     ) -> Float64
 
 Translate the Fortran `go_percolation` logic to Julia.
 
-- `snowman`: layer snow mass [kg m^-2]
-- `lwmass`: layer liquid-water mass [kg m^-2]
-- `rho_snow`: layer snow density [kg m^-3]
+- `solid_mass`: layer snow/ice mass [kg m^-2]
+- `liquid_water_mass`: layer liquid-water mass [kg m^-2]
+- `snow_density`: layer snow density [kg m^-3]
 - returns `runoff` produced by percolation in this call [kg m^-2]
 """
 function go_percolation!(
-    snowman::AbstractVector{Float64},
-    lwmass::AbstractVector{Float64},
-    rho_snow::AbstractVector{Float64},
-    rho_i::Float64,
-    rho_w::Float64;
+    solid_mass::AbstractVector{Float64},
+    liquid_water_mass::AbstractVector{Float64},
+    snow_density::AbstractVector{Float64},
+    ice_density::Float64,
+    water_density::Float64;
     max_lwc::Float64 = 0.05,
     rho_i_tol::Float64 = 10.0,
 )
-    n_snowlayer = length(snowman)
-    @assert length(lwmass) == n_snowlayer
-    @assert length(rho_snow) == n_snowlayer
+    n_layers = length(solid_mass)
+    @assert length(liquid_water_mass) == n_layers
+    @assert length(snow_density) == n_layers
 
     runoff = 0.0
-    ii = 1
-    while ii <= n_snowlayer
-        if snowman[ii] > 0.0
-            if rho_snow[ii] > rho_i - rho_i_tol
+    layer_index = 1
+    while layer_index <= n_layers
+        if solid_mass[layer_index] > 0.0
+            if snow_density[layer_index] > ice_density - rho_i_tol
                 # Very dense snow: push all liquid water downward.
-                percolating = lwmass[ii]
-                lwmass[ii] = 0.0
-                if ii < n_snowlayer
-                    if snowman[ii + 1] > 0.0
-                        lwmass[ii + 1] += percolating
+                percolating_liquid_water = liquid_water_mass[layer_index]
+                liquid_water_mass[layer_index] = 0.0
+                if layer_index < n_layers
+                    if solid_mass[layer_index + 1] > 0.0
+                        liquid_water_mass[layer_index + 1] += percolating_liquid_water
                     else
-                        runoff += percolating
+                        runoff += percolating_liquid_water
                     end
                 else
-                    runoff += percolating
+                    runoff += percolating_liquid_water
                 end
             else
-                lwc = lwmass[ii] / snowman[ii] / rho_w / (1.0 / rho_snow[ii] - 1.0 / rho_i)
-                if lwc > max_lwc
-                    percolating = (lwc - max_lwc) * rho_w * snowman[ii] * (1.0 / rho_snow[ii] - 1.0 / rho_i)
-                    lwmass[ii] -= percolating
-                    if ii < n_snowlayer
-                        if snowman[ii + 1] > 0.0
-                            lwmass[ii + 1] += percolating
+                liquid_water_content = liquid_water_mass[layer_index] /
+                                       solid_mass[layer_index] /
+                                       water_density /
+                                       (1.0 / snow_density[layer_index] - 1.0 / ice_density)
+                if liquid_water_content > max_lwc
+                    percolating_liquid_water = (
+                        liquid_water_content - max_lwc
+                    ) * water_density * solid_mass[layer_index] *
+                        (1.0 / snow_density[layer_index] - 1.0 / ice_density)
+                    liquid_water_mass[layer_index] -= percolating_liquid_water
+                    if layer_index < n_layers
+                        if solid_mass[layer_index + 1] > 0.0
+                            liquid_water_mass[layer_index + 1] += percolating_liquid_water
                         else
-                            runoff += percolating
+                            runoff += percolating_liquid_water
                         end
                     else
-                        runoff += percolating
+                        runoff += percolating_liquid_water
                     end
                 end
             end
         else
-            # Keep Fortran control flow: abort loop at first empty box.
-            ii = n_snowlayer
+            # Keep BESSI control flow: stop at the first empty layer.
+            break
         end
-        ii += 1
+        layer_index += 1
     end
 
     return runoff
@@ -91,10 +97,10 @@ function go_percolation!(
         return 0.0
     end
 
-    runoff = go_percolation!(
-        column.mass,
-        column.mass_w,
-        column.density,
+    @views runoff = go_percolation!(
+        column.mass[1:column.N],
+        column.mass_w[1:column.N],
+        column.density[1:column.N],
         column.c.rho_i,
         column.c.rho_w;
         max_lwc=max_lwc,

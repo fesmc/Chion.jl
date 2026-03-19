@@ -17,9 +17,6 @@ export go_refreezing!
 export continuous_bottom_deplete!
 export get_state
 export print_state
-
-export calc_density_gradient_HL80
-export calc_density_gradient_powerlaw_ref
 export go_densification!
 
 """
@@ -166,9 +163,8 @@ end
 A column-based snowpack model with mass-following dynamic grid.
 
 # Grid parameters
-- `Ntot::Int`: Maximum number of vertical layers (default: 15)
-- `N::Int`: Number of currently active (filled) layers
-- `kbase::Int`: Index of base active layer (Ntot-N+1)
+- `Ntot::Int`: Maximum number of vertical layers (default: 7)
+- `N::Int`: Number of currently active layers
 
 # Parameters (from Born et al. 2019)
 - `mass_max::Float64`: Maximum mass before layer split [kg/m²] (default: 500)
@@ -177,10 +173,9 @@ A column-based snowpack model with mass-following dynamic grid.
 - `rho_i::Float64`: Ice density [kg/m³] (default: 917)
 
 # State variables
-- `mass::Vector{Float64}`: Mass of snow+water in each layer [kg/m²]
-- `mass_snow::Vector{Float64}`: Mass of snow in each layer [kg/m²]
-- `mass_w::Vector{Float64}`: Mass of water in each layer [kg/m²]
-- `density::Vector{Float64}`: Density of snow in each layer [kg/m³]
+- `mass::Vector{Float64}`: Solid snow/ice mass in each layer [kg/m²]
+- `mass_w::Vector{Float64}`: Liquid water mass in each layer [kg/m²]
+- `density::Vector{Float64}`: Bulk snow density in each layer [kg/m³]
 
 """
 mutable struct SnowpackColumn
@@ -201,13 +196,13 @@ mutable struct SnowpackColumn
     #ζmax::Float64   # Maximum liquid water content
 
     # State variables
-    mass::Vector{Float64}           # kg/m²
-    mass_w::Vector{Float64}         # kg/m²
+    mass::Vector{Float64}           # Solid snow/ice mass [kg/m²]
+    mass_w::Vector{Float64}         # Liquid water mass [kg/m²]
     density::Vector{Float64}        # kg/m³
     temperature::Vector{Float64}    # K
     mass_base::Float64              # kg/m²
     runoff::Float64                 # kg/m²
-    Tsrf::Float64                   # K
+    Tsrf::Float64                   # Legacy surface temperature state [K]
     snow_cover::Float64             # 1
 
     function SnowpackColumn(;
@@ -222,6 +217,8 @@ mutable struct SnowpackColumn
         density_init::Float64 = DEFAULT_DENSITY_INIT,
         temperature_init::Float64 = DEFAULT_TEMPERATURE_INIT,
     )   
+
+        @assert 0 <= N <= Ntot
 
         # Initialize with no initial mass
         mass = zeros(Float64, Ntot)
@@ -251,6 +248,22 @@ include("densification.jl")
 include("mass_balance.jl")
 include("percolation.jl")
 include("refreezing.jl")
+
+@inline function _resolve_keyword_alias(
+    preferred_value,
+    legacy_value,
+    preferred_name::AbstractString,
+    legacy_name::AbstractString,
+)
+    if !isnothing(preferred_value) && !isnothing(legacy_value) &&
+       !isequal(preferred_value, legacy_value)
+        error(
+            "Received both `$preferred_name` and `$legacy_name` with different values. " *
+            "Use one or provide matching values.",
+        )
+    end
+    return isnothing(preferred_value) ? legacy_value : preferred_value
+end
 
 @inline function _bulk_snow_density(column::SnowpackColumn)
     if column.N <= 0
@@ -305,36 +318,51 @@ end
     return column.snow_cover
 end
 
+@inline function _column_has_liquid_water(column::SnowpackColumn)
+    @inbounds for layer_index in 1:column.N
+        if column.mass_w[layer_index] > EPS_TINY
+            return true
+        end
+    end
+    return false
+end
+
 
 """
-    step!(column::SnowpackColumn, mdot::Float64, dt::Float64) -> Float64
+    step!(column::SnowpackColumn, air_temperature::Float64, precipitation_rate::Float64, dt_days::Float64)
 
 Advance the snowpack column by one time step.
 
 # Arguments
 - `column`: The snowpack column to update
-- `T2m` : Near-surface air temperature [K]
-- `P`: Precipitation rate at surface [kg/m²/s]
-- `dt`: Time step [d]
-- `f_s`: Fraction of precipitation that is snow [1], default nothing, calculate internally
-- `p_snow`: Optional direct snowfall rate [kg/m²/s], overrides `P/f_s` partition when provided
-- `p_rain`: Optional direct rainfall rate [kg/m²/s], overrides `P/f_s` partition when provided
-- `s_boa`: Optional downward shortwave forcing [W m^-2], used when `q_sw_net` is not provided
+- `air_temperature`: Near-surface air temperature [K]
+- `precipitation_rate`: Total precipitation rate at surface [kg/m²/s]
+- `dt_days`: Time step [d]
+- `snow_fraction`: Optional fraction of precipitation that falls as snow [1]
+- `snowfall_rate`: Optional direct snowfall rate [kg/m²/s]
+- `rainfall_rate`: Optional direct rainfall rate [kg/m²/s]
+- `shortwave_down`: Optional downward shortwave forcing [W m^-2], used when `q_sw_net` is not provided
 - `wind_speed`: Optional near-surface wind speed [m/s], default = `5.0`
+
+Legacy keyword aliases `f_s`, `p_snow`, `p_rain`, and `s_boa` are still accepted.
 
 # Process
 1. Apply surface mass flux
 2. Handle layer splitting/merging
-3. Propagate melt through layers if negative
-4. Check for ice formation at base
+3. Solve temperature evolution
+4. Apply melt, percolation, and refreezing when needed
 """
 function step!(
     column::SnowpackColumn,
-    T2m::Float64,
-    P::Float64,
-    dt::Float64;
+    air_temperature::Float64,
+    precipitation_rate::Float64,
+    dt_days::Float64;
+    snow_fraction=nothing,
     f_s=nothing,
-    P_ave=P,
+    P_ave=precipitation_rate,
+    snowfall_rate::Union{Nothing, Float64}=nothing,
+    rainfall_rate::Union{Nothing, Float64}=nothing,
+    shortwave_down::Union{Nothing, Float64}=nothing,
     p_snow::Union{Nothing, Float64}=nothing,
     p_rain::Union{Nothing, Float64}=nothing,
     s_boa::Union{Nothing, Float64}=nothing,
@@ -344,100 +372,117 @@ function step!(
     q_sh::Union{Nothing, Float64}=nothing,
     q_lh::Union{Nothing, Float64}=nothing,
 )
-    if !isnothing(p_snow) || !isnothing(p_rain)
+    resolved_snow_fraction = _resolve_keyword_alias(snow_fraction, f_s, "snow_fraction", "f_s")
+    resolved_snowfall_rate = _resolve_keyword_alias(snowfall_rate, p_snow, "snowfall_rate", "p_snow")
+    resolved_rainfall_rate = _resolve_keyword_alias(rainfall_rate, p_rain, "rainfall_rate", "p_rain")
+    resolved_shortwave_down = _resolve_keyword_alias(shortwave_down, s_boa, "shortwave_down", "s_boa")
+
+    if !isnothing(resolved_snowfall_rate) || !isnothing(resolved_rainfall_rate)
         # Direct forcing path: caller provides separated rain/snow rates.
-        P_snow = isnothing(p_snow) ? 0.0 : p_snow
-        P_rain = isnothing(p_rain) ? 0.0 : p_rain
+        snowfall_rate = isnothing(resolved_snowfall_rate) ? 0.0 : resolved_snowfall_rate
+        rainfall_rate = isnothing(resolved_rainfall_rate) ? 0.0 : resolved_rainfall_rate
     else
-        if isnothing(f_s)
-            # Determine fraction of snow and rain as a function of T2m
-            # following Born et al. (2019)
-            if T2m > column.c.T0
-                f_s = 0.0
+        if isnothing(resolved_snow_fraction)
+            # Determine the snowfall fraction following Born et al. (2019).
+            if air_temperature > column.c.T0
+                resolved_snow_fraction = 0.0
             else
-                f_s = 1.0
+                resolved_snow_fraction = 1.0
             end
         end
 
-        # Backward-compatible partitioning from total precipitation and f_s.
-        P_rain = P * (1.0-f_s)
-        P_snow = P - P_rain
+        rainfall_rate = precipitation_rate * (1.0 - resolved_snow_fraction)
+        snowfall_rate = precipitation_rate - rainfall_rate
     end
 
     # Convert timestep to seconds internally
-    dt_sec = dt * column.c.seconds_per_day
+    dt_seconds = dt_days * column.c.seconds_per_day
+    started_without_surface_snow = column.N == 0 || column.mass[1] <= EPS_EMPTY_LAYER
 
-    # For first snowfall, seed surface temperature with air temperature
-    # (BESSI behavior when first box is empty and snow starts).
-    if P_snow > 0.0 && column.N > 0 && column.mass[1] == 0.0
-        column.temperature[1] = T2m
+    apply_accumulation!(
+        column,
+        snowfall_rate,
+        rainfall_rate,
+        dt_seconds;
+        air_temperature=air_temperature,
+        wind_speed=wind_speed,
+    )
+    if snowfall_rate > 0.0 && started_without_surface_snow && column.N > 0
+        column.temperature[1] = air_temperature
     end
-
-    # Handle accumulation first
-    apply_accumulation!(column, P_snow, P_rain, dt_sec; T_air=T2m, wind_speed=wind_speed)
     update_snow_cover!(column)
     liquid_water_before_energy = column.c.low_density_densification == :htessel ?
-        copy(column.mass_w[1:column.N]) : Float64[]
-    # BESSI passes At = accum + rainman [kg m^-2 s^-1] to densification,
-    # and only runs densification when at least 3 boxes are snow-filled.
-    At = (P_snow > 0.0 ? P_snow : 0.0) + ((column.N > 0 && column.mass[1] > 0.0) ? P_rain : 0.0)
+        copy(@view column.mass_w[1:column.N]) : Float64[]
+    accumulation_rate = (snowfall_rate > 0.0 ? snowfall_rate : 0.0) +
+                        ((column.N > 0 && column.mass[1] > 0.0) ? rainfall_rate : 0.0)
     if column.N >= 1 && column.mass[1] > 0.0
-        go_densification!(column, At, dt_sec)
+        go_densification!(column, accumulation_rate, dt_seconds)
     end
 
-    # Caculate energy balance
-    S_boa = isnothing(s_boa) ? 400.0 : max(s_boa, 0.0)
+    # Calculate the energy balance.
+    diagnosed_shortwave_down = isnothing(resolved_shortwave_down) ? 400.0 : max(resolved_shortwave_down, 0.0)
     energy = go_energy_flux!(
-        column, T2m, S_boa, nothing, nothing, dt_sec;
-        P_snow=P_snow,
-        P_rain=P_rain,
-        diff_model=1,
+        column,
+        air_temperature,
+        diagnosed_shortwave_down,
+        nothing,
+        nothing,
+        dt_seconds;
+        snowfall_rate=snowfall_rate,
+        rainfall_rate=rainfall_rate,
+        diffusion_model=1,
         q_sw_net=q_sw_net,
         q_lw_down=q_lw_down,
         q_sh=q_sh,
         q_lh=q_lh,
     )
 
-    # For now set a linear temperature profile in the firn to depth
-    #column.Tsrf = min(T2m,column.c.T0)
-    #column.temperature[1] = column.Tsrf
-    #column.temperature[column.N] = column.Tsrf - 10.0
-    # Handle melt
-    if energy.china_syndrome
-        Ts = column.temperature[1]
+    if energy.needs_melt
+        surface_temperature = column.temperature[1]
         if isnothing(q_sw_net) && isnothing(q_lw_down) && isnothing(q_sh) && isnothing(q_lh)
             # Backward-compatible melt energy diagnosis for default parameterized forcing.
-            Qp_lw = column.c.σ * (column.c.ϵ_air * T2m^4 - column.c.ϵ_snow * Ts^4)
-            Qp_sh = column.c.D_sh * (T2m - Ts)
-            Qp_lh = energy.K_lh - energy.H_lh * Ts
-            QQ = max((S_boa + Qp_lw + Qp_sh + Qp_lh) * dt_sec - energy.Q_heat, 0.0)
+            longwave_flux = column.c.σ * (
+                column.c.ϵ_air * air_temperature^4 - column.c.ϵ_snow * surface_temperature^4
+            )
+            sensible_heat_flux = column.c.D_sh * (air_temperature - surface_temperature)
+            latent_heat_flux = energy.latent_heat_constant_term -
+                               energy.latent_heat_linear_coefficient * surface_temperature
+            melt_energy = max(
+                (diagnosed_shortwave_down + longwave_flux + sensible_heat_flux + latent_heat_flux) *
+                dt_seconds - energy.energy_to_melting,
+                0.0,
+            )
         else
             # For externally prescribed fluxes, use the same linearized net-flux form
             # as in the temperature solve.
-            QQ = max((energy.F_const - energy.F_lin * Ts) * dt_sec - energy.Q_heat, 0.0)
+            melt_energy = max(
+                (energy.surface_flux_constant - energy.surface_flux_linear * surface_temperature) *
+                dt_seconds - energy.energy_to_melting,
+                0.0,
+            )
         end
-        melt_mass = QQ / column.c.Lm
+        melt_mass = melt_energy / column.c.Lm
         apply_melt!(column, melt_mass)
     end
 
-    # BESSI flow: melting -> percolation -> refreezing.
-    # Apply percolation first if liquid water exists.
-    if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
+    has_liquid_water = _column_has_liquid_water(column)
+    if has_liquid_water
         go_percolation!(column)
+        has_liquid_water = _column_has_liquid_water(column)
     end
 
     if column.c.low_density_densification == :htessel && !isempty(liquid_water_before_energy) &&
-       column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
-        _apply_htessel_liquid_water_compaction!(column, liquid_water_before_energy, dt_sec)
+       has_liquid_water
+        _apply_htessel_liquid_water_compaction!(column, liquid_water_before_energy, dt_seconds)
+        has_liquid_water = _column_has_liquid_water(column)
     end
 
-    # Then refreeze liquid water into the cold content of each active layer.
-    if column.N > 0 && maximum(@view column.mass_w[1:column.N]) > 0.0
+    if has_liquid_water
         go_refreezing!(column)
     end
 
     update_snow_cover!(column)
-    return
+    return nothing
 end
 
 
@@ -449,14 +494,15 @@ Get the current state of the snowpack column.
 
 Returns a dictionary with:
 - `N`: Number of active layers
-- `mass`: Mass in each active layer [kg/m²]
-- `mass_w`: Liquid water mass in each active layer [kg/m²]
+- `mass` / `solid_mass`: Solid snow/ice mass in each active layer [kg/m²]
+- `mass_w` / `liquid_water_mass`: Liquid water mass in each active layer [kg/m²]
 - `density`: Density in each active layer [kg/m³]
 - `total_mass`: Total mass in column [kg/m²]
 - `total_liquid_water`: Total liquid water mass in column [kg/m²]
 - `total_wet_mass`: Total snow plus liquid water mass in column [kg/m²]
 - `thickness`: Thickness of each active layer [m]
 - `total_thickness`: Total column thickness [m]
+- `surface_temperature`: Surface temperature [K]
 - `snow_cover`: Diagnosed snow cover fraction [1]
 """
 function get_state(column::SnowpackColumn)
@@ -464,33 +510,41 @@ function get_state(column::SnowpackColumn)
     if column.N == 0
         return Dict(
             "N" => 0,
+            "n_active" => 0,
             "mass" => Float64[],
+            "solid_mass" => Float64[],
             "mass_w" => Float64[],
+            "liquid_water_mass" => Float64[],
             "density" => Float64[],
             "total_mass" => 0.0,
             "total_liquid_water" => 0.0,
             "total_wet_mass" => 0.0,
             "thickness" => Float64[],
             "total_thickness" => 0.0,
+            "surface_temperature" => column.c.T0,
             "snow_cover" => snow_cover,
         )
     end
-    
-    active_mass = column.mass[1:column.N]
-    active_mass_w = column.mass_w[1:column.N]
-    active_density = column.density[1:column.N]
-    thickness = active_mass ./ active_density
-    
+
+    @views active_solid_mass = column.mass[1:column.N]
+    @views active_liquid_water_mass = column.mass_w[1:column.N]
+    @views active_density = column.density[1:column.N]
+    thickness = active_solid_mass ./ active_density
+
     return Dict(
         "N" => column.N,
-        "mass" => active_mass,
-        "mass_w" => active_mass_w,
+        "n_active" => column.N,
+        "mass" => active_solid_mass,
+        "solid_mass" => active_solid_mass,
+        "mass_w" => active_liquid_water_mass,
+        "liquid_water_mass" => active_liquid_water_mass,
         "density" => active_density,
-        "total_mass" => sum(active_mass),
-        "total_liquid_water" => sum(active_mass_w),
-        "total_wet_mass" => sum(active_mass) + sum(active_mass_w),
+        "total_mass" => sum(active_solid_mass),
+        "total_liquid_water" => sum(active_liquid_water_mass),
+        "total_wet_mass" => sum(active_solid_mass) + sum(active_liquid_water_mass),
         "thickness" => thickness,
         "total_thickness" => sum(thickness),
+        "surface_temperature" => column.temperature[1],
         "snow_cover" => snow_cover,
     )
 end

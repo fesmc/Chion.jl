@@ -5,11 +5,17 @@ Mass-balance and layer-structure helpers for `SnowpackColumn`.
 @inline _safe_nonnegative(x::Float64) = x > 0.0 ? x : 0.0
 @inline _mass_weighted_mean(m1::Float64, x1::Float64, m2::Float64, x2::Float64) =
     (m1 * x1 + m2 * x2) / (m1 + m2)
-@inline function _fresh_snow_density(column::SnowpackColumn, T_air::Float64, wind_speed::Float64)
+@inline function _fresh_snow_density(
+    column::SnowpackColumn,
+    air_temperature::Float64,
+    wind_speed::Float64,
+)
     c = column.c
-    V = max(wind_speed, 0.0)
-    ρfresh = c.rho_s_a + c.rho_s_b * (T_air - c.T0) + c.rho_s_c * sqrt(V)
-    return clamp(ρfresh, 50.0, c.rho_i)
+    nonnegative_wind_speed = max(wind_speed, 0.0)
+    fresh_snow_density = c.rho_s_a +
+                         c.rho_s_b * (air_temperature - c.T0) +
+                         c.rho_s_c * sqrt(nonnegative_wind_speed)
+    return clamp(fresh_snow_density, 50.0, c.rho_i)
 end
 
 function reset_column_at_index!(column::SnowpackColumn, i::Int)
@@ -198,45 +204,60 @@ function _free_slot_for_surface_split!(column::SnowpackColumn)
 end
 
 """
-    apply_accumulation!(column::SnowpackColumn, P_snow::Float64, P_rain::Float64, dt_sec::Float64;
-                        T_air::Float64=column.c.T0, wind_speed::Float64=5.0)
+    apply_accumulation!(
+        column::SnowpackColumn,
+        snowfall_rate::Float64,
+        rainfall_rate::Float64,
+        dt_seconds::Float64;
+        air_temperature::Float64=column.c.T0,
+        wind_speed::Float64=5.0,
+    )
 
 Apply snowfall/rainfall forcing and enforce dynamic layer bounds.
 Fresh-snow density is parameterized as
-`a + b*(T_air - T0) + c*sqrt(wind_speed)` using `column.c.rho_s_a/b/c`.
+`a + b*(air_temperature - T0) + c*sqrt(wind_speed)` using `column.c.rho_s_a/b/c`.
+
+Legacy keyword alias `T_air` is still accepted.
 """
 function apply_accumulation!(
     column::SnowpackColumn,
-    P_snow::Float64,
-    P_rain::Float64,
-    dt_sec::Float64,
+    snowfall_rate::Float64,
+    rainfall_rate::Float64,
+    dt_seconds::Float64,
     ;
-    T_air::Float64=column.c.T0,
+    air_temperature::Union{Nothing, Float64}=nothing,
+    T_air::Union{Nothing, Float64}=nothing,
     wind_speed::Float64=5.0,
 )
+    resolved_air_temperature = _resolve_keyword_alias(air_temperature, T_air, "air_temperature", "T_air")
+    resolved_air_temperature = isnothing(resolved_air_temperature) ? column.c.T0 : resolved_air_temperature
+
     # Fortran behavior: rain alone does not create a new snow layer.
     if column.N == 0
-        if P_snow > 0.0
+        if snowfall_rate > 0.0
             column.N = 1
         else
             return
         end
     end
 
-    if P_snow > 0.0
-        old_mass = column.mass[1]
-        add_snow = P_snow * dt_sec
-        masssum = old_mass + add_snow
-        fresh_rho = _fresh_snow_density(column, T_air, wind_speed)
-        old_rho = column.density[1] > 0.0 ? column.density[1] : fresh_rho
-        if masssum > 0.0
-            column.density[1] = masssum / (old_mass / old_rho + add_snow / fresh_rho)
+    if snowfall_rate > 0.0
+        previous_surface_mass = column.mass[1]
+        added_snow_mass = snowfall_rate * dt_seconds
+        updated_surface_mass = previous_surface_mass + added_snow_mass
+        fresh_snow_density = _fresh_snow_density(column, resolved_air_temperature, wind_speed)
+        previous_surface_density = column.density[1] > 0.0 ? column.density[1] : fresh_snow_density
+        if updated_surface_mass > 0.0
+            column.density[1] = updated_surface_mass / (
+                previous_surface_mass / previous_surface_density +
+                added_snow_mass / fresh_snow_density
+            )
         end
-        column.mass[1] = masssum
+        column.mass[1] = updated_surface_mass
     end
 
-    if column.mass[1] > 0.0 && P_rain > 0.0
-        column.mass_w[1] += P_rain * dt_sec
+    if column.mass[1] > 0.0 && rainfall_rate > 0.0
+        column.mass_w[1] += rainfall_rate * dt_seconds
     end
 
     while column.mass[1] > column.mass_max
@@ -250,9 +271,11 @@ function apply_accumulation!(
     while column.N > 1 && column.mass[1] < column.mass_min
         merge_surface_layer!(column)
     end
-    dmass = sum(column.mass[1:column.N]) - 15 * column.mass_split * 1.5 #15 for the BESSI layer original
-    if dmass > 0
-        continuous_bottom_deplete!(column, dmass)
+    total_active_solid_mass = column.N > 0 ? sum(@view column.mass[1:column.N]) : 0.0
+    reference_column_mass_cap = BESSI_REFERENCE_LAYER_COUNT * column.mass_split * 1.5
+    excess_basal_mass = total_active_solid_mass - reference_column_mass_cap
+    if excess_basal_mass > 0.0
+        continuous_bottom_deplete!(column, excess_basal_mass)
     end
 
 
