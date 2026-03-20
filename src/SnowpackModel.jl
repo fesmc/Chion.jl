@@ -24,12 +24,13 @@ Physical constants for snow/ice model
 """
 struct SnowpackPhysicalConstants
     # Densities (kg/m³)
-    rho_s::Float64      # Legacy constant fresh-snow density [kg/m³]
+    rho_s::Float64      # Constant fresh-snow density [kg/m³]
     rho_i::Float64      # Density of ice
     rho_w::Float64      # Density of water
     rho_s_a::Float64    # Fresh-snow density parameter a [kg/m³]
     rho_s_b::Float64    # Fresh-snow density parameter b [kg/m³/K]
     rho_s_c::Float64    # Fresh-snow density parameter c [kg/m³/(m/s)^0.5]
+    fresh_snow_density_scheme::Symbol # :constant or :parameterized
     
     # Thermal properties
     Ki::Float64         # Thermal conductivity of ice (W/(m·K))
@@ -63,6 +64,22 @@ end
     return scheme
 end
 
+@inline function _normalize_fresh_snow_density_scheme(scheme::Symbol)
+    normalized_scheme = if scheme == :bessi
+        :constant
+    elseif scheme == :htessel
+        :parameterized
+    else
+        scheme
+    end
+    normalized_scheme in (:constant, :parameterized) ||
+        error(
+            "Unsupported fresh-snow density scheme '$scheme'. " *
+            "Use :constant, :parameterized, or the aliases :bessi / :htessel.",
+        )
+    return normalized_scheme
+end
+
 """
     SnowpackPhysicalConstants(; kwargs...)
 
@@ -76,6 +93,8 @@ Initialize physical constants with default or custom values.
 - `rho_s_a`: Fresh-snow density parameter `a`, default=109
 - `rho_s_b`: Fresh-snow density parameter `b`, default=6
 - `rho_s_c`: Fresh-snow density parameter `c`, default=26
+- `fresh_snow_density_scheme`: `:constant` for the original BESSI-style constant `rho_s`,
+  or `:parameterized` for `a + b*(T_air - T0) + c*sqrt(wind)`
 - `low_density_densification`: Scheme for `rho < 550 kg m^-3`, one of `:bessi` or `:htessel`
 
 # Example
@@ -89,12 +108,13 @@ c = SnowpackPhysicalConstants(D_sh=20.0, alpha_dry=0.85, ϵ_air=0.8)
 """
 function SnowpackPhysicalConstants(;
     # Densities (kg/m³)
-    rho_s::Float64=250.0,
+    rho_s::Float64=315.0,
     rho_i::Float64=917.0,
     rho_w::Float64=1000.0,
     rho_s_a::Float64=109.0,
     rho_s_b::Float64=6.0,
     rho_s_c::Float64=26.0,
+    fresh_snow_density_scheme::Symbol=:constant,
     
     # Thermal properties
     Ki::Float64=2.1,
@@ -119,7 +139,7 @@ function SnowpackPhysicalConstants(;
     seconds_per_day::Float64 = DEFAULT_SECONDS_PER_DAY,
     seconds_per_month::Float64 = DEFAULT_SECONDS_PER_MONTH,
     seconds_per_year::Float64 = DEFAULT_SECONDS_PER_YEAR,
-    low_density_densification::Symbol=:bessi,
+    low_density_densification::Symbol=:htessel,
 )
     return SnowpackPhysicalConstants(
         # Densities
@@ -129,6 +149,7 @@ function SnowpackPhysicalConstants(;
         rho_s_a,
         rho_s_b,
         rho_s_c,
+        _normalize_fresh_snow_density_scheme(fresh_snow_density_scheme),
         
         # Thermal properties
         Ki,
@@ -366,7 +387,7 @@ function step!(
     p_snow::Union{Nothing, Float64}=nothing,
     p_rain::Union{Nothing, Float64}=nothing,
     s_boa::Union{Nothing, Float64}=nothing,
-    wind_speed::Float64=5.0,
+    wind_speed::Float64=10.0,
     q_sw_net::Union{Nothing, Float64}=nothing,
     q_lw_down::Union{Nothing, Float64}=nothing,
     q_sh::Union{Nothing, Float64}=nothing,
