@@ -35,6 +35,9 @@ Firn densification translated from BESSI `go_densification`.
     return density * (overburden_pressure / snow_viscosity + thermal_metamorphism)
 end
 
+@inline _relative_porosity(density::Float64, ice_density::Float64) =
+    clamp(1.0 - density / ice_density, 0.0, 1.0)
+
 function _apply_htessel_liquid_water_compaction!(
     column::SnowpackColumn,
     liquid_water_before_energy::AbstractVector{Float64},
@@ -164,10 +167,11 @@ function go_densification!(
             density_tendency = 25400.0 * exp(-60000.0 / 8.13 / layer_temperature) *
                                layer_density * densification_shape_factor * pressure_excess_mpa^3
         else
-            denominator = 1.0 - (1.0 - layer_density / ice_density)^(1.0 / 3.0)
+            relative_porosity = _relative_porosity(layer_density, ice_density)
+            denominator = 1.0 - relative_porosity^(1.0 / 3.0)
             if abs(denominator) > EPS_TINY
                 densification_shape_factor = 3.0 / 16.0 *
-                                             (1.0 - layer_density / ice_density) /
+                                             relative_porosity /
                                              denominator^3
                 ice_pressure_mpa = overburden_pressure / 1.0e6
                 bubble_pressure_mpa = 0.0
