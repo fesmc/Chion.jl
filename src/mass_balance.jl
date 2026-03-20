@@ -11,6 +11,10 @@ Mass-balance and layer-structure helpers for `SnowpackColumn`.
     wind_speed::Float64,
 )
     c = column.c
+    if c.fresh_snow_density_scheme == :constant
+        return clamp(c.rho_s, 50.0, c.rho_i)
+    end
+
     nonnegative_wind_speed = max(wind_speed, 0.0)
     fresh_snow_density = c.rho_s_a +
                          c.rho_s_b * (air_temperature - c.T0) +
