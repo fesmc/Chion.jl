@@ -212,7 +212,7 @@ mutable struct SnowpackColumn
     mass_split::Float64         # kg/m²
     mass_min::Float64           # kg/m²
     rho_max::Float64            # kg/m³
-    f_base_max::Float64         # 1
+    f_base_max::Float64         # d^-1 relaxation rate for cap-based basal export
 
     #ζmax::Float64   # Maximum liquid water content
 
@@ -222,6 +222,7 @@ mutable struct SnowpackColumn
     density::Vector{Float64}        # kg/m³
     temperature::Vector{Float64}    # K
     mass_base::Float64              # kg/m²
+    smb_ice::Float64                # kg/m² net mass forcing to the ice sheet
     runoff::Float64                 # kg/m²
     Tsrf::Float64                   # Legacy surface temperature state [K]
     snow_cover::Float64             # 1
@@ -247,6 +248,7 @@ mutable struct SnowpackColumn
         density = fill(density_init, Ntot)
         temperature = fill(temperature_init, Ntot)
         mass_base = 0.0
+        smb_ice = 0.0
         runoff = 0.0
         Tsrf = c.T0
         snow_cover = 0.0
@@ -260,7 +262,7 @@ mutable struct SnowpackColumn
         @assert mass_split / mass_max >= 0.5
         
         new(c, Ntot, N, mass_max, mass_split, mass_min, rho_max, f_base_max,
-            mass, mass_w, density, temperature, mass_base, runoff, Tsrf, snow_cover)
+            mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, snow_cover)
     end
 end
 
@@ -348,7 +350,6 @@ end
     return false
 end
 
-
 """
     step!(column::SnowpackColumn, air_temperature::Float64, precipitation_rate::Float64, dt_days::Float64)
 
@@ -432,6 +433,21 @@ function step!(
         column.temperature[1] = air_temperature
     end
     update_snow_cover!(column)
+    if column.N <= 0 || column.mass[1] <= EPS_EMPTY_LAYER
+        bare_ice_ablation = bare_ice_ablation_mass(
+            column,
+            air_temperature,
+            rainfall_rate,
+            dt_seconds;
+            shortwave_down=resolved_shortwave_down,
+            q_sw_net=q_sw_net,
+            q_lw_down=q_lw_down,
+            q_sh=q_sh,
+            q_lh=q_lh,
+        )
+        column.smb_ice -= bare_ice_ablation
+        return nothing
+    end
     liquid_water_before_energy = column.c.low_density_densification == :htessel ?
         copy(@view column.mass_w[1:column.N]) : Float64[]
     accumulation_rate = (snowfall_rate > 0.0 ? snowfall_rate : 0.0) +
@@ -456,7 +472,7 @@ function step!(
         q_lw_down=q_lw_down,
         q_sh=q_sh,
         q_lh=q_lh,
-        tridiagonal_solver=:thomas,
+        tridiagonal_solver=:linear_algebra,
     )
 
     if energy.needs_melt
@@ -484,7 +500,10 @@ function step!(
             )
         end
         melt_mass = melt_energy / column.c.Lm
-        apply_melt!(column, melt_mass)
+        melted_snow = apply_melt!(column, melt_mass)
+        if melted_snow < melt_mass && column.N == 0
+            column.smb_ice -= (melt_mass - melted_snow)
+        end
     end
 
     has_liquid_water = _column_has_liquid_water(column)
@@ -545,6 +564,8 @@ function get_state(column::SnowpackColumn)
             "total_thickness" => 0.0,
             "surface_temperature" => column.c.T0,
             "snow_cover" => snow_cover,
+            "smb_ice" => column.smb_ice,
+            "ice_sheet_smb" => column.smb_ice,
         )
     end
 
@@ -568,6 +589,8 @@ function get_state(column::SnowpackColumn)
         "total_thickness" => sum(thickness),
         "surface_temperature" => column.temperature[1],
         "snow_cover" => snow_cover,
+        "smb_ice" => column.smb_ice,
+        "ice_sheet_smb" => column.smb_ice,
     )
 end
 
