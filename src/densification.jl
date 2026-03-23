@@ -119,6 +119,18 @@ function go_densification!(
         layer_density = density[layer_index]
         layer_temperature = temperature[layer_index]
         layer_solid_mass = solid_mass[layer_index]
+
+        # Ice-density layers have no remaining pore space. The bubble-pressure
+        # formulation becomes singular there, so keep them pinned to rho_i.
+        if !isfinite(layer_density) || !isfinite(layer_temperature)
+            solid_mass_above += max(layer_solid_mass, 0.0)
+            continue
+        elseif layer_density >= ice_density - EPS_TINY
+            density[layer_index] = ice_density
+            solid_mass_above += max(layer_solid_mass, 0.0)
+            continue
+        end
+
         density_tendency = 0.0
         overburden_pressure = 9.81 * (solid_mass_above + layer_solid_mass / 2.0)
 
