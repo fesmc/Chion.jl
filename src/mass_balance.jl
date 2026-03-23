@@ -276,6 +276,7 @@ function apply_accumulation!(
                 merge_bottom_layer!(column)
             end
             column.N == 0 && break
+            column.mass[1] <= column.mass_max && break
         end
         split_surface_layer!(column)
     end
