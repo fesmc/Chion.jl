@@ -168,7 +168,9 @@ function merge_bottom_layer!(column::SnowpackColumn)
 
     if combined_density > column.c.rho_i
         mass_limited_to_ice_density = combined_mass * (column.c.rho_i / combined_density)
-        column.mass_base += combined_mass - mass_limited_to_ice_density
+        exported_excess = combined_mass - mass_limited_to_ice_density
+        column.mass_base += exported_excess
+        column.smb_ice += exported_excess
         column.mass[N] = mass_limited_to_ice_density
         column.mass_w[N] = combined_mass_w
         column.density[N] = column.c.rho_i
@@ -195,8 +197,8 @@ function _free_slot_for_surface_split!(column::SnowpackColumn)
         return
     end
 
-    # When the column is already full, retire the deepest active layer to the
-    # base so a new surface split can occur without cycling merge/split forever.
+    # Fallback for very shallow columns where merge-and-resplit can fail to make
+    # progress; retire the deepest active layer to guarantee one free slot.
     bottom_mass = column.mass[column.N]
     if bottom_mass > 0.0
         continuous_bottom_deplete!(column, bottom_mass)
@@ -266,7 +268,13 @@ function apply_accumulation!(
 
     while column.mass[1] > column.mass_max
         if column.N == column.Ntot
-            _free_slot_for_surface_split!(column)
+            if column.Ntot <= 2
+                _free_slot_for_surface_split!(column)
+            else
+                # Follow the original BESSI regridding: merge the two deepest
+                # layers to make one free slot before splitting the surface.
+                merge_bottom_layer!(column)
+            end
             column.N == 0 && break
         end
         split_surface_layer!(column)
@@ -315,6 +323,7 @@ function continuous_bottom_deplete!(column::SnowpackColumn, d_m_in::Float64)
             runoff += column.mass_w[nn]
 
             column.mass_base += m
+            column.smb_ice += m
             column.runoff += column.mass_w[nn]
 
             reset_column_at_index!(column, nn)
@@ -328,6 +337,7 @@ function continuous_bottom_deplete!(column::SnowpackColumn, d_m_in::Float64)
             runoff += d_lw
 
             column.mass_base += d_m
+            column.smb_ice += d_m
             column.runoff += d_lw
             d_m = 0.0
         end
