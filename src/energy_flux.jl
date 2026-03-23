@@ -157,6 +157,33 @@ end
     return latent_heat_linear_coefficient, latent_heat_constant_term
 end
 
+@inline function bare_ice_ablation_mass(
+    column::SnowpackColumn,
+    air_temperature::Float64,
+    rainfall_rate::Float64,
+    dt_seconds::Float64;
+    shortwave_down::Union{Nothing, Float64}=nothing,
+    q_sw_net::Union{Nothing, Float64}=nothing,
+    q_lw_down::Union{Nothing, Float64}=nothing,
+    q_sh::Union{Nothing, Float64}=nothing,
+    q_lh::Union{Nothing, Float64}=nothing,
+)
+    dt_seconds <= 0.0 && return 0.0
+
+    c = column.c
+    absorbed_shortwave = isnothing(q_sw_net) ?
+        (isnothing(shortwave_down) ? 400.0 : max(shortwave_down, 0.0)) * (1.0 - c.alpha_ice) :
+        q_sw_net
+    longwave_flux = isnothing(q_lw_down) ?
+        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * c.T0^4) :
+        q_lw_down - c.σ * c.ϵ_snow * c.T0^4
+    sensible_heat_flux = isnothing(q_sh) ? c.D_sh * (air_temperature - c.T0) : q_sh
+    latent_heat_flux = isnothing(q_lh) ? 0.0 : q_lh
+    rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
+    net_surface_flux = absorbed_shortwave + longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
+    return max(net_surface_flux, 0.0) * dt_seconds / c.Lm
+end
+
 """
     go_energy_flux!(
         column::SnowpackColumn,
