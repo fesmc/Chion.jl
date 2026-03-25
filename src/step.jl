@@ -216,7 +216,7 @@ function step!(
             q_lw_down=q_lw_down,
             q_sh=q_sh,
             q_lh=q_lh,
-            tridiagonal_solver=:linear_algebra,
+            tridiagonal_solver=:thomas,
         )
     end
 

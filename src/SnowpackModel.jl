@@ -21,6 +21,7 @@ export continuous_bottom_deplete!
 export get_state
 export print_state
 export go_densification!
+export update_surface_albedo!
 export StepTimingStats
 export add_timing!
 export timing_rows
@@ -28,6 +29,7 @@ export print_timing_summary
 
 include("snowpack_types.jl")
 include("column_helpers.jl")
+include("albedo.jl")
 include("mass_balance.jl")
 include("energy_flux.jl")
 include("densification.jl")
