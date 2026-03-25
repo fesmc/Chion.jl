@@ -112,6 +112,7 @@ end
     ;
     needs_melt::Bool,
     energy_to_melting::Float64,
+    melt_energy_available::Float64,
     heating::Float64,
     surface_flux_constant::Float64,
     surface_flux_linear::Float64,
@@ -123,6 +124,8 @@ end
         china_syndrome = needs_melt,
         energy_to_melting = energy_to_melting,
         Q_heat = energy_to_melting,
+        melt_energy_available = melt_energy_available,
+        QQ = melt_energy_available,
         heating = heating,
         surface_flux_constant = surface_flux_constant,
         F_const = surface_flux_constant,
@@ -132,6 +135,22 @@ end
         H_lh = latent_heat_linear_coefficient,
         latent_heat_constant_term = latent_heat_constant_term,
         K_lh = latent_heat_constant_term,
+    )
+end
+
+@inline function _residual_melt_energy(
+    surface_flux_constant::Float64,
+    surface_flux_linear::Float64,
+    surface_temperature::Float64,
+    energy_to_melting::Float64,
+    dt_seconds::Float64;
+    needs_melt::Bool,
+)
+    needs_melt || return 0.0
+    return max(
+        (surface_flux_constant - surface_flux_linear * surface_temperature) * dt_seconds -
+        energy_to_melting,
+        0.0,
     )
 end
 
@@ -221,6 +240,7 @@ Legacy keyword aliases `P_snow`, `P_rain`, and `diff_model` are still accepted.
 Returns:
 - `needs_melt` / `china_syndrome`: surface reached melt point and melt routine should run
 - `energy_to_melting` / `Q_heat`: energy used to bring/cap surface at melting point [J m^-2]
+- `melt_energy_available` / `QQ`: residual melt energy after subtracting `Q_heat` [J m^-2]
 - `heating`: diagnosed net heating term [J m^-2]
 """
 function go_energy_flux!(
@@ -274,6 +294,7 @@ function go_energy_flux!(
         return _energy_flux_result(
             needs_melt=false,
             energy_to_melting=0.0,
+            melt_energy_available=0.0,
             heating = 0.0,
             surface_flux_constant = 0.0,
             surface_flux_linear = 0.0,
@@ -363,9 +384,18 @@ function go_energy_flux!(
 
         column.temperature[1] = min(updated_surface_temperature, melting_temperature)
         column.Tsrf = column.temperature[1]
+        melt_energy_available = _residual_melt_energy(
+            surface_flux_constant,
+            surface_flux_linear,
+            column.temperature[1],
+            energy_to_melting,
+            dt_seconds;
+            needs_melt=needs_melt,
+        )
         return _energy_flux_result(
             needs_melt=needs_melt,
             energy_to_melting=energy_to_melting,
+            melt_energy_available=melt_energy_available,
             heating = heating,
             surface_flux_constant = surface_flux_constant,
             surface_flux_linear = surface_flux_linear,
@@ -484,10 +514,19 @@ function go_energy_flux!(
 
     column.temperature[1:n_layers] .= updated_temperature
     column.Tsrf = column.temperature[1]
+    melt_energy_available = _residual_melt_energy(
+        surface_flux_constant,
+        surface_flux_linear,
+        column.temperature[1],
+        energy_to_melting,
+        dt_seconds;
+        needs_melt=needs_melt,
+    )
 
     return _energy_flux_result(
         needs_melt=needs_melt,
         energy_to_melting=energy_to_melting,
+        melt_energy_available=melt_energy_available,
         heating = heating,
         surface_flux_constant = surface_flux_constant,
         surface_flux_linear = surface_flux_linear,

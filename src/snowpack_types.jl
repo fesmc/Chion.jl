@@ -99,9 +99,9 @@ function SnowpackPhysicalConstants(;
 
     # Heat flux and albedo
     D_sh::Float64=10.0,
-    alpha_dry::Float64=0.8,
-    alpha_wet::Float64=0.6,
-    alpha_ice::Float64=0.35,
+    alpha_dry::Float64=0.85,
+    alpha_wet::Float64=0.7,
+    alpha_ice::Float64=0.4,
 
     # Emissivity
     ϵ_air::Float64=0.75,

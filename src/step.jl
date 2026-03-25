@@ -52,39 +52,6 @@ end
     return isnothing(shortwave_down) ? 400.0 : max(shortwave_down, 0.0)
 end
 
-function _diagnose_melt_energy(
-    column::SnowpackColumn,
-    air_temperature::Float64,
-    energy,
-    dt_seconds::Float64,
-    diagnosed_shortwave_down::Float64;
-    q_sw_net::Union{Nothing, Float64}=nothing,
-    q_lw_down::Union{Nothing, Float64}=nothing,
-    q_sh::Union{Nothing, Float64}=nothing,
-    q_lh::Union{Nothing, Float64}=nothing,
-)
-    surface_temperature = column.temperature[1]
-    if isnothing(q_sw_net) && isnothing(q_lw_down) && isnothing(q_sh) && isnothing(q_lh)
-        longwave_flux = column.c.σ * (
-            column.c.ϵ_air * air_temperature^4 - column.c.ϵ_snow * surface_temperature^4
-        )
-        sensible_heat_flux = column.c.D_sh * (air_temperature - surface_temperature)
-        latent_heat_flux = energy.latent_heat_constant_term -
-                           energy.latent_heat_linear_coefficient * surface_temperature
-        return max(
-            (diagnosed_shortwave_down + longwave_flux + sensible_heat_flux + latent_heat_flux) *
-            dt_seconds - energy.energy_to_melting,
-            0.0,
-        )
-    end
-
-    return max(
-        (energy.surface_flux_constant - energy.surface_flux_linear * surface_temperature) *
-        dt_seconds - energy.energy_to_melting,
-        0.0,
-    )
-end
-
 function _run_liquid_water_processes!(
     column::SnowpackColumn,
     liquid_water_before_energy::AbstractVector{Float64},
@@ -253,18 +220,7 @@ function step!(
     end
 
     if energy.needs_melt
-        melt_energy = _diagnose_melt_energy(
-            column,
-            air_temperature,
-            energy,
-            dt_seconds,
-            diagnosed_shortwave_down;
-            q_sw_net=q_sw_net,
-            q_lw_down=q_lw_down,
-            q_sh=q_sh,
-            q_lh=q_lh,
-        )
-        melt_mass = melt_energy / column.c.Lm
+        melt_mass = energy.melt_energy_available / column.c.Lm
         melted_snow = _time_block!(timings, :melt) do
             apply_melt!(column, melt_mass)
         end
