@@ -26,6 +26,8 @@ struct SnowpackPhysicalConstants
     alpha_dry::Float64
     alpha_wet::Float64
     alpha_ice::Float64
+    max_lwc_albedo::Float64
+    albedo_scheme::Symbol
 
     # Emissivity
     ϵ_air::Float64
@@ -63,6 +65,22 @@ end
     return normalized_scheme
 end
 
+@inline function _normalize_albedo_scheme(scheme::Symbol)
+    normalized_scheme = if scheme == :bessi
+        :dynamic
+    elseif scheme == :legacy
+        :constant
+    else
+        scheme
+    end
+    normalized_scheme in (:constant, :dynamic) ||
+        error(
+            "Unsupported albedo scheme '$scheme'. " *
+            "Use :constant, :dynamic, or the aliases :legacy / :bessi.",
+        )
+    return normalized_scheme
+end
+
 """
     SnowpackPhysicalConstants(; kwargs...)
 
@@ -70,8 +88,12 @@ Initialize physical constants with default or custom values.
 
 # Keyword Arguments
 - `D_sh`: Coefficient for sensible heat flux, default=10 W/(m^2 K), range=[5, 20]
-- `alpha_dry`: Albedo of fresh snow, default=0.8, range=[0.75, 0.9]
-- `alpha_wet`: Albedo of wet snow, default=0.6, range=[0.5, 0.7]
+- `alpha_dry`: Albedo of fresh snow, default=0.85, range=[0.75, 0.9]
+- `alpha_wet`: Albedo of wet snow, default=0.72, range=[0.5, 0.8]
+- `max_lwc_albedo`: Liquid-water-content scale used by the BESSI Aoki albedo
+  reduction, default=`0.1`
+- `albedo_scheme`: `:dynamic` for the BESSI-style persistent Aoki albedo, or
+  `:constant` for the legacy dry-snow / wet-snow / ice switch
 - `ϵ_air`: Emissivity of air, default=0.75, range=[0.6, 0.9]
 - `rho_s_a`: Fresh-snow density parameter `a`, default=109
 - `rho_s_b`: Fresh-snow density parameter `b`, default=6
@@ -100,8 +122,10 @@ function SnowpackPhysicalConstants(;
     # Heat flux and albedo
     D_sh::Float64=10.0,
     alpha_dry::Float64=0.85,
-    alpha_wet::Float64=0.7,
-    alpha_ice::Float64=0.4,
+    alpha_wet::Float64=0.72,
+    alpha_ice::Float64=0.3,
+    max_lwc_albedo::Float64=0.1,
+    albedo_scheme::Symbol=:constant,
 
     # Emissivity
     ϵ_air::Float64=0.75,
@@ -132,6 +156,8 @@ function SnowpackPhysicalConstants(;
         alpha_dry,
         alpha_wet,
         alpha_ice,
+        max_lwc_albedo,
+        _normalize_albedo_scheme(albedo_scheme),
         ϵ_air,
         ϵ_snow,
         σ,
@@ -189,6 +215,7 @@ mutable struct SnowpackColumn
     runoff::Float64
     Tsrf::Float64
     snow_cover::Float64
+    albedo_dynamic::Float64
 
     function SnowpackColumn(;
         c::SnowpackPhysicalConstants=SnowpackPhysicalConstants(),
@@ -213,6 +240,7 @@ mutable struct SnowpackColumn
         runoff = 0.0
         Tsrf = c.T0
         snow_cover = 0.0
+        albedo_dynamic = c.alpha_dry
 
         @assert mass_split < mass_max
         @assert mass_min < mass_split
@@ -239,6 +267,7 @@ mutable struct SnowpackColumn
             runoff,
             Tsrf,
             snow_cover,
+            albedo_dynamic,
         )
     end
 end

@@ -37,13 +37,20 @@ function _snow_thermal_conductivity(ρ::Float64, Kᵢ::Float64, diffusion_model:
 end
 
 @inline function shortwave_absorbed(
+    shortwave_down::Float64;
+    surface_albedo::Float64,
+)
+    return (1.0 - clamp(surface_albedo, 0.0, 1.0)) * shortwave_down
+end
+
+@inline function shortwave_absorbed(
     shortwave_down::Float64,
     surface_temperature::Float64,
     melting_temperature::Float64;
     snow_cover::Float64=1.0,
-    alpha_dry::Float64=0.8,
-    alpha_wet::Float64=0.6,
-    alpha_ice::Float64=0.35,
+    alpha_dry::Float64=0.85,
+    alpha_wet::Float64=0.72,
+    alpha_ice::Float64=0.3,
 )
     # Keep the legacy BESSI-style path for now: partial snow cover does not yet
     # blend in the ice albedo, even though the arguments are already available.
@@ -97,7 +104,8 @@ function _solve_tridiagonal_system(
     normalized_solver = _normalize_tridiagonal_solver(solver)
     if normalized_solver == :linear_algebra
         system_matrix = Tridiagonal(lower_diagonal, main_diagonal, upper_diagonal)
-        return system_matrix \ right_hand_side
+        F = factorize(system_matrix)      # once
+        return F \ right_hand_side
     end
 
     return _solve_tridiagonal_thomas!(
@@ -288,6 +296,7 @@ function go_energy_flux!(
     end
 
     update_snow_cover!(column)
+    update_surface_albedo!(column)
 
     n_layers = column.N
     if n_layers <= 0 || column.mass[1] <= 0.0
@@ -326,15 +335,9 @@ function go_energy_flux!(
     surface_mass = _safe_positive(column.mass[1])
     surface_temperature_scale = dt_seconds / ice_heat_capacity / surface_mass
 
-    absorbed_shortwave = isnothing(q_sw_net) ? shortwave_absorbed(
-        shortwave_down,
-        temperature_profile[1],
-        melting_temperature;
-        snow_cover=column.snow_cover,
-        alpha_dry=column.c.alpha_dry,
-        alpha_wet=column.c.alpha_wet,
-        alpha_ice=column.c.alpha_ice,
-    ) : q_sw_net
+    absorbed_shortwave = isnothing(q_sw_net) ?
+        shortwave_absorbed(shortwave_down; surface_albedo=column.albedo_dynamic) :
+        q_sw_net
 
     longwave_flux_constant = isnothing(q_lw_down) ?
         (stefan_boltzmann * (

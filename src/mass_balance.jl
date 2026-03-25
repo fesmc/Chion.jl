@@ -243,6 +243,7 @@ function apply_accumulation!(
         if snowfall_rate > 0.0
             column.N = 1
         else
+            column.albedo_dynamic = column.c.alpha_ice
             return
         end
     end
@@ -260,6 +261,7 @@ function apply_accumulation!(
             )
         end
         column.mass[1] = updated_surface_mass
+        _refresh_dynamic_albedo_from_snowfall!(column, added_snow_mass)
     end
 
     if column.mass[1] > 0.0 && rainfall_rate > 0.0
@@ -350,6 +352,9 @@ function continuous_bottom_deplete!(column::SnowpackColumn, d_m_in::Float64)
     end
 
     column.Tsrf = column.N > 0 ? column.temperature[1] : column.c.T0
+    if column.N == 0
+        column.albedo_dynamic = column.c.alpha_ice
+    end
     return (ice_to_base = ice_to_base, runoff = runoff)
 end
 
@@ -421,5 +426,8 @@ function apply_melt!(column::SnowpackColumn, melt_mass::Float64)
     end
 
     column.Tsrf = column.N > 0 ? column.temperature[1] : column.c.T0
+    if column.N == 0
+        column.albedo_dynamic = column.c.alpha_ice
+    end
     return melted_total
 end

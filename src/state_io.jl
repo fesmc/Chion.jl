@@ -19,6 +19,7 @@ Returns a dictionary with:
 - `total_thickness`: Total column thickness [m]
 - `surface_temperature`: Surface temperature [K]
 - `snow_cover`: Diagnosed snow cover fraction [1]
+- `surface_albedo`: Current surface albedo used for shortwave absorption [1]
 """
 function get_state(column::SnowpackColumn)
     snow_cover = _snow_cover_fraction(column)
@@ -38,6 +39,8 @@ function get_state(column::SnowpackColumn)
             "total_thickness" => 0.0,
             "surface_temperature" => column.c.T0,
             "snow_cover" => snow_cover,
+            "surface_albedo" => column.albedo_dynamic,
+            "albedo_dynamic" => column.albedo_dynamic,
             "smb_ice" => column.smb_ice,
             "ice_sheet_smb" => column.smb_ice,
         )
@@ -63,6 +66,8 @@ function get_state(column::SnowpackColumn)
         "total_thickness" => sum(thickness),
         "surface_temperature" => column.temperature[1],
         "snow_cover" => snow_cover,
+        "surface_albedo" => column.albedo_dynamic,
+        "albedo_dynamic" => column.albedo_dynamic,
         "smb_ice" => column.smb_ice,
         "ice_sheet_smb" => column.smb_ice,
     )
@@ -83,6 +88,7 @@ function print_state(column::SnowpackColumn)
     println("Total mass: ", round(state["total_mass"], digits=2), " kg/m^2")
     println("Total thickness: ", round(state["total_thickness"], digits=3), " m")
     println("Snow cover: ", round(state["snow_cover"], digits=3))
+    println("Surface albedo: ", round(state["surface_albedo"], digits=3))
     println()
 
     if state["N"] > 0

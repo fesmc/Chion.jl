@@ -171,6 +171,7 @@ function step!(
     end
 
     if !_surface_has_snow(column)
+        column.albedo_dynamic = column.c.alpha_ice
         bare_ice_ablation = _time_block!(timings, :bare_ice_ablation) do
             bare_ice_ablation_mass(
                 column,
@@ -238,6 +239,9 @@ function step!(
 
     _time_block!(timings, :snow_cover) do
         update_snow_cover!(column)
+    end
+    if !_surface_has_snow(column)
+        column.albedo_dynamic = column.c.alpha_ice
     end
     return nothing
 end
