@@ -125,7 +125,7 @@ function SnowpackPhysicalConstants(;
     alpha_wet::Float64=0.72,
     alpha_ice::Float64=0.3,
     max_lwc_albedo::Float64=0.1,
-    albedo_scheme::Symbol=:constant,
+    albedo_scheme::Symbol=:dynamic,
 
     # Emissivity
     ϵ_air::Float64=0.75,
@@ -138,7 +138,7 @@ function SnowpackPhysicalConstants(;
     seconds_per_day::Float64=DEFAULT_SECONDS_PER_DAY,
     seconds_per_month::Float64=DEFAULT_SECONDS_PER_MONTH,
     seconds_per_year::Float64=DEFAULT_SECONDS_PER_YEAR,
-    low_density_densification::Symbol=:htessel,
+    low_density_densification::Symbol=:bessi,
 )
     return SnowpackPhysicalConstants(
         rho_s,

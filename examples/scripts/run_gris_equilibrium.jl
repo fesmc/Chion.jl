@@ -7,7 +7,6 @@ using Dates
 using Printf
 using Statistics
 using Base.Threads
-using Plots
 using Chion
 
 include("run_gris_one_step.jl")
@@ -81,6 +80,11 @@ function print_timing_summary(io::IO, stats::TimingStats)
         )
     end
     println(io, @sprintf("  %-24s %12.3f", "total_timed", total))
+    if haskey(stats.totals, :model_step_wall)
+        println(io)
+        println(io, "  note: use model_step_wall for cross-run step-performance comparisons.")
+        println(io, "  note: model_step sums per-thread elapsed time, so it is scheduler-sensitive.")
+    end
     return
 end
 
@@ -92,6 +96,8 @@ function print_spinup_help()
     println("  --nc=PATH                    MAR NetCDF/HDF5 file")
     println("  --out-dir=PATH               Output directory (default: examples/plots/gris_equilibrium)")
     println("  --out-nc=PATH                Output NetCDF path (default: OUT_DIR/gris_equilibrium_final_state.nc)")
+    println("  --no-nc                      Skip NetCDF output and NetCDF-only step diagnostics for cleaner timing")
+    println("  --no-output                  Skip all file output (implies --no-nc) for clean timing runs")
     println("  --mask-threshold=VALUE       Minimum MSK value for GrIS cells (default: 50)")
     println("  --ntot=N                     Chion maximum active layers (default: 80)")
     println("  --max-cycles=N               Maximum forcing-cycle repeats (default: 10)")
@@ -105,10 +111,13 @@ end
 function parse_spinup_config(args::Vector{String})
     nc_path = arg_value(args, "nc", DEFAULT_NC_PATH)
     isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_NC_PATH).")
+    write_outputs = !has_flag(args, "no-output")
     return (
         nc_path = nc_path,
         out_dir = arg_value(args, "out-dir", DEFAULT_OUT_DIR_EQUIL),
         out_nc = arg_value(args, "out-nc", ""),
+        write_outputs = write_outputs,
+        write_netcdf = write_outputs && !has_flag(args, "no-nc"),
         mask_threshold = parse(Float64, arg_value(args, "mask-threshold", "50.0")),
         ntot = parse(Int, arg_value(args, "ntot", "20")),
         max_cycles = parse(Int, arg_value(args, "max-cycles", "10")),
@@ -304,7 +313,7 @@ function summarize_columns(columns::Vector{SM.SnowpackColumn})
     liquid_water = Vector{Float64}(undef, n)
     runoff = Vector{Float64}(undef, n)
 
-    @threads for idx in eachindex(columns)
+    @threads :static for idx in eachindex(columns)
         summary = summarize_column(columns[idx])
         thickness[idx] = summary.thickness
         wet_mass[idx] = summary.wet_mass
@@ -427,6 +436,8 @@ function write_spinup_summary(
         println(io, "GrIS cells         : ", nvalid, " / ", ngrid)
         println(io, @sprintf("Mask threshold     : %.2f", config.mask_threshold))
         println(io, "Threads            : ", nthreads())
+        println(io, "File output        : ", config.write_outputs ? "enabled" : "disabled (--no-output)")
+        println(io, "NetCDF output      : ", config.write_netcdf ? "enabled" : "disabled (--no-nc)")
         println(io, "Status             : ", string(status))
         println(io, "Cycles completed   : ", length(history))
         println(io, @sprintf("Tol thickness (m)  : %.6g", config.tol_thickness))
@@ -464,6 +475,7 @@ function write_spinup_summary(
 end
 
 function render_spinup_history_plot(out_path::AbstractString, history::Vector{NamedTuple}, config)
+    P = plots_module()
     cycles = [rec.cycle for rec in history]
     mean_thickness = [rec.mean_thickness for rec in history]
     mean_wet_mass = [rec.mean_wet_mass for rec in history]
@@ -472,18 +484,18 @@ function render_spinup_history_plot(out_path::AbstractString, history::Vector{Na
     mean_abs_dswe = [rec.mean_abs_delta_wet_mass for rec in history]
     mean_abs_dbase = [rec.mean_abs_delta_base_mass for rec in history]
 
-    p1 = plot(cycles, mean_thickness; lw=3, marker=:circle, color=:steelblue, xlabel="Cycle", ylabel="m", title="Mean snow thickness", framestyle=:box)
-    p2 = plot(cycles, mean_wet_mass; lw=3, marker=:circle, color=:forestgreen, xlabel="Cycle", ylabel="mmWE", title="Mean snow wet mass", framestyle=:box)
-    p3 = plot(cycles, mean_base_mass; lw=3, marker=:circle, color=:purple, xlabel="Cycle", ylabel="mmWE", title="Mean firn-to-ice mass", framestyle=:box)
-    p4 = plot(cycles, mean_abs_dth; lw=3, marker=:circle, color=:firebrick, xlabel="Cycle", ylabel="m", title="Mean abs cycle dThickness", framestyle=:box)
-    hline!(p4, [config.tol_thickness]; color=:black, linestyle=:dash, label="tolerance")
-    p5 = plot(cycles, mean_abs_dswe; lw=3, marker=:circle, color=:darkorange, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dSWE", framestyle=:box)
-    hline!(p5, [config.tol_swe]; color=:black, linestyle=:dash, label="tolerance")
-    p6 = plot(cycles, mean_abs_dbase; lw=3, marker=:circle, color=:indigo, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dBase", framestyle=:box)
+    p1 = P.plot(cycles, mean_thickness; lw=3, marker=:circle, color=:steelblue, xlabel="Cycle", ylabel="m", title="Mean snow thickness", framestyle=:box)
+    p2 = P.plot(cycles, mean_wet_mass; lw=3, marker=:circle, color=:forestgreen, xlabel="Cycle", ylabel="mmWE", title="Mean snow wet mass", framestyle=:box)
+    p3 = P.plot(cycles, mean_base_mass; lw=3, marker=:circle, color=:purple, xlabel="Cycle", ylabel="mmWE", title="Mean firn-to-ice mass", framestyle=:box)
+    p4 = P.plot(cycles, mean_abs_dth; lw=3, marker=:circle, color=:firebrick, xlabel="Cycle", ylabel="m", title="Mean abs cycle dThickness", framestyle=:box)
+    P.hline!(p4, [config.tol_thickness]; color=:black, linestyle=:dash, label="tolerance")
+    p5 = P.plot(cycles, mean_abs_dswe; lw=3, marker=:circle, color=:darkorange, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dSWE", framestyle=:box)
+    P.hline!(p5, [config.tol_swe]; color=:black, linestyle=:dash, label="tolerance")
+    p6 = P.plot(cycles, mean_abs_dbase; lw=3, marker=:circle, color=:indigo, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dBase", framestyle=:box)
 
-    fig = plot(p1, p2, p3, p4, p5, p6; layout=(2, 3), size=(1700, 950), plot_title="Chion GrIS spin-up convergence history")
+    fig = P.plot(p1, p2, p3, p4, p5, p6; layout=(2, 3), size=(1700, 950), plot_title="Chion GrIS spin-up convergence history")
     mkpath(dirname(out_path))
-    savefig(fig, out_path)
+    P.savefig(fig, out_path)
 end
 
 function render_spinup_fields_plot(
@@ -502,21 +514,22 @@ function render_spinup_fields_plot(
     cycles_completed::Int,
 )
     title_suffix = "status=$(string(status)), cycles=$(cycles_completed)"
-    fig = plot(
+    P = plots_module()
+    fig = P.plot(
         heatmap_panel(x, y, final_thickness; title="Final snow thickness", unit="m", color=:ice),
-        heatmap_panel(x, y, final_thickness .- initial_thickness; title="Thickness change", unit="m", clim=symmetric_clims(final_thickness .- initial_thickness), color=cgrad([:navy, :white, :firebrick])),
+        heatmap_panel(x, y, final_thickness .- initial_thickness; title="Thickness change", unit="m", clim=symmetric_clims(final_thickness .- initial_thickness), color=P.cgrad([:navy, :white, :firebrick])),
         heatmap_panel(x, y, final_bulk_density; title="Final bulk density", unit="kg/m^3", color=:dense),
         heatmap_panel(x, y, final_base_mass; title="Final firn-to-ice mass", unit="mmWE", color=:amp),
         heatmap_panel(x, y, final_runoff; title="Final cumulative runoff", unit="mmWE", color=:rainbow),
-        heatmap_panel(x, y, last_delta_thickness; title="Last cycle dThickness", unit="m", clim=symmetric_clims(last_delta_thickness), color=cgrad([:navy, :white, :firebrick])),
-        heatmap_panel(x, y, last_delta_wet_mass; title="Last cycle dSWE", unit="mmWE", clim=symmetric_clims(last_delta_wet_mass), color=cgrad([:navy, :white, :firebrick])),
-        heatmap_panel(x, y, last_delta_base_mass; title="Last cycle dBase", unit="mmWE", clim=symmetric_clims(last_delta_base_mass), color=cgrad([:navy, :white, :firebrick])),
+        heatmap_panel(x, y, last_delta_thickness; title="Last cycle dThickness", unit="m", clim=symmetric_clims(last_delta_thickness), color=P.cgrad([:navy, :white, :firebrick])),
+        heatmap_panel(x, y, last_delta_wet_mass; title="Last cycle dSWE", unit="mmWE", clim=symmetric_clims(last_delta_wet_mass), color=P.cgrad([:navy, :white, :firebrick])),
+        heatmap_panel(x, y, last_delta_base_mass; title="Last cycle dBase", unit="mmWE", clim=symmetric_clims(last_delta_base_mass), color=P.cgrad([:navy, :white, :firebrick])),
         layout=(2, 4),
         size=(2200, 1100),
         plot_title="Chion GrIS equilibrium spin-up fields, " * title_suffix,
     )
     mkpath(dirname(out_path))
-    savefig(fig, out_path)
+    P.savefig(fig, out_path)
 end
 
 function collect_final_layer_grids(
@@ -948,6 +961,7 @@ function main(args::Vector{String})
     ensure_tools!()
     config = parse_spinup_config(args)
     timings = TimingStats()
+    run_wall_t0 = time_ns()
     shapes = time_block!(timings, :read_dataset_shapes) do
         read_dataset_shapes(config.nc_path)
     end
@@ -1065,7 +1079,7 @@ function main(args::Vector{String})
     wind_speed = Matrix{Float64}(undef, nvalid, ntime)
 
     time_block!(timings, :initialize_columns_and_forcing) do
-        @threads for idx in eachindex(valid_indices)
+        @threads :static for idx in eachindex(valid_indices)
             j, i = Tuple(valid_indices[idx])
             js[idx] = j
             is[idx] = i
@@ -1100,9 +1114,9 @@ function main(args::Vector{String})
     prev = time_block!(timings, :summarize_columns_initial) do
         summarize_columns(columns)
     end
-    initial_thickness = scatter_to_grid(initial_thickness_vec, js, is, (ny, nx))
+    initial_thickness = config.write_outputs ? scatter_to_grid(initial_thickness_vec, js, is, (ny, nx)) : Matrix{Float64}(undef, 0, 0)
     nc_path = isempty(config.out_nc) ? joinpath(config.out_dir, "gris_equilibrium_final_state.nc") : config.out_nc
-    writer = time_block!(timings, :init_netcdf) do
+    writer = config.write_netcdf ? time_block!(timings, :init_netcdf) do
         init_spinup_netcdf(
             nc_path,
             config,
@@ -1117,10 +1131,10 @@ function main(args::Vector{String})
             month_of_year,
             source_month_code,
         )
-    end
-    step_export_to_ice = fill(NaN, ny, nx)
-    step_ice_sheet_smb = fill(NaN, ny, nx)
-    step_layer_temperature_c = fill(NaN, config.ntot, ny, nx)
+    end : nothing
+    step_export_to_ice = config.write_netcdf ? fill(NaN, ny, nx) : Matrix{Float64}(undef, 0, 0)
+    step_ice_sheet_smb = config.write_netcdf ? fill(NaN, ny, nx) : Matrix{Float64}(undef, 0, 0)
+    step_layer_temperature_c = config.write_netcdf ? fill(NaN, config.ntot, ny, nx) : Array{Float64, 3}(undef, 0, 0, 0)
     steps_written = 0
     history = NamedTuple[]
     status = :max_cycles
@@ -1128,27 +1142,31 @@ function main(args::Vector{String})
     last_delta_wet_mass_vec = fill(NaN, nvalid)
     last_delta_base_mass_vec = fill(NaN, nvalid)
     last_delta_ice_sheet_smb_vec = fill(NaN, nvalid)
-    monthly_sum_thickness = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_wet_mass = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_bulk_density = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_base_mass = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_ice_sheet_smb = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_export = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_net_ice_sheet_forcing = zeros(Float64, nmonth_total, nvalid)
-    monthly_sum_runoff = zeros(Float64, nmonth_total, nvalid)
-    monthly_count = zeros(Int32, nmonth_total)
+    monthly_sum_thickness = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_wet_mass = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_bulk_density = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_base_mass = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_ice_sheet_smb = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_export = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_net_ice_sheet_forcing = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_sum_runoff = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
+    monthly_count = config.write_netcdf ? zeros(Int32, nmonth_total) : Int32[]
     final = prev
+    simulation_wall_t0 = time_ns()
 
     for cycle in 1:config.max_cycles
         for t in 1:ntime
             dt = dt_days[t]
             month_idx = (cycle - 1) * nmonth_per_cycle + step_month[t]
-            fill!(step_export_to_ice, NaN)
-            fill!(step_ice_sheet_smb, NaN)
-            fill!(step_layer_temperature_c, NaN)
+            if config.write_netcdf
+                fill!(step_export_to_ice, NaN)
+                fill!(step_ice_sheet_smb, NaN)
+                fill!(step_layer_temperature_c, NaN)
+            end
             step_thread_sec = zeros(Float64, Threads.maxthreadid())
             diag_thread_sec = zeros(Float64, Threads.maxthreadid())
-            @threads for idx in eachindex(columns)
+            step_wall_t0 = time_ns()
+            @threads :static for idx in eachindex(columns)
                 col = columns[idx]
                 P_snow = snow_rate[idx, t]
                 P_rain = rain_rate[idx, t]
@@ -1175,30 +1193,38 @@ function main(args::Vector{String})
                     q_lh=q_lh_now,
                 )
                 step_thread_sec[tid] += (time_ns() - t0) * 1.0e-9
-                t1 = time_ns()
-                summary = summarize_column(col)
-                monthly_sum_thickness[month_idx, idx] += summary.thickness
-                monthly_sum_wet_mass[month_idx, idx] += summary.wet_mass
-                monthly_sum_bulk_density[month_idx, idx] += summary.bulk_density
-                monthly_sum_base_mass[month_idx, idx] += col.mass_base
-                monthly_sum_ice_sheet_smb[month_idx, idx] += col.smb_ice
-                monthly_sum_export[month_idx, idx] += col.mass_base - base_before
-                monthly_sum_net_ice_sheet_forcing[month_idx, idx] += col.smb_ice - smb_ice_before
-                monthly_sum_runoff[month_idx, idx] += col.runoff - runoff_before
-                step_export_to_ice[js[idx], is[idx]] = col.mass_base - base_before
-                step_ice_sheet_smb[js[idx], is[idx]] = col.smb_ice - smb_ice_before
-                if col.N > 0
-                    @views step_layer_temperature_c[1:col.N, js[idx], is[idx]] .= col.temperature[1:col.N] .- col.c.T0
+                if config.write_netcdf
+                    t1 = time_ns()
+                    summary = summarize_column(col)
+                    monthly_sum_thickness[month_idx, idx] += summary.thickness
+                    monthly_sum_wet_mass[month_idx, idx] += summary.wet_mass
+                    monthly_sum_bulk_density[month_idx, idx] += summary.bulk_density
+                    monthly_sum_base_mass[month_idx, idx] += col.mass_base
+                    monthly_sum_ice_sheet_smb[month_idx, idx] += col.smb_ice
+                    monthly_sum_export[month_idx, idx] += col.mass_base - base_before
+                    monthly_sum_net_ice_sheet_forcing[month_idx, idx] += col.smb_ice - smb_ice_before
+                    monthly_sum_runoff[month_idx, idx] += col.runoff - runoff_before
+                    step_export_to_ice[js[idx], is[idx]] = col.mass_base - base_before
+                    step_ice_sheet_smb[js[idx], is[idx]] = col.smb_ice - smb_ice_before
+                    if col.N > 0
+                        @views step_layer_temperature_c[1:col.N, js[idx], is[idx]] .= col.temperature[1:col.N] .- col.c.T0
+                    end
+                    diag_thread_sec[tid] += (time_ns() - t1) * 1.0e-9
                 end
-                diag_thread_sec[tid] += (time_ns() - t1) * 1.0e-9
             end
+            step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
             add_timing!(timings, :model_step, sum(step_thread_sec), length(columns))
-            add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), length(columns))
-            monthly_count[month_idx] += 1
-            steps_written += 1
-            write_step_export_to_ice!(writer, steps_written, step_export_to_ice)
-            write_step_ice_sheet_smb!(writer, steps_written, step_ice_sheet_smb)
-            write_step_layer_temperature!(writer, steps_written, step_layer_temperature_c)
+            add_timing!(timings, :model_step_wall, step_wall_sec, length(columns))
+            if config.write_netcdf
+                add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), length(columns))
+                monthly_count[month_idx] += 1
+                steps_written += 1
+                time_block!(timings, :step_output_write) do
+                    write_step_export_to_ice!(writer, steps_written, step_export_to_ice)
+                    write_step_ice_sheet_smb!(writer, steps_written, step_ice_sheet_smb)
+                    write_step_layer_temperature!(writer, steps_written, step_layer_temperature_c)
+                end
+            end
         end
 
         final = time_block!(timings, :summarize_columns_cycle) do
@@ -1251,113 +1277,123 @@ function main(args::Vector{String})
 
         prev = final
     end
+    simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
 
-    final_thickness = scatter_to_grid(final.thickness, js, is, (ny, nx))
-    final_wet_mass = scatter_to_grid(final.wet_mass, js, is, (ny, nx))
-    final_bulk_density = scatter_to_grid(final.bulk_density, js, is, (ny, nx))
-    final_base_mass = scatter_to_grid(final.base_mass, js, is, (ny, nx))
-    final_ice_sheet_smb = scatter_to_grid(final.smb_ice, js, is, (ny, nx))
-    final_runoff = scatter_to_grid(final.runoff, js, is, (ny, nx))
-    last_delta_thickness = scatter_to_grid(last_delta_thickness_vec, js, is, (ny, nx))
-    last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_vec, js, is, (ny, nx))
-    last_delta_base_mass = scatter_to_grid(last_delta_base_mass_vec, js, is, (ny, nx))
-    last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_vec, js, is, (ny, nx))
-    layer_grids = time_block!(timings, :collect_final_layer_grids) do
-        collect_final_layer_grids(columns, js, is, (ny, nx), config.ntot)
+    if config.write_outputs
+        final_thickness = scatter_to_grid(final.thickness, js, is, (ny, nx))
+        final_wet_mass = scatter_to_grid(final.wet_mass, js, is, (ny, nx))
+        final_bulk_density = scatter_to_grid(final.bulk_density, js, is, (ny, nx))
+        final_base_mass = scatter_to_grid(final.base_mass, js, is, (ny, nx))
+        final_ice_sheet_smb = scatter_to_grid(final.smb_ice, js, is, (ny, nx))
+        final_runoff = scatter_to_grid(final.runoff, js, is, (ny, nx))
+        last_delta_thickness = scatter_to_grid(last_delta_thickness_vec, js, is, (ny, nx))
+        last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_vec, js, is, (ny, nx))
+        last_delta_base_mass = scatter_to_grid(last_delta_base_mass_vec, js, is, (ny, nx))
+        last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_vec, js, is, (ny, nx))
     end
-    monthly_mean_thickness = similar(monthly_sum_thickness)
-    monthly_mean_wet_mass = similar(monthly_sum_wet_mass)
-    monthly_mean_bulk_density = similar(monthly_sum_bulk_density)
-    monthly_mean_base_mass = similar(monthly_sum_base_mass)
-    monthly_mean_ice_sheet_smb = similar(monthly_sum_ice_sheet_smb)
-    monthly_export_to_ice = similar(monthly_sum_export)
-    monthly_net_ice_sheet_forcing = similar(monthly_sum_net_ice_sheet_forcing)
-    monthly_runoff = similar(monthly_sum_runoff)
-    monthly_mean_thickness_grid, monthly_mean_wet_mass_grid, monthly_mean_bulk_density_grid,
-    monthly_mean_base_mass_grid, monthly_mean_ice_sheet_smb_grid, monthly_export_to_ice_grid,
-    monthly_net_ice_sheet_forcing_grid, monthly_runoff_grid = time_block!(timings, :aggregate_monthly_outputs) do
-        @inbounds for m in 1:nmonth_total
-            c = max(monthly_count[m], 1)
-            monthly_mean_thickness[m, :] .= monthly_sum_thickness[m, :] ./ c
-            monthly_mean_wet_mass[m, :] .= monthly_sum_wet_mass[m, :] ./ c
-            monthly_mean_bulk_density[m, :] .= monthly_sum_bulk_density[m, :] ./ c
-            monthly_mean_base_mass[m, :] .= monthly_sum_base_mass[m, :] ./ c
-            monthly_mean_ice_sheet_smb[m, :] .= monthly_sum_ice_sheet_smb[m, :] ./ c
-            monthly_export_to_ice[m, :] .= monthly_sum_export[m, :]
-            monthly_net_ice_sheet_forcing[m, :] .= monthly_sum_net_ice_sheet_forcing[m, :]
-            monthly_runoff[m, :] .= monthly_sum_runoff[m, :]
+    if config.write_netcdf
+        layer_grids = time_block!(timings, :collect_final_layer_grids) do
+            collect_final_layer_grids(columns, js, is, (ny, nx), config.ntot)
         end
-        return (
-            monthly_vectors_to_grids(monthly_mean_thickness, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_mean_wet_mass, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_mean_bulk_density, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_mean_base_mass, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_mean_ice_sheet_smb, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_export_to_ice, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_net_ice_sheet_forcing, js, is, (ny, nx)),
-            monthly_vectors_to_grids(monthly_runoff, js, is, (ny, nx)),
-        )
+        monthly_mean_thickness = similar(monthly_sum_thickness)
+        monthly_mean_wet_mass = similar(monthly_sum_wet_mass)
+        monthly_mean_bulk_density = similar(monthly_sum_bulk_density)
+        monthly_mean_base_mass = similar(monthly_sum_base_mass)
+        monthly_mean_ice_sheet_smb = similar(monthly_sum_ice_sheet_smb)
+        monthly_export_to_ice = similar(monthly_sum_export)
+        monthly_net_ice_sheet_forcing = similar(monthly_sum_net_ice_sheet_forcing)
+        monthly_runoff = similar(monthly_sum_runoff)
+        monthly_mean_thickness_grid, monthly_mean_wet_mass_grid, monthly_mean_bulk_density_grid,
+        monthly_mean_base_mass_grid, monthly_mean_ice_sheet_smb_grid, monthly_export_to_ice_grid,
+        monthly_net_ice_sheet_forcing_grid, monthly_runoff_grid = time_block!(timings, :aggregate_monthly_outputs) do
+            @inbounds for m in 1:nmonth_total
+                c = max(monthly_count[m], 1)
+                monthly_mean_thickness[m, :] .= monthly_sum_thickness[m, :] ./ c
+                monthly_mean_wet_mass[m, :] .= monthly_sum_wet_mass[m, :] ./ c
+                monthly_mean_bulk_density[m, :] .= monthly_sum_bulk_density[m, :] ./ c
+                monthly_mean_base_mass[m, :] .= monthly_sum_base_mass[m, :] ./ c
+                monthly_mean_ice_sheet_smb[m, :] .= monthly_sum_ice_sheet_smb[m, :] ./ c
+                monthly_export_to_ice[m, :] .= monthly_sum_export[m, :]
+                monthly_net_ice_sheet_forcing[m, :] .= monthly_sum_net_ice_sheet_forcing[m, :]
+                monthly_runoff[m, :] .= monthly_sum_runoff[m, :]
+            end
+            return (
+                monthly_vectors_to_grids(monthly_mean_thickness, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_mean_wet_mass, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_mean_bulk_density, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_mean_base_mass, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_mean_ice_sheet_smb, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_export_to_ice, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_net_ice_sheet_forcing, js, is, (ny, nx)),
+                monthly_vectors_to_grids(monthly_runoff, js, is, (ny, nx)),
+            )
+        end
     end
 
-    mkpath(config.out_dir)
-    summary_path = joinpath(config.out_dir, "gris_equilibrium_summary.txt")
-    history_csv_path = joinpath(config.out_dir, "gris_equilibrium_history.csv")
-    history_plot_path = joinpath(config.out_dir, "gris_equilibrium_history.png")
-    fields_plot_path = joinpath(config.out_dir, "gris_equilibrium_fields.png")
-    time_block!(timings, :write_summary_text) do
-        write_spinup_summary(summary_path, config, time_values, nvalid, length(mask), history, status, timings)
+    if config.write_outputs
+        mkpath(config.out_dir)
+        summary_path = joinpath(config.out_dir, "gris_equilibrium_summary.txt")
+        history_csv_path = joinpath(config.out_dir, "gris_equilibrium_history.csv")
+        history_plot_path = joinpath(config.out_dir, "gris_equilibrium_history.png")
+        fields_plot_path = joinpath(config.out_dir, "gris_equilibrium_fields.png")
+        time_block!(timings, :write_summary_text) do
+            write_spinup_summary(summary_path, config, time_values, nvalid, length(mask), history, status, timings)
+        end
+        time_block!(timings, :write_history_csv) do
+            write_spinup_history_csv(history_csv_path, history)
+        end
+        time_block!(timings, :render_history_plot) do
+            render_spinup_history_plot(history_plot_path, history, config)
+        end
+        time_block!(timings, :render_fields_plot) do
+            render_spinup_fields_plot(
+                fields_plot_path,
+                x,
+                y,
+                initial_thickness,
+                final_thickness,
+                final_bulk_density,
+                final_base_mass,
+                last_delta_thickness,
+                last_delta_wet_mass,
+                last_delta_base_mass,
+                final_runoff,
+                status,
+                length(history),
+            )
+        end
     end
-    time_block!(timings, :write_history_csv) do
-        write_spinup_history_csv(history_csv_path, history)
+    if config.write_netcdf
+        time_block!(timings, :write_netcdf) do
+            finalize_spinup_netcdf!(
+                writer,
+                final_thickness,
+                final_wet_mass,
+                final_bulk_density,
+                final_base_mass,
+                final_ice_sheet_smb,
+                last_delta_thickness,
+                last_delta_wet_mass,
+                last_delta_base_mass,
+                last_delta_ice_sheet_smb,
+                final_runoff,
+                layer_grids,
+                history,
+                monthly_mean_thickness_grid,
+                monthly_mean_wet_mass_grid,
+                monthly_mean_bulk_density_grid,
+                monthly_mean_base_mass_grid,
+                monthly_mean_ice_sheet_smb_grid,
+                monthly_export_to_ice_grid,
+                monthly_net_ice_sheet_forcing_grid,
+                monthly_runoff_grid,
+                status,
+                length(history),
+                steps_written,
+            )
+        end
     end
-    time_block!(timings, :render_history_plot) do
-        render_spinup_history_plot(history_plot_path, history, config)
-    end
-    time_block!(timings, :render_fields_plot) do
-        render_spinup_fields_plot(
-            fields_plot_path,
-            x,
-            y,
-            initial_thickness,
-            final_thickness,
-            final_bulk_density,
-            final_base_mass,
-            last_delta_thickness,
-            last_delta_wet_mass,
-            last_delta_base_mass,
-            final_runoff,
-            status,
-            length(history),
-        )
-    end
-    time_block!(timings, :write_netcdf) do
-        finalize_spinup_netcdf!(
-            writer,
-            final_thickness,
-            final_wet_mass,
-            final_bulk_density,
-            final_base_mass,
-            final_ice_sheet_smb,
-            last_delta_thickness,
-            last_delta_wet_mass,
-            last_delta_base_mass,
-            last_delta_ice_sheet_smb,
-            final_runoff,
-            layer_grids,
-            history,
-            monthly_mean_thickness_grid,
-            monthly_mean_wet_mass_grid,
-            monthly_mean_bulk_density_grid,
-            monthly_mean_base_mass_grid,
-            monthly_mean_ice_sheet_smb_grid,
-            monthly_export_to_ice_grid,
-            monthly_net_ice_sheet_forcing_grid,
-            monthly_runoff_grid,
-            status,
-            length(history),
-            steps_written,
-        )
-    end
+    run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
 
     println("GrIS equilibrium spin-up complete.")
     println("MAR file       : $(abspath(config.nc_path))")
@@ -1365,11 +1401,24 @@ function main(args::Vector{String})
     println("Forcing end    : $(last(time_values))")
     println("Cycles         : $(length(history))")
     println("Status         : $(string(status))")
-    println("Output NetCDF  : $(abspath(nc_path))")
-    println("History CSV    : $(abspath(history_csv_path))")
-    println("History plot   : $(abspath(history_plot_path))")
-    println("Fields plot    : $(abspath(fields_plot_path))")
-    println("Summary        : $(abspath(summary_path))")
+    println(@sprintf("Simulation wall: %.3f s", simulation_wall_sec))
+    println(@sprintf("Run wall total : %.3f s", run_wall_sec))
+    if haskey(timings.totals, :model_step_wall)
+        println(@sprintf("Model step wall: %.3f s", timings.totals[:model_step_wall]))
+    end
+    if config.write_netcdf
+        println("Output NetCDF  : $(abspath(nc_path))")
+    else
+        println("Output NetCDF  : skipped (--no-nc)")
+    end
+    if config.write_outputs
+        println("History CSV    : $(abspath(history_csv_path))")
+        println("History plot   : $(abspath(history_plot_path))")
+        println("Fields plot    : $(abspath(fields_plot_path))")
+        println("Summary        : $(abspath(summary_path))")
+    else
+        println("File outputs   : skipped (--no-output)")
+    end
     print_timing_summary(stdout, timings)
 end
 
