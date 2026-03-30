@@ -1,5 +1,5 @@
 """
-Column-level helper utilities shared across process modules and diagnostics.
+State access helpers shared across column, domain, and array-backed kernels.
 """
 
 @inline function _resolve_keyword_alias(
@@ -18,65 +18,128 @@ Column-level helper utilities shared across process modules and diagnostics.
     return isnothing(preferred_value) ? legacy_value : preferred_value
 end
 
-@inline function _bulk_snow_density(column::SnowpackColumn)
-    if column.N <= 0
-        return 0.0
+@inline _n_active(N::Base.RefValue{<:Integer}, ::Int) = Int(N[])
+@inline _n_active(N::AbstractVector{<:Integer}, idx::Int) = @inbounds Int(N[idx])
+
+@inline _set_n_active!(N::Base.RefValue{<:Integer}, ::Int, value::Int) = (N[] = value)
+@inline _set_n_active!(N::AbstractVector{<:Integer}, idx::Int, value::Int) = (@inbounds N[idx] = value)
+
+@inline _get_scalar(x::Base.RefValue, ::Int) = x[]
+@inline _get_scalar(x::AbstractVector, idx::Int) = @inbounds x[idx]
+
+@inline _set_scalar!(x::Base.RefValue, ::Int, value) = (x[] = value)
+@inline _set_scalar!(x::AbstractVector, idx::Int, value) = (@inbounds x[idx] = value)
+
+@inline _get_layer(x::AbstractVector, layer_index::Int, ::Int) = @inbounds x[layer_index]
+@inline _get_layer(x::AbstractMatrix, layer_index::Int, idx::Int) = @inbounds x[layer_index, idx]
+
+@inline _set_layer!(x::AbstractVector, layer_index::Int, ::Int, value) = (@inbounds x[layer_index] = value)
+@inline _set_layer!(x::AbstractMatrix, layer_index::Int, idx::Int, value) = (@inbounds x[layer_index, idx] = value)
+
+@inline function _bulk_snow_density(
+    N_storage,
+    mass,
+    density,
+    idx::Int,
+)
+    n = _n_active(N_storage, idx)
+    if n <= 0
+        return zero(eltype(density))
     end
 
-    total_mass = 0.0
-    total_thickness = 0.0
-    @inbounds for layer_index in 1:column.N
-        layer_mass = column.mass[layer_index]
-        layer_density = column.density[layer_index]
-        if layer_mass > 0.0 && layer_density > EPS_TINY
+    total_mass = zero(eltype(density))
+    total_thickness = zero(eltype(density))
+    @inbounds for layer_index in 1:n
+        layer_mass = _get_layer(mass, layer_index, idx)
+        layer_density = _get_layer(density, layer_index, idx)
+        if layer_mass > zero(layer_mass) && layer_density > EPS_TINY
             total_mass += layer_mass
             total_thickness += layer_mass / layer_density
         end
     end
 
-    if total_mass <= 0.0 || total_thickness <= EPS_TINY
-        return 0.0
+    if total_mass <= zero(total_mass) || total_thickness <= EPS_TINY
+        return zero(total_mass)
     end
     return total_mass / total_thickness
 end
 
-@inline function _total_snow_water_mass(column::SnowpackColumn)
-    if column.N <= 0
-        return 0.0
+@inline function _total_snow_water_mass(
+    N_storage,
+    mass,
+    mass_w,
+    idx::Int,
+)
+    n = _n_active(N_storage, idx)
+    if n <= 0
+        return zero(eltype(mass))
     end
 
-    total_wet_mass = 0.0
-    @inbounds for layer_index in 1:column.N
-        total_wet_mass += max(column.mass[layer_index], 0.0) +
-                          max(column.mass_w[layer_index], 0.0)
+    total_wet_mass = zero(eltype(mass))
+    @inbounds for layer_index in 1:n
+        total_wet_mass += max(_get_layer(mass, layer_index, idx), zero(eltype(mass))) +
+                          max(_get_layer(mass_w, layer_index, idx), zero(eltype(mass)))
     end
     return total_wet_mass
 end
 
-@inline function _snow_cover_fraction(column::SnowpackColumn)
-    if column.N <= 0
-        return 0.0
+@inline function _snow_cover_fraction(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    idx::Int,
+)
+    if _n_active(N_storage, idx) <= 0
+        return zero(eltype(density))
     end
 
-    total_wet_mass = _total_snow_water_mass(column)
-    total_wet_mass <= 0.0 && return 0.0
+    total_wet_mass = _total_snow_water_mass(N_storage, mass, mass_w, idx)
+    total_wet_mass <= zero(total_wet_mass) && return zero(total_wet_mass)
 
-    bulk_density = _bulk_snow_density(column)
-    bulk_density <= EPS_TINY && return 0.0
+    bulk_density = _bulk_snow_density(N_storage, mass, density, idx)
+    bulk_density <= EPS_TINY && return zero(bulk_density)
 
-    return min(1.0, (total_wet_mass / bulk_density) / 0.1)
+    return min(one(bulk_density), (total_wet_mass / bulk_density) / oftype(bulk_density, 0.1))
 end
 
-@inline function update_snow_cover!(column::SnowpackColumn)
-    column.snow_cover = _snow_cover_fraction(column)
-    return column.snow_cover
+@inline function _update_snow_cover_arrays!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    snow_cover,
+    idx::Int,
+)
+    fraction = _snow_cover_fraction(N_storage, mass, mass_w, density, idx)
+    _set_scalar!(snow_cover, idx, fraction)
+    return fraction
 end
 
-@inline function _column_has_liquid_water(column::SnowpackColumn)
-    @inbounds for layer_index in 1:column.N
-        if column.mass_w[layer_index] > EPS_TINY
+function update_snow_cover!(domain::AbstractSnowpackDomain, idx::Int)
+    return _update_snow_cover_arrays!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.snow_cover,
+        idx,
+    )
+end
+
+@inline function _column_has_liquid_water(
+    N_storage,
+    mass_w,
+    idx::Int,
+)
+    n = _n_active(N_storage, idx)
+    @inbounds for layer_index in 1:n
+        if _get_layer(mass_w, layer_index, idx) > EPS_TINY
             return true
         end
     end
     return false
 end
+
+@inline _column_has_liquid_water(domain::AbstractSnowpackDomain, idx::Int) =
+    _column_has_liquid_water(domain.N, domain.mass_w, idx)

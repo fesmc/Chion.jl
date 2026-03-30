@@ -1,94 +1,118 @@
 """
-Surface albedo state and update rules for both legacy constant and
-BESSI-style dynamic albedo schemes.
+Surface albedo state and update rules for array-backed snow states.
 """
 
-@inline function _constant_surface_albedo(column::SnowpackColumn)
-    if column.N <= 0 || column.mass[1] <= EPS_EMPTY_LAYER
-        return column.c.alpha_ice
+@inline function _constant_surface_albedo(
+    N_storage,
+    mass,
+    temperature,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+)
+    if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
+        return c.alpha_ice
     end
-    return column.temperature[1] >= column.c.T0 ? column.c.alpha_wet : column.c.alpha_dry
+    return _get_layer(temperature, 1, idx) >= c.T0 ? c.alpha_wet : c.alpha_dry
 end
 
-@inline function _surface_liquid_water_content(column::SnowpackColumn)
-    if column.N <= 0 || column.mass[1] <= EPS_TINY
-        return 0.0
+@inline function _surface_liquid_water_content(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+)
+    if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_TINY
+        return zero(eltype(mass))
     end
 
-    density = column.density[1]
-    if density <= EPS_TINY || density >= column.c.rho_i - EPS_TINY
-        return 0.0
+    surface_density = _get_layer(density, 1, idx)
+    if surface_density <= EPS_TINY || surface_density >= c.rho_i - EPS_TINY
+        return zero(surface_density)
     end
 
-    pore_volume = column.mass[1] / density - column.mass[1] / column.c.rho_i
+    pore_volume = _get_layer(mass, 1, idx) / surface_density - _get_layer(mass, 1, idx) / c.rho_i
     if pore_volume <= EPS_TINY
-        return 0.0
+        return zero(pore_volume)
     end
 
-    return max(column.mass_w[1], 0.0) / column.c.rho_w / pore_volume
+    return max(_get_layer(mass_w, 1, idx), zero(eltype(mass))) / c.rho_w / pore_volume
 end
 
 function _refresh_dynamic_albedo_from_snowfall!(
-    column::SnowpackColumn,
-    snowfall_mass::Float64,
+    albedo_dynamic,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    snowfall_mass,
 )
-    snowfall_mass <= EPS_TINY && return column.albedo_dynamic
+    snowfall_mass <= EPS_TINY && return _get_scalar(albedo_dynamic, idx)
 
-    if column.c.albedo_scheme == :constant
-        column.albedo_dynamic = column.c.alpha_dry
-        return column.albedo_dynamic
+    if c.albedo_scheme == :constant
+        _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
+        return _get_scalar(albedo_dynamic, idx)
     end
 
-    column.albedo_dynamic = min(
-        column.c.alpha_dry,
-        column.albedo_dynamic +
-        (column.c.alpha_dry - column.c.alpha_wet) * (1.0 - exp(-snowfall_mass / 3.0)),
+    updated = min(
+        c.alpha_dry,
+        _get_scalar(albedo_dynamic, idx) +
+        (c.alpha_dry - c.alpha_wet) * (one(snowfall_mass) - exp(-snowfall_mass / oftype(snowfall_mass, 3))),
     )
-    return column.albedo_dynamic
+    _set_scalar!(albedo_dynamic, idx, updated)
+    return updated
 end
 
-"""
-    update_surface_albedo!(column::SnowpackColumn) -> Float64
-
-Update the current surface albedo state.
-
-- `:constant` uses the legacy dry-snow / wet-snow / ice switch.
-- `:dynamic` uses the BESSI default dynamic scheme: snowfall refreshes the
-  albedo toward fresh snow, and the Aoki-style temperature/liquid-water
-  reduction darkens the snow surface between snowfall events.
-"""
-function update_surface_albedo!(column::SnowpackColumn)
-    if column.N <= 0 || column.mass[1] <= EPS_EMPTY_LAYER
-        column.albedo_dynamic = column.c.alpha_ice
-        return column.albedo_dynamic
+function _update_surface_albedo_arrays!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    albedo_dynamic,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+)
+    if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
+        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        return c.alpha_ice
     end
 
-    if column.c.albedo_scheme == :constant
-        column.albedo_dynamic = _constant_surface_albedo(column)
-        return column.albedo_dynamic
+    if c.albedo_scheme == :constant
+        updated = _constant_surface_albedo(N_storage, mass, temperature, idx, c)
+        _set_scalar!(albedo_dynamic, idx, updated)
+        return updated
     end
 
-    previous_albedo = clamp(column.albedo_dynamic, column.c.alpha_wet, column.c.alpha_dry)
-    surface_temperature = column.temperature[1]
-
-    # BESSI radiation.f90, albedo_module == 4 (Aoki-style reduction).
+    previous_albedo = clamp(_get_scalar(albedo_dynamic, idx), c.alpha_wet, c.alpha_dry)
+    surface_temperature = _get_layer(temperature, 1, idx)
     updated_albedo = min(
         previous_albedo,
-        previous_albedo - ((surface_temperature - column.c.T0) * 1.35e-3 + 0.0278),
+        previous_albedo - ((surface_temperature - c.T0) * oftype(surface_temperature, 1.35e-3) + oftype(surface_temperature, 0.0278)),
     )
-    updated_albedo = max(updated_albedo, column.c.alpha_wet)
+    updated_albedo = max(updated_albedo, c.alpha_wet)
 
-    liquid_water_content = _surface_liquid_water_content(column)
-    if liquid_water_content > 0.0 && column.c.max_lwc_albedo > EPS_TINY
+    liquid_water_content = _surface_liquid_water_content(N_storage, mass, mass_w, density, idx, c)
+    if liquid_water_content > zero(liquid_water_content) && c.max_lwc_albedo > EPS_TINY
         wet_adjusted_albedo = updated_albedo - (
-            updated_albedo - column.c.alpha_wet
-        ) * (liquid_water_content / column.c.max_lwc_albedo)
-        updated_albedo = max(
-            column.c.alpha_wet,
-            min(updated_albedo, wet_adjusted_albedo),
-        )
+            updated_albedo - c.alpha_wet
+        ) * (liquid_water_content / c.max_lwc_albedo)
+        updated_albedo = max(c.alpha_wet, min(updated_albedo, wet_adjusted_albedo))
     end
 
-    column.albedo_dynamic = clamp(updated_albedo, column.c.alpha_wet, column.c.alpha_dry)
-    return column.albedo_dynamic
+    updated_albedo = clamp(updated_albedo, c.alpha_wet, c.alpha_dry)
+    _set_scalar!(albedo_dynamic, idx, updated_albedo)
+    return updated_albedo
+end
+
+function update_surface_albedo!(domain::AbstractSnowpackDomain, idx::Int)
+    return _update_surface_albedo_arrays!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.temperature,
+        domain.albedo_dynamic,
+        idx,
+        domain.c,
+    )
 end

@@ -1,119 +1,117 @@
 """
-Liquid-water refreezing following the original BESSI-style routine.
+Liquid-water refreezing for array-backed snowpack states.
 """
 
-"""
-    go_refreezing!(
-        liquid_water_mass::AbstractVector{Float64},
-        solid_mass::AbstractVector{Float64},
-        snow_density::AbstractVector{Float64},
-        layer_temperature::AbstractVector{Float64},
-        melting_temperature::Float64,
-        ice_heat_capacity::Float64,
-        latent_heat_of_melting::Float64,
-        ice_density::Float64,
-    ) -> NamedTuple
-
-Translate the Fortran `go_refreezing` logic to Julia.
-
-Returns:
-- `refreeze` / `refrozen_mass`: refrozen water mass [kg m^-2]
-- `heat_fusion` / `released_latent_heat`: latent heat released by refreezing [J m^-2]
-"""
-function go_refreezing!(
-    liquid_water_mass::AbstractVector{Float64},
-    solid_mass::AbstractVector{Float64},
-    snow_density::AbstractVector{Float64},
-    layer_temperature::AbstractVector{Float64},
-    melting_temperature::Float64,
-    ice_heat_capacity::Float64,
-    latent_heat_of_melting::Float64,
-    ice_density::Float64,
+function _go_refreezing!(
+    N_storage,
+    mass_w,
+    mass,
+    density,
+    temperature,
+    idx::Int,
+    melting_temperature,
+    ice_heat_capacity,
+    latent_heat_of_melting,
+    ice_density,
 )
-    n_layers = length(solid_mass)
-    @assert length(liquid_water_mass) == n_layers
-    @assert length(snow_density) == n_layers
-    @assert length(layer_temperature) == n_layers
+    refrozen_mass = zero(latent_heat_of_melting)
+    released_latent_heat = zero(latent_heat_of_melting)
 
-    refrozen_mass = 0.0
-    released_latent_heat = 0.0
-
-    for layer_index in 1:n_layers
-        if solid_mass[layer_index] > 0.0 && liquid_water_mass[layer_index] > 0.0
-            cold_content = (
-                melting_temperature - layer_temperature[layer_index]
-            ) * ice_heat_capacity * solid_mass[layer_index]
-            available_latent_heat = liquid_water_mass[layer_index] * latent_heat_of_melting
+    @inbounds for layer_index in 1:_n_active(N_storage, idx)
+        solid_mass = _get_layer(mass, layer_index, idx)
+        liquid_water_mass = _get_layer(mass_w, layer_index, idx)
+        if solid_mass > zero(solid_mass) && liquid_water_mass > zero(liquid_water_mass)
+            layer_temperature = _get_layer(temperature, layer_index, idx)
+            cold_content = (melting_temperature - layer_temperature) * ice_heat_capacity * solid_mass
+            available_latent_heat = liquid_water_mass * latent_heat_of_melting
 
             if cold_content < available_latent_heat
-                # CASE 1: water freezes partly
                 newly_refrozen_mass = cold_content / latent_heat_of_melting
-
                 released_latent_heat += newly_refrozen_mass * latent_heat_of_melting
-                layer_temperature[layer_index] = melting_temperature
-                snow_density[layer_index] = min(
-                    snow_density[layer_index] *
-                    (newly_refrozen_mass + solid_mass[layer_index]) /
-                    solid_mass[layer_index],
-                    ice_density,
+                _set_layer!(temperature, layer_index, idx, melting_temperature)
+                _set_layer!(
+                    density,
+                    layer_index,
+                    idx,
+                    min(_get_layer(density, layer_index, idx) * (newly_refrozen_mass + solid_mass) / solid_mass, ice_density),
                 )
-                solid_mass[layer_index] += newly_refrozen_mass
-                liquid_water_mass[layer_index] -= newly_refrozen_mass
+                _set_layer!(mass, layer_index, idx, solid_mass + newly_refrozen_mass)
+                _set_layer!(mass_w, layer_index, idx, liquid_water_mass - newly_refrozen_mass)
                 refrozen_mass += newly_refrozen_mass
             else
-                # CASE 2: all water freezes
-                layer_temperature[layer_index] = (
-                    liquid_water_mass[layer_index] * latent_heat_of_melting / ice_heat_capacity +
-                    liquid_water_mass[layer_index] * melting_temperature +
-                    layer_temperature[layer_index] * solid_mass[layer_index]
-                ) / (liquid_water_mass[layer_index] + solid_mass[layer_index])
-
-                snow_density[layer_index] = min(
-                    snow_density[layer_index] *
-                    (liquid_water_mass[layer_index] + solid_mass[layer_index]) /
-                    solid_mass[layer_index],
-                    ice_density,
+                updated_temperature = (
+                    liquid_water_mass * latent_heat_of_melting / ice_heat_capacity +
+                    liquid_water_mass * melting_temperature +
+                    layer_temperature * solid_mass
+                ) / (liquid_water_mass + solid_mass)
+                _set_layer!(temperature, layer_index, idx, updated_temperature)
+                _set_layer!(
+                    density,
+                    layer_index,
+                    idx,
+                    min(_get_layer(density, layer_index, idx) * (liquid_water_mass + solid_mass) / solid_mass, ice_density),
                 )
-                solid_mass[layer_index] += liquid_water_mass[layer_index]
-                refrozen_mass += liquid_water_mass[layer_index]
-                released_latent_heat += liquid_water_mass[layer_index] * latent_heat_of_melting
-                liquid_water_mass[layer_index] = 0.0
+                _set_layer!(mass, layer_index, idx, solid_mass + liquid_water_mass)
+                refrozen_mass += liquid_water_mass
+                released_latent_heat += liquid_water_mass * latent_heat_of_melting
+                _set_layer!(mass_w, layer_index, idx, zero(liquid_water_mass))
             end
         end
     end
 
     return (
-        refreeze = refrozen_mass,
-        refrozen_mass = refrozen_mass,
-        heat_fusion = released_latent_heat,
-        released_latent_heat = released_latent_heat,
+        refreeze=refrozen_mass,
+        refrozen_mass=refrozen_mass,
+        heat_fusion=released_latent_heat,
+        released_latent_heat=released_latent_heat,
     )
 end
 
-"""
-    go_refreezing!(column::SnowpackColumn) -> NamedTuple
+function go_refreezing!(
+    liquid_water_mass::AbstractVector,
+    solid_mass::AbstractVector,
+    snow_density::AbstractVector,
+    layer_temperature::AbstractVector,
+    melting_temperature,
+    ice_heat_capacity,
+    latent_heat_of_melting,
+    ice_density,
+)
+    N_ref = Ref(length(solid_mass))
+    return _go_refreezing!(
+        N_ref,
+        liquid_water_mass,
+        solid_mass,
+        snow_density,
+        layer_temperature,
+        1,
+        melting_temperature,
+        ice_heat_capacity,
+        latent_heat_of_melting,
+        ice_density,
+    )
+end
 
-Apply refreezing to active `SnowpackColumn` layers.
-"""
-function go_refreezing!(column::SnowpackColumn)
-    n = column.N
-    if n <= 0
+function go_refreezing!(domain::AbstractSnowpackDomain, idx::Int)
+    if _n_active(domain.N, idx) <= 0
         return (
-            refreeze = 0.0,
-            refrozen_mass = 0.0,
-            heat_fusion = 0.0,
-            released_latent_heat = 0.0,
+            refreeze=zero(eltype(domain.mass)),
+            refrozen_mass=zero(eltype(domain.mass)),
+            heat_fusion=zero(eltype(domain.mass)),
+            released_latent_heat=zero(eltype(domain.mass)),
         )
     end
 
-    @views return go_refreezing!(
-        column.mass_w[1:n],
-        column.mass[1:n],
-        column.density[1:n],
-        column.temperature[1:n],
-        column.c.T0,
-        column.c.ci,
-        column.c.Lm,
-        column.c.rho_i,
+    return _go_refreezing!(
+        domain.N,
+        domain.mass_w,
+        domain.mass,
+        domain.density,
+        domain.temperature,
+        idx,
+        domain.c.T0,
+        domain.c.ci,
+        domain.c.Lm,
+        domain.c.rho_i,
     )
 end

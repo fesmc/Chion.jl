@@ -5,8 +5,11 @@ using Printf
 include("SnowpackModel.jl")
 using .SnowpackModel
 
-export SnowpackColumn, step!
+export step!
+export SnowpackDomain
+export SnowpackStepForcing
 export SnowpackPhysicalConstants
+export StepWorkspace, threaded_workspaces
 export continuous_bottom_deplete!
 export update_surface_albedo!
 export get_state, print_state

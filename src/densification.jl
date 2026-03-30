@@ -1,208 +1,207 @@
 """
-Firn densification translated from BESSI `go_densification`.
+Firn densification translated into array-backed kernels.
 """
 
 @inline _bessi_low_density_rate(
-    density::Float64,
-    temperature::Float64,
-    ice_density::Float64,
-    accumulation_rate::Float64,
-) = 0.011 * exp(-10160.0 / 8.13 / temperature) *
-    (ice_density - density) * max(accumulation_rate, 0.0)
+    density,
+    temperature,
+    ice_density,
+    accumulation_rate,
+) = oftype(density, 0.011) * exp(-oftype(temperature, 10160.0) / oftype(temperature, 8.13) / temperature) *
+    (ice_density - density) * max(accumulation_rate, zero(accumulation_rate))
 
 @inline _htessel_snow_viscosity(
-    melting_temperature::Float64,
-    temperature::Float64,
-    density::Float64,
-) = 3.7e7 * exp(8.1e-2 * (melting_temperature - temperature) + 1.8e-2 * density)
+    melting_temperature,
+    temperature,
+    density,
+) = oftype(density, 3.7e7) * exp(oftype(density, 8.1e-2) * (melting_temperature - temperature) + oftype(density, 1.8e-2) * density)
 
 @inline _htessel_thermal_metamorphism(
-    melting_temperature::Float64,
-    temperature::Float64,
-    density::Float64,
-) = 2.8e-6 * exp(
-    -4.2e-2 * (melting_temperature - temperature) - 460.0 * max(0.0, density - 150.0),
+    melting_temperature,
+    temperature,
+    density,
+) = oftype(density, 2.8e-6) * exp(
+    -oftype(density, 4.2e-2) * (melting_temperature - temperature) - oftype(density, 460.0) * max(zero(density), density - oftype(density, 150.0)),
 )
 
 @inline function _htessel_low_density_rate(
-    column::SnowpackColumn,
-    overburden_pressure::Float64,
-    temperature::Float64,
-    density::Float64,
+    c::SnowpackPhysicalConstants,
+    overburden_pressure,
+    temperature,
+    density,
 )
-    snow_viscosity = _htessel_snow_viscosity(column.c.T0, temperature, density)
-    thermal_metamorphism = _htessel_thermal_metamorphism(column.c.T0, temperature, density)
+    snow_viscosity = _htessel_snow_viscosity(c.T0, temperature, density)
+    thermal_metamorphism = _htessel_thermal_metamorphism(c.T0, temperature, density)
     return density * (overburden_pressure / snow_viscosity + thermal_metamorphism)
 end
 
-@inline _relative_porosity(density::Float64, ice_density::Float64) =
-    clamp(1.0 - density / ice_density, 0.0, 1.0)
+@inline _relative_porosity(density, ice_density) = clamp(one(density) - density / ice_density, zero(density), one(density))
 
 function _apply_htessel_liquid_water_compaction!(
-    column::SnowpackColumn,
-    liquid_water_before_energy::AbstractVector{Float64},
-    dt_seconds::Float64,
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    idx::Int,
+    liquid_water_before_energy::AbstractVector,
+    ice_density,
 )
-    n = column.N
-    if n <= 0 || dt_seconds <= 0.0
-        return
+    n = _n_active(N_storage, idx)
+    if n <= 0
+        return nothing
     end
 
-    @views solid_mass = column.mass[1:n]
-    @views density = column.density[1:n]
-    @views liquid_water_mass = column.mass_w[1:n]
-    ice_density = column.c.rho_i
-
-    for layer_index in 1:n
-        layer_density = density[layer_index]
-        layer_solid_mass = solid_mass[layer_index]
-        if layer_density < 550.0 && layer_solid_mass > EPS_TINY
+    @inbounds for layer_index in 1:n
+        layer_density = _get_layer(density, layer_index, idx)
+        layer_solid_mass = _get_layer(mass, layer_index, idx)
+        if layer_density < oftype(layer_density, 550) && layer_solid_mass > EPS_TINY
             previous_liquid_water_mass = layer_index <= length(liquid_water_before_energy) ?
-                liquid_water_before_energy[layer_index] : 0.0
-            retained_liquid_water_gain = max(
-                liquid_water_mass[layer_index] - previous_liquid_water_mass,
-                0.0,
-            )
-            if retained_liquid_water_gain > 0.0
-                # HTESSEL eq. (8): retained meltwater increases density at fixed solid mass.
-                density[layer_index] = min(
-                    max(
-                        layer_density,
-                        layer_density + layer_density * retained_liquid_water_gain / layer_solid_mass,
-                    ),
+                liquid_water_before_energy[layer_index] : zero(layer_density)
+            retained_liquid_water_gain = max(_get_layer(mass_w, layer_index, idx) - previous_liquid_water_mass, zero(layer_density))
+            if retained_liquid_water_gain > zero(retained_liquid_water_gain)
+                updated_density = min(
+                    max(layer_density, layer_density + layer_density * retained_liquid_water_gain / layer_solid_mass),
                     ice_density,
                 )
+                _set_layer!(density, layer_index, idx, updated_density)
             end
         end
     end
-    return
+    return nothing
 end
 
-"""
-    go_densification!(
-        column::SnowpackColumn,
-        accumulation_rate::Float64,
-        dt_seconds::Float64;
-        hl::Bool=false,
-        rho_e::Float64=815.0,
-        P_atm::Float64=101325.0,
-    )
-
-Update layer densities in-place using the multi-regime densification scheme
-from the original Fortran implementation.
-
-- `accumulation_rate` is the accumulation proxy used by the HL branch.
-- `dt_seconds` is timestep in seconds.
-- `hl=true` forces HL for densities above 550 kg m^-3.
-"""
-function go_densification!(
-    column::SnowpackColumn,
-    accumulation_rate::Float64,
-    dt_seconds::Float64;
-    hl::Bool=false,
-    rho_e::Float64=815.0,
-    P_atm::Float64=101325.0,
+function _apply_htessel_liquid_water_compaction!(
+    domain::AbstractSnowpackDomain,
+    idx::Int,
+    liquid_water_before_energy::AbstractVector,
+    dt_seconds,
 )
-    n = column.N
+    return _apply_htessel_liquid_water_compaction!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        idx,
+        liquid_water_before_energy,
+        domain.c.rho_i,
+    )
+end
+
+function _go_densification!(
+    N_storage,
+    mass,
+    density,
+    temperature,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    accumulation_rate,
+    dt_seconds;
+    hl::Bool=false,
+    rho_e=oftype(c.rho_i, 815.0),
+    P_atm=oftype(c.rho_i, 101325.0),
+)
+    n = _n_active(N_storage, idx)
     if n <= 0
-        return
+        return nothing
     end
 
-    ice_density = column.c.rho_i
-    @views solid_mass = column.mass[1:n]
-    @views temperature = column.temperature[1:n]
-    @views density = column.density[1:n]
-    low_density_scheme = column.c.low_density_densification
+    ice_density = c.rho_i
+    solid_mass_above = zero(ice_density)
+    @inbounds for layer_index in 1:n
+        layer_density = _get_layer(density, layer_index, idx)
+        layer_temperature = _get_layer(temperature, layer_index, idx)
+        layer_solid_mass = _get_layer(mass, layer_index, idx)
 
-    solid_mass_above = 0.0
-    for layer_index in 1:n
-        layer_density = density[layer_index]
-        layer_temperature = temperature[layer_index]
-        layer_solid_mass = solid_mass[layer_index]
-
-        # Ice-density layers have no remaining pore space. The bubble-pressure
-        # formulation becomes singular there, so keep them pinned to rho_i.
         if !isfinite(layer_density) || !isfinite(layer_temperature)
-            solid_mass_above += max(layer_solid_mass, 0.0)
+            solid_mass_above += max(layer_solid_mass, zero(layer_solid_mass))
             continue
         elseif layer_density >= ice_density - EPS_TINY
-            density[layer_index] = ice_density
-            solid_mass_above += max(layer_solid_mass, 0.0)
+            _set_layer!(density, layer_index, idx, ice_density)
+            solid_mass_above += max(layer_solid_mass, zero(layer_solid_mass))
             continue
         end
 
-        density_tendency = 0.0
-        overburden_pressure = 9.81 * (solid_mass_above + layer_solid_mass / 2.0)
+        density_tendency = zero(layer_density)
+        overburden_pressure = oftype(layer_density, 9.81) * (solid_mass_above + layer_solid_mass / oftype(layer_density, 2))
 
-        if layer_density < 550.0
-            if layer_solid_mass > 0.0
-                if low_density_scheme == :htessel
-                    density_tendency = _htessel_low_density_rate(
-                        column,
-                        overburden_pressure,
-                        layer_temperature,
-                        layer_density,
-                    )
+        if layer_density < oftype(layer_density, 550.0)
+            if layer_solid_mass > zero(layer_solid_mass)
+                density_tendency = if c.low_density_densification == :htessel
+                    _htessel_low_density_rate(c, overburden_pressure, layer_temperature, layer_density)
                 else
-                    density_tendency = _bessi_low_density_rate(
-                        layer_density,
-                        layer_temperature,
-                        ice_density,
-                        accumulation_rate,
-                    )
+                    _bessi_low_density_rate(layer_density, layer_temperature, ice_density, accumulation_rate)
                 end
             end
         elseif hl
-            if layer_index > 1 && layer_solid_mass > 0.0
-                density_tendency = 0.575 * exp(-21400.0 / 8.13 / layer_temperature) *
+            if layer_index > 1 && layer_solid_mass > zero(layer_solid_mass)
+                density_tendency = oftype(layer_density, 0.575) * exp(-oftype(layer_density, 21400.0) / oftype(layer_density, 8.13) / layer_temperature) *
                                    (ice_density - layer_density) *
-                                   (1000.0 / 3600.0 / 24.0 / 365.0)^0.5 *
-                                   max(accumulation_rate, 0.0)^0.5
+                                   (oftype(layer_density, 1000.0) / oftype(layer_density, 3600.0) / oftype(layer_density, 24.0) / oftype(layer_density, 365.0))^oftype(layer_density, 0.5) *
+                                   max(accumulation_rate, zero(accumulation_rate))^oftype(layer_density, 0.5)
             end
-        elseif layer_density < 800.0
+        elseif layer_density < oftype(layer_density, 800.0)
             density_ratio = layer_density / ice_density
-            densification_shape_factor = 10.0^(
-                -29.166 * density_ratio^3 +
-                84.422 * density_ratio^2 -
-                87.425 * density_ratio +
-                30.673
+            densification_shape_factor = oftype(layer_density, 10.0)^(
+                -oftype(layer_density, 29.166) * density_ratio^3 +
+                oftype(layer_density, 84.422) * density_ratio^2 -
+                oftype(layer_density, 87.425) * density_ratio +
+                oftype(layer_density, 30.673)
             )
-            ice_pressure_mpa = overburden_pressure / 1.0e6
-            bubble_pressure_mpa = 0.0
+            ice_pressure_mpa = overburden_pressure / oftype(layer_density, 1.0e6)
+            bubble_pressure_mpa = zero(layer_density)
             if layer_density > rho_e
                 bubble_pressure_mpa = P_atm * (
-                    (1.0 / rho_e - 1.0 / ice_density) /
-                    (1.0 / layer_density - 1.0 / ice_density) - 1.0
-                ) / 1.0e6
+                    (one(layer_density) / rho_e - one(layer_density) / ice_density) /
+                    (one(layer_density) / layer_density - one(layer_density) / ice_density) - one(layer_density)
+                ) / oftype(layer_density, 1.0e6)
             end
             pressure_excess_mpa = ice_pressure_mpa - bubble_pressure_mpa
-            density_tendency = 25400.0 * exp(-60000.0 / 8.13 / layer_temperature) *
+            density_tendency = oftype(layer_density, 25400.0) * exp(-oftype(layer_density, 60000.0) / oftype(layer_density, 8.13) / layer_temperature) *
                                layer_density * densification_shape_factor * pressure_excess_mpa^3
         else
             relative_porosity = _relative_porosity(layer_density, ice_density)
-            denominator = 1.0 - relative_porosity^(1.0 / 3.0)
+            denominator = one(layer_density) - relative_porosity^(one(layer_density) / oftype(layer_density, 3))
             if abs(denominator) > EPS_TINY
-                densification_shape_factor = 3.0 / 16.0 *
-                                             relative_porosity /
-                                             denominator^3
-                ice_pressure_mpa = overburden_pressure / 1.0e6
-                bubble_pressure_mpa = 0.0
+                densification_shape_factor = oftype(layer_density, 3) / oftype(layer_density, 16) *
+                                             relative_porosity / denominator^3
+                ice_pressure_mpa = overburden_pressure / oftype(layer_density, 1.0e6)
+                bubble_pressure_mpa = zero(layer_density)
                 if layer_density > rho_e
                     bubble_pressure_mpa = P_atm * (
-                        (1.0 / rho_e - 1.0 / ice_density) /
-                        (1.0 / layer_density - 1.0 / ice_density) - 1.0
-                    ) / 1.0e6
+                        (one(layer_density) / rho_e - one(layer_density) / ice_density) /
+                        (one(layer_density) / layer_density - one(layer_density) / ice_density) - one(layer_density)
+                    ) / oftype(layer_density, 1.0e6)
                 end
                 pressure_excess_mpa = ice_pressure_mpa - bubble_pressure_mpa
-                density_tendency = 25400.0 * exp(-60000.0 / 8.13 / layer_temperature) *
+                density_tendency = oftype(layer_density, 25400.0) * exp(-oftype(layer_density, 60000.0) / oftype(layer_density, 8.13) / layer_temperature) *
                                    layer_density * densification_shape_factor * pressure_excess_mpa^3
             end
         end
 
         updated_density = max(layer_density, layer_density + density_tendency * dt_seconds)
-        density[layer_index] = min(updated_density, ice_density)
-        solid_mass_above += max(layer_solid_mass, 0.0)
+        _set_layer!(density, layer_index, idx, min(updated_density, ice_density))
+        solid_mass_above += max(layer_solid_mass, zero(layer_solid_mass))
     end
 
-    return
+    return nothing
+end
+
+function go_densification!(
+    domain::AbstractSnowpackDomain,
+    idx::Int,
+    accumulation_rate,
+    dt_seconds;
+    kwargs...,
+)
+    return _go_densification!(
+        domain.N,
+        domain.mass,
+        domain.density,
+        domain.temperature,
+        idx,
+        domain.c,
+        accumulation_rate,
+        dt_seconds;
+        kwargs...,
+    )
 end

@@ -16,20 +16,25 @@ function add_timing!(stats::StepTimingStats, key::Symbol, dt_sec::Float64, count
 end
 
 @inline function _time_block!(
-    stats::Union{Nothing, StepTimingStats},
+    stats::Nothing,
     key::Symbol,
     f::F,
 ) where {F<:Function}
-    if isnothing(stats)
-        return f()
-    end
+    return f()
+end
+
+@inline function _time_block!(
+    stats::StepTimingStats,
+    key::Symbol,
+    f::F,
+) where {F<:Function}
     t0 = time_ns()
     value = f()
     add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
     return value
 end
 
-@inline _time_block!(f::F, stats::Union{Nothing, StepTimingStats}, key::Symbol) where {F<:Function} =
+@inline _time_block!(f::F, stats, key::Symbol) where {F<:Function} =
     _time_block!(stats, key, f)
 
 function timing_rows(stats::StepTimingStats)

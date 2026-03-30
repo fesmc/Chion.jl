@@ -2,28 +2,20 @@
 State accessors and formatted state output.
 """
 
-"""
-    get_state(column::SnowpackColumn) -> Dict
-
-Get the current state of the snowpack column.
-
-Returns a dictionary with:
-- `N`: Number of active layers
-- `mass` / `solid_mass`: Solid snow/ice mass in each active layer [kg/m^2]
-- `mass_w` / `liquid_water_mass`: Liquid water mass in each active layer [kg/m^2]
-- `density`: Density in each active layer [kg/m^3]
-- `total_mass`: Total mass in column [kg/m^2]
-- `total_liquid_water`: Total liquid water mass in column [kg/m^2]
-- `total_wet_mass`: Total snow plus liquid water mass in column [kg/m^2]
-- `thickness`: Thickness of each active layer [m]
-- `total_thickness`: Total column thickness [m]
-- `surface_temperature`: Surface temperature [K]
-- `snow_cover`: Diagnosed snow cover fraction [1]
-- `surface_albedo`: Current surface albedo used for shortwave absorption [1]
-"""
-function get_state(column::SnowpackColumn)
-    snow_cover = _snow_cover_fraction(column)
-    if column.N == 0
+function _state_dict(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    smb_ice,
+    albedo_dynamic,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+)
+    snow_cover = _snow_cover_fraction(N_storage, mass, mass_w, density, idx)
+    n = _n_active(N_storage, idx)
+    if n == 0
         return Dict(
             "N" => 0,
             "n_active" => 0,
@@ -37,23 +29,23 @@ function get_state(column::SnowpackColumn)
             "total_wet_mass" => 0.0,
             "thickness" => Float64[],
             "total_thickness" => 0.0,
-            "surface_temperature" => column.c.T0,
+            "surface_temperature" => c.T0,
             "snow_cover" => snow_cover,
-            "surface_albedo" => column.albedo_dynamic,
-            "albedo_dynamic" => column.albedo_dynamic,
-            "smb_ice" => column.smb_ice,
-            "ice_sheet_smb" => column.smb_ice,
+            "surface_albedo" => _get_scalar(albedo_dynamic, idx),
+            "albedo_dynamic" => _get_scalar(albedo_dynamic, idx),
+            "smb_ice" => _get_scalar(smb_ice, idx),
+            "ice_sheet_smb" => _get_scalar(smb_ice, idx),
         )
     end
 
-    @views active_solid_mass = column.mass[1:column.N]
-    @views active_liquid_water_mass = column.mass_w[1:column.N]
-    @views active_density = column.density[1:column.N]
+    active_solid_mass = [@inbounds _get_layer(mass, layer_index, idx) for layer_index in 1:n]
+    active_liquid_water_mass = [@inbounds _get_layer(mass_w, layer_index, idx) for layer_index in 1:n]
+    active_density = [@inbounds _get_layer(density, layer_index, idx) for layer_index in 1:n]
     thickness = active_solid_mass ./ active_density
 
     return Dict(
-        "N" => column.N,
-        "n_active" => column.N,
+        "N" => n,
+        "n_active" => n,
         "mass" => active_solid_mass,
         "solid_mass" => active_solid_mass,
         "mass_w" => active_liquid_water_mass,
@@ -64,47 +56,52 @@ function get_state(column::SnowpackColumn)
         "total_wet_mass" => sum(active_solid_mass) + sum(active_liquid_water_mass),
         "thickness" => thickness,
         "total_thickness" => sum(thickness),
-        "surface_temperature" => column.temperature[1],
+        "surface_temperature" => _get_layer(temperature, 1, idx),
         "snow_cover" => snow_cover,
-        "surface_albedo" => column.albedo_dynamic,
-        "albedo_dynamic" => column.albedo_dynamic,
-        "smb_ice" => column.smb_ice,
-        "ice_sheet_smb" => column.smb_ice,
+        "surface_albedo" => _get_scalar(albedo_dynamic, idx),
+        "albedo_dynamic" => _get_scalar(albedo_dynamic, idx),
+        "smb_ice" => _get_scalar(smb_ice, idx),
+        "ice_sheet_smb" => _get_scalar(smb_ice, idx),
     )
 end
 
-"""
-    print_state(column::SnowpackColumn)
+function get_state(domain::AbstractSnowpackDomain, idx::Int=1)
+    return _state_dict(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.temperature,
+        domain.smb_ice,
+        domain.albedo_dynamic,
+        idx,
+        domain.c,
+    )
+end
 
-Print a formatted summary of the current snowpack state.
-"""
-function print_state(column::SnowpackColumn)
-    state = get_state(column)
-
+function print_state(domain::AbstractSnowpackDomain, idx::Int=1)
+    state = get_state(domain, idx)
     println("=" ^ 60)
-    println("Snowpack Column State")
+    println("Snowpack Domain Column State")
     println("=" ^ 60)
+    println("Column index: ", idx)
     println("Active layers: ", state["N"])
     println("Total mass: ", round(state["total_mass"], digits=2), " kg/m^2")
     println("Total thickness: ", round(state["total_thickness"], digits=3), " m")
     println("Snow cover: ", round(state["snow_cover"], digits=3))
     println("Surface albedo: ", round(state["surface_albedo"], digits=3))
     println()
+end
 
-    if state["N"] > 0
-        println("Layer details (surface = 1):")
-        println("-" ^ 60)
-        println("Layer | Mass (kg/m^2) | Density (kg/m^3) | Thickness (m)")
-        println("-" ^ 60)
-        for layer_index in 1:state["N"]
-            @printf(
-                "%5d | %12.2f | %15.1f | %13.4f\n",
-                layer_index,
-                state["mass"][layer_index],
-                state["density"][layer_index],
-                state["thickness"][layer_index],
-            )
-        end
-        println("=" ^ 60)
+function compute_auxiliary!(domain::AbstractSnowpackDomain, idx::Int)
+    update_snow_cover!(domain, idx)
+    update_surface_albedo!(domain, idx)
+    return nothing
+end
+
+function compute_auxiliary!(domain::AbstractSnowpackDomain)
+    for idx in 1:column_count(domain)
+        compute_auxiliary!(domain, idx)
     end
+    return nothing
 end

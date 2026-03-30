@@ -1,19 +1,23 @@
 """
-Column-based snowpack model with dynamic layering.
-Based on Born et al. (2019) algorithm.
-
-This module keeps the public API in one place and delegates implementation to
-focused source files by responsibility.
+Array-first snowpack model with Terrarium-style state containers.
 """
 
 module SnowpackModel
 
 using Printf
+using Adapt: Adapt, adapt, @adapt_structure
+using CUDA
+using KernelAbstractions
+using LinearAlgebra
 
 include("model_constants.jl")
 
 export SnowpackPhysicalConstants
-export SnowpackColumn
+export SnowpackStepForcing
+export AbstractSnowpackDomain
+export SnowpackDomain
+export StepWorkspace
+export threaded_workspaces
 export step!
 export go_percolation!
 export go_refreezing!
@@ -26,7 +30,19 @@ export StepTimingStats
 export add_timing!
 export timing_rows
 export print_timing_summary
+export column_count
+export cpu_domain
+export gpu_domain
+export cuda_available
+export kernelabstractions_available
+export summarize_domain_state
+export summarize_domain_state!
+export variables
+export compute_auxiliary!
+export compute_tendencies!
 
+include("abstractions.jl")
+include("backend_utils.jl")
 include("snowpack_types.jl")
 include("column_helpers.jl")
 include("albedo.jl")
@@ -35,6 +51,8 @@ include("energy_flux.jl")
 include("densification.jl")
 include("percolation.jl")
 include("refreezing.jl")
+include("diurnal_shortwave.jl")
+include("batch.jl")
 include("timing.jl")
 include("step.jl")
 include("state_io.jl")
