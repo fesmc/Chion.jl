@@ -8,7 +8,6 @@ using Printf
 using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
 using KernelAbstractions
-using LinearAlgebra
 
 include("model_constants.jl")
 

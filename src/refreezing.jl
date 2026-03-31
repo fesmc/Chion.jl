@@ -15,19 +15,19 @@ function _go_refreezing!(
     ice_density,
 )
     refrozen_mass = zero(latent_heat_of_melting)
-    released_latent_heat = zero(latent_heat_of_melting)
 
     @inbounds for layer_index in 1:_n_active(N_storage, idx)
         solid_mass = _get_layer(mass, layer_index, idx)
         liquid_water_mass = _get_layer(mass_w, layer_index, idx)
-        if solid_mass > zero(solid_mass) && liquid_water_mass > zero(liquid_water_mass)
-            layer_temperature = _get_layer(temperature, layer_index, idx)
+        layer_temperature = _get_layer(temperature, layer_index, idx)
+        if solid_mass > zero(solid_mass) &&
+           liquid_water_mass > zero(liquid_water_mass) &&
+           layer_temperature < melting_temperature
             cold_content = (melting_temperature - layer_temperature) * ice_heat_capacity * solid_mass
             available_latent_heat = liquid_water_mass * latent_heat_of_melting
 
             if cold_content < available_latent_heat
                 newly_refrozen_mass = cold_content / latent_heat_of_melting
-                released_latent_heat += newly_refrozen_mass * latent_heat_of_melting
                 _set_layer!(temperature, layer_index, idx, melting_temperature)
                 _set_layer!(
                     density,
@@ -53,18 +53,12 @@ function _go_refreezing!(
                 )
                 _set_layer!(mass, layer_index, idx, solid_mass + liquid_water_mass)
                 refrozen_mass += liquid_water_mass
-                released_latent_heat += liquid_water_mass * latent_heat_of_melting
                 _set_layer!(mass_w, layer_index, idx, zero(liquid_water_mass))
             end
         end
     end
 
-    return (
-        refreeze=refrozen_mass,
-        refrozen_mass=refrozen_mass,
-        heat_fusion=released_latent_heat,
-        released_latent_heat=released_latent_heat,
-    )
+    return refrozen_mass
 end
 
 function go_refreezing!(
@@ -78,7 +72,7 @@ function go_refreezing!(
     ice_density,
 )
     N_ref = Ref(length(solid_mass))
-    return _go_refreezing!(
+    refrozen_mass = _go_refreezing!(
         N_ref,
         liquid_water_mass,
         solid_mass,
@@ -90,19 +84,21 @@ function go_refreezing!(
         latent_heat_of_melting,
         ice_density,
     )
+    return (
+        refrozen_mass=refrozen_mass,
+        released_latent_heat=refrozen_mass * latent_heat_of_melting,
+    )
 end
 
 function go_refreezing!(domain::AbstractSnowpackDomain, idx::Int)
     if _n_active(domain.N, idx) <= 0
         return (
-            refreeze=zero(eltype(domain.mass)),
             refrozen_mass=zero(eltype(domain.mass)),
-            heat_fusion=zero(eltype(domain.mass)),
             released_latent_heat=zero(eltype(domain.mass)),
         )
     end
 
-    return _go_refreezing!(
+    refrozen_mass = _go_refreezing!(
         domain.N,
         domain.mass_w,
         domain.mass,
@@ -113,5 +109,9 @@ function go_refreezing!(domain::AbstractSnowpackDomain, idx::Int)
         domain.c.ci,
         domain.c.Lm,
         domain.c.rho_i,
+    )
+    return (
+        refrozen_mass=refrozen_mass,
+        released_latent_heat=refrozen_mass * domain.c.Lm,
     )
 end

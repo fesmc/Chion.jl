@@ -303,8 +303,7 @@ function scatter_to_grid(values::Vector{Float64}, js::Vector{Int}, is::Vector{In
     return out
 end
 
-function summarize_columns(domain::SM.SnowpackDomain)
-    n = SM.column_count(domain)
+function allocate_summary_buffers(n::Int)
     thickness = Vector{Float64}(undef, n)
     wet_mass = Vector{Float64}(undef, n)
     bulk_density = Vector{Float64}(undef, n)
@@ -312,26 +311,65 @@ function summarize_columns(domain::SM.SnowpackDomain)
     smb_ice = Vector{Float64}(undef, n)
     liquid_water = Vector{Float64}(undef, n)
     runoff = Vector{Float64}(undef, n)
-
-    @threads :static for idx in 1:n
-        summary = summarize_column(domain, idx)
-        thickness[idx] = summary.thickness
-        wet_mass[idx] = summary.wet_mass
-        bulk_density[idx] = summary.bulk_density
-        base_mass[idx] = domain.mass_base[idx]
-        smb_ice[idx] = domain.smb_ice[idx]
-        liquid_water[idx] = summary.liquid_mass
-        runoff[idx] = summary.runoff
-    end
-
     return (
-        thickness = thickness,
-        wet_mass = wet_mass,
-        bulk_density = bulk_density,
-        base_mass = base_mass,
-        smb_ice = smb_ice,
-        liquid_water = liquid_water,
-        runoff = runoff,
+        thickness=thickness,
+        wet_mass=wet_mass,
+        bulk_density=bulk_density,
+        base_mass=base_mass,
+        smb_ice=smb_ice,
+        liquid_water=liquid_water,
+        runoff=runoff,
+    )
+end
+
+function summarize_columns!(summary, domain::SM.SnowpackDomain)
+    SM.summarize_domain_state!(
+        summary.thickness,
+        summary.wet_mass,
+        summary.bulk_density,
+        summary.base_mass,
+        summary.smb_ice,
+        summary.liquid_water,
+        summary.runoff,
+        domain;
+        backend=:threads,
+    )
+    return summary
+end
+
+@inline function make_step_forcing(
+    air_temperature::Float64,
+    snowfall_rate::Float64,
+    rainfall_rate::Float64,
+    dt_days::Float64,
+    shortwave_down::Float64,
+    wind_speed::Float64,
+    q_lw_down::Float64,
+    has_q_lw_down::Bool,
+    q_sh::Float64,
+    has_q_sh::Bool,
+    q_lh::Float64,
+    has_q_lh::Bool,
+)
+    return SM.SnowpackStepForcing(
+        air_temperature,
+        snowfall_rate + rainfall_rate,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        0.0,
+        q_lw_down,
+        q_sh,
+        q_lh,
+        false,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        false,
+        0.0,
+        0.0,
     )
 end
 
@@ -1065,6 +1103,7 @@ function main(args::Vector{String})
     js = Vector{Int}(undef, nvalid)
     is = Vector{Int}(undef, nvalid)
     domain = SM.SnowpackDomain(ncol=nvalid, Ntot=config.ntot)
+    ncol = SM.column_count(domain)
     workspaces = SM.threaded_workspaces(domain)
     initial_thickness_vec = Vector{Float64}(undef, nvalid)
     initial_wet_mass_vec = Vector{Float64}(undef, nvalid)
@@ -1074,8 +1113,11 @@ function main(args::Vector{String})
     rain_rate = Matrix{Float64}(undef, nvalid, ntime)
     s_boa = Matrix{Float64}(undef, nvalid, ntime)
     q_lw = Matrix{Float64}(undef, nvalid, ntime)
+    has_q_lw = fill(false, nvalid, ntime)
     q_sh = Matrix{Float64}(undef, nvalid, ntime)
+    has_q_sh = fill(false, nvalid, ntime)
     q_lh = Matrix{Float64}(undef, nvalid, ntime)
+    has_q_lh = fill(false, nvalid, ntime)
     wind_speed = Matrix{Float64}(undef, nvalid, ntime)
 
     time_block!(timings, :initialize_columns_and_forcing) do
@@ -1103,16 +1145,24 @@ function main(args::Vector{String})
                 snow_rate[idx, t] = mmwe_day_to_kgm2s(Float64(sf_full[t, j, i]))
                 rain_rate[idx, t] = mmwe_day_to_kgm2s(Float64(rf_full[t, j, i]))
                 s_boa[idx, t] = valid_or(0.0, Float64(swd_full[t, j, i]))
-                q_lw[idx, t] = Float64(lwd_full[t, j, i])
-                q_sh[idx, t] = Float64(shf_full[t, j, i])
-                q_lh[idx, t] = Float64(lhf_full[t, j, i])
+                q_lw_ij = Float64(lwd_full[t, j, i])
+                q_sh_ij = Float64(shf_full[t, j, i])
+                q_lh_ij = Float64(lhf_full[t, j, i])
+                has_q_lw[idx, t] = isfinite(q_lw_ij)
+                has_q_sh[idx, t] = isfinite(q_sh_ij)
+                has_q_lh[idx, t] = isfinite(q_lh_ij)
+                q_lw[idx, t] = has_q_lw[idx, t] ? q_lw_ij : 0.0
+                q_sh[idx, t] = has_q_sh[idx, t] ? q_sh_ij : 0.0
+                q_lh[idx, t] = has_q_lh[idx, t] ? q_lh_ij : 0.0
                 wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : valid_or(5.0, Float64(wind_full[t, j, i]))
             end
         end
     end
 
-    prev = time_block!(timings, :summarize_columns_initial) do
-        summarize_columns(domain)
+    prev = allocate_summary_buffers(nvalid)
+    final = allocate_summary_buffers(nvalid)
+    time_block!(timings, :summarize_columns_initial) do
+        summarize_columns!(prev, domain)
     end
     initial_thickness = config.write_outputs ? scatter_to_grid(initial_thickness_vec, js, is, (ny, nx)) : Matrix{Float64}(undef, 0, 0)
     nc_path = isempty(config.out_nc) ? joinpath(config.out_dir, "gris_equilibrium_final_state.nc") : config.out_nc
@@ -1151,49 +1201,45 @@ function main(args::Vector{String})
     monthly_sum_net_ice_sheet_forcing = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
     monthly_sum_runoff = config.write_netcdf ? zeros(Float64, nmonth_total, nvalid) : Matrix{Float64}(undef, 0, 0)
     monthly_count = config.write_netcdf ? zeros(Int32, nmonth_total) : Int32[]
-    final = prev
     simulation_wall_t0 = time_ns()
+    step_thread_sec = zeros(Float64, Threads.maxthreadid())
+    diag_thread_sec = zeros(Float64, Threads.maxthreadid())
 
     for cycle in 1:config.max_cycles
         for t in 1:ntime
             dt = dt_days[t]
             month_idx = (cycle - 1) * nmonth_per_cycle + step_month[t]
+            fill!(step_thread_sec, 0.0)
+            step_wall_t0 = time_ns()
             if config.write_netcdf
                 fill!(step_export_to_ice, NaN)
                 fill!(step_ice_sheet_smb, NaN)
                 fill!(step_layer_temperature_c, NaN)
-            end
-            step_thread_sec = zeros(Float64, Threads.maxthreadid())
-            diag_thread_sec = zeros(Float64, Threads.maxthreadid())
-            step_wall_t0 = time_ns()
-            @threads :static for idx in 1:SM.column_count(domain)
-                P_snow = snow_rate[idx, t]
-                P_rain = rain_rate[idx, t]
-                q_lw_down = isfinite(q_lw[idx, t]) ? q_lw[idx, t] : nothing
-                q_sh_now = isfinite(q_sh[idx, t]) ? q_sh[idx, t] : nothing
-                q_lh_now = isfinite(q_lh[idx, t]) ? q_lh[idx, t] : nothing
-                wind_now = wind_speed[idx, t]
-                base_before = domain.mass_base[idx]
-                smb_ice_before = domain.smb_ice[idx]
-                runoff_before = domain.runoff[idx]
-                tid = threadid()
-                t0 = time_ns()
-                forcing = SM.SnowpackStepForcing(
-                    domain.c,
-                    tair_k[idx, t],
-                    P_snow + P_rain,
-                    dt;
-                    snowfall_rate=P_snow,
-                    rainfall_rate=P_rain,
-                    shortwave_down=s_boa[idx, t],
-                    wind_speed=wind_now,
-                    q_lw_down=q_lw_down,
-                    q_sh=q_sh_now,
-                    q_lh=q_lh_now,
-                )
-                SM.step!(domain, idx, forcing, workspaces[tid])
-                step_thread_sec[tid] += (time_ns() - t0) * 1.0e-9
-                if config.write_netcdf
+                fill!(diag_thread_sec, 0.0)
+                @threads :static for idx in 1:ncol
+                    @inbounds P_snow = snow_rate[idx, t]
+                    @inbounds P_rain = rain_rate[idx, t]
+                    base_before = domain.mass_base[idx]
+                    smb_ice_before = domain.smb_ice[idx]
+                    runoff_before = domain.runoff[idx]
+                    tid = threadid()
+                    t0 = time_ns()
+                    forcing = make_step_forcing(
+                        @inbounds(tair_k[idx, t]),
+                        P_snow,
+                        P_rain,
+                        dt,
+                        @inbounds(s_boa[idx, t]),
+                        @inbounds(wind_speed[idx, t]),
+                        @inbounds(q_lw[idx, t]),
+                        @inbounds(has_q_lw[idx, t]),
+                        @inbounds(q_sh[idx, t]),
+                        @inbounds(has_q_sh[idx, t]),
+                        @inbounds(q_lh[idx, t]),
+                        @inbounds(has_q_lh[idx, t]),
+                    )
+                    SM.step!(domain, idx, forcing, workspaces[tid])
+                    step_thread_sec[tid] += (time_ns() - t0) * 1.0e-9
                     t1 = time_ns()
                     summary = summarize_column(domain, idx)
                     monthly_sum_thickness[month_idx, idx] += summary.thickness
@@ -1211,12 +1257,33 @@ function main(args::Vector{String})
                     end
                     diag_thread_sec[tid] += (time_ns() - t1) * 1.0e-9
                 end
+            else
+                @threads :static for idx in 1:ncol
+                    tid = threadid()
+                    t0 = time_ns()
+                    forcing = make_step_forcing(
+                        @inbounds(tair_k[idx, t]),
+                        @inbounds(snow_rate[idx, t]),
+                        @inbounds(rain_rate[idx, t]),
+                        dt,
+                        @inbounds(s_boa[idx, t]),
+                        @inbounds(wind_speed[idx, t]),
+                        @inbounds(q_lw[idx, t]),
+                        @inbounds(has_q_lw[idx, t]),
+                        @inbounds(q_sh[idx, t]),
+                        @inbounds(has_q_sh[idx, t]),
+                        @inbounds(q_lh[idx, t]),
+                        @inbounds(has_q_lh[idx, t]),
+                    )
+                    SM.step!(domain, idx, forcing, workspaces[tid])
+                    step_thread_sec[tid] += (time_ns() - t0) * 1.0e-9
+                end
             end
             step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
-            add_timing!(timings, :model_step, sum(step_thread_sec), SM.column_count(domain))
-            add_timing!(timings, :model_step_wall, step_wall_sec, SM.column_count(domain))
+            add_timing!(timings, :model_step, sum(step_thread_sec), ncol)
+            add_timing!(timings, :model_step_wall, step_wall_sec, ncol)
             if config.write_netcdf
-                add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), SM.column_count(domain))
+                add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), ncol)
                 monthly_count[month_idx] += 1
                 steps_written += 1
                 time_block!(timings, :step_output_write) do
@@ -1227,8 +1294,8 @@ function main(args::Vector{String})
             end
         end
 
-        final = time_block!(timings, :summarize_columns_cycle) do
-            summarize_columns(domain)
+        time_block!(timings, :summarize_columns_cycle) do
+            summarize_columns!(final, domain)
         end
         last_delta_thickness_vec .= final.thickness .- prev.thickness
         last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
@@ -1275,17 +1342,18 @@ function main(args::Vector{String})
             break
         end
 
-        prev = final
+        prev, final = final, prev
     end
     simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
+    final_state = (status == :max_cycles && length(history) == config.max_cycles) ? prev : final
 
     if config.write_outputs
-        final_thickness = scatter_to_grid(final.thickness, js, is, (ny, nx))
-        final_wet_mass = scatter_to_grid(final.wet_mass, js, is, (ny, nx))
-        final_bulk_density = scatter_to_grid(final.bulk_density, js, is, (ny, nx))
-        final_base_mass = scatter_to_grid(final.base_mass, js, is, (ny, nx))
-        final_ice_sheet_smb = scatter_to_grid(final.smb_ice, js, is, (ny, nx))
-        final_runoff = scatter_to_grid(final.runoff, js, is, (ny, nx))
+        final_thickness = scatter_to_grid(final_state.thickness, js, is, (ny, nx))
+        final_wet_mass = scatter_to_grid(final_state.wet_mass, js, is, (ny, nx))
+        final_bulk_density = scatter_to_grid(final_state.bulk_density, js, is, (ny, nx))
+        final_base_mass = scatter_to_grid(final_state.base_mass, js, is, (ny, nx))
+        final_ice_sheet_smb = scatter_to_grid(final_state.smb_ice, js, is, (ny, nx))
+        final_runoff = scatter_to_grid(final_state.runoff, js, is, (ny, nx))
         last_delta_thickness = scatter_to_grid(last_delta_thickness_vec, js, is, (ny, nx))
         last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_vec, js, is, (ny, nx))
         last_delta_base_mass = scatter_to_grid(last_delta_base_mass_vec, js, is, (ny, nx))

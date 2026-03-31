@@ -307,7 +307,7 @@ struct EnergyWorkspace{NF <: AbstractFloat, VT <: AbstractVector{NF}}
     diag::VT
     upper::VT
     rhs::VT
-    work::VT
+    interface_conductance::VT
     previous_temperature::VT
     layer_thickness::VT
     thermal_conductivity::VT

@@ -336,9 +336,12 @@ function _step_state_resolved!(
     _time_block!(timings, :snow_cover) do
         _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
     end
+    _time_block!(timings, :surface_albedo) do
+        _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c)
+    end
 
-    if !_surface_has_snow(N_storage, mass, idx)
-        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+    has_surface_snow = _surface_has_snow(N_storage, mass, idx)
+    if !has_surface_snow
         bare_ice_ablation = _time_block!(timings, :bare_ice_ablation) do
             if forcing.diurnal_shortwave
                 _bare_ice_ablation_mass_diurnal_resolved(
@@ -387,16 +390,16 @@ function _step_state_resolved!(
     end
 
     accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) +
-                        (_surface_has_snow(N_storage, mass, idx) ? forcing.rainfall_rate : zero(dt_seconds))
+                        (has_surface_snow ? forcing.rainfall_rate : zero(dt_seconds))
 
-    if _surface_has_snow(N_storage, mass, idx)
+    if has_surface_snow
         _time_block!(timings, :densification) do
             _go_densification!(N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds)
         end
     end
 
     latent_heat_linear, latent_heat_constant = _diagnose_latent_heat_flux_coefficients(
-        _surface_has_snow(N_storage, mass, idx),
+        has_surface_snow,
         c,
         forcing.air_temperature,
         forcing.snowfall_rate,
@@ -410,7 +413,6 @@ function _step_state_resolved!(
             density,
             temperature,
             Tsrf,
-            snow_cover,
             albedo_dynamic,
             idx,
             c,
@@ -420,10 +422,7 @@ function _step_state_resolved!(
             latent_heat_linear,
             latent_heat_constant,
             dt_seconds,
-            forcing.snowfall_rate,
-            forcing.rainfall_rate,
             1,
-            :thomas,
             forcing.has_q_sw_net,
             forcing.q_sw_net,
             forcing.has_q_lw_down,
