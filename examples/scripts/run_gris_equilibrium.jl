@@ -12,7 +12,6 @@ using Chion
 include("run_gris_one_step.jl")
 
 const DEFAULT_OUT_DIR_EQUIL = joinpath(@__DIR__, "..", "plots", "gris_equilibrium")
-const LIBNETCDF = "/opt/homebrew/lib/libnetcdf.dylib"
 const NC_NOERR = 0
 const NC_CLOBBER = 0x0000
 const NC_NETCDF4 = 0x1000
@@ -21,6 +20,24 @@ const NC_FLOAT = 5
 const NC_DOUBLE = 6
 const NC_INT = 4
 const NC_UNLIMITED = 0
+
+function resolve_libnetcdf()
+    env_lib = strip(get(ENV, "NETCDF_LIB", ""))
+    if !isempty(env_lib)
+        return env_lib
+    end
+    for candidate in ("libnetcdf", "libnetcdf.so", "libnetcdf.dylib")
+        try
+            Libdl.dlopen(candidate) do _
+                return candidate
+            end
+        catch
+        end
+    end
+    error("Could not load NetCDF library. Set NETCDF_LIB to the shared library path or load a NetCDF module.")
+end
+
+const LIBNETCDF = resolve_libnetcdf()
 
 mutable struct TimingStats
     totals::Dict{Symbol, Float64}
