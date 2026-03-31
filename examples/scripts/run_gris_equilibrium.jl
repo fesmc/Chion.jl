@@ -156,6 +156,33 @@ function parse_spinup_config(args::Vector{String})
     )
 end
 
+function build_annual_output_schedule(time_values::Vector{DateTime})
+    ntime = length(time_values)
+    write_output = falses(ntime)
+    output_slot = zeros(Int, ntime)
+    source_indices = Int32[]
+    source_codes = Int32[]
+
+    years = unique(year.(time_values))
+    for (slot, yr) in enumerate(years)
+        last_t = findlast(t -> year(time_values[t]) == yr, eachindex(time_values))
+        isnothing(last_t) && error("Could not determine the last timestep for source year $yr.")
+        write_output[last_t] = true
+        output_slot[last_t] = slot
+        push!(source_indices, Int32(last_t))
+        ts = time_values[last_t]
+        push!(source_codes, Int32(year(ts) * 1000000 + month(ts) * 10000 + day(ts) * 100 + hour(ts)))
+    end
+
+    return (
+        write_output=write_output,
+        output_slot=output_slot,
+        source_indices=source_indices,
+        source_codes=source_codes,
+        years=years,
+    )
+end
+
 function read_full_timeseries_3d(nc_path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
     data = read_hdf5_full(nc_path, varname, shapes)
     if ndims(data) == 4
@@ -711,7 +738,6 @@ struct SpinupNetCDFWriter
     var_step_valid::Cint
     var_step_export::Cint
     var_step_smb_ice::Cint
-    var_step_layer_temp::Cint
     max_steps::Int
     max_cycles::Int
 end
@@ -729,6 +755,8 @@ function init_spinup_netcdf(
     month_cycle::Vector{Int32},
     month_of_year::Vector{Int32},
     source_month_code::Vector{Int32},
+    annual_output_source_indices::Vector{Int32},
+    annual_output_source_codes::Vector{Int32},
 )
     mkpath(dirname(out_nc))
     isfile(out_nc) && rm(out_nc, force=true)
@@ -736,20 +764,18 @@ function init_spinup_netcdf(
     ny, nx = size(mask)
     nlayer = config.ntot
     npoint = length(js)
-    ntime = length(time_values)
-    max_steps = config.max_cycles * ntime
+    max_steps = config.max_cycles * length(annual_output_source_indices)
 
     step_cycle = Vector{Int32}(undef, max_steps)
     step_source_index = Vector{Int32}(undef, max_steps)
     step_source_code = Vector{Int32}(undef, max_steps)
     step_counter = 0
     for cyc in 1:config.max_cycles
-        for t in 1:ntime
+        for annual_idx in eachindex(annual_output_source_indices)
             step_counter += 1
             step_cycle[step_counter] = Int32(cyc)
-            step_source_index[step_counter] = Int32(t)
-            ts = time_values[t]
-            step_source_code[step_counter] = Int32(year(ts) * 1000000 + month(ts) * 10000 + day(ts) * 100 + hour(ts))
+            step_source_index[step_counter] = annual_output_source_indices[annual_idx]
+            step_source_code[step_counter] = annual_output_source_codes[annual_idx]
         end
     end
 
@@ -768,7 +794,6 @@ function init_spinup_netcdf(
     dims_myx = Cint[dim_month, dim_y, dim_x]
     dims_p = Cint[dim_point]
     dims_syx = Cint[dim_step, dim_y, dim_x]
-    dims_slyx = Cint[dim_step, dim_layer, dim_y, dim_x]
 
     var_x = nc_def_var(ncid, "x", NC_DOUBLE, Cint[dim_x])
     nc_put_att_text(ncid, var_x, "units", "km")
@@ -803,15 +828,15 @@ function init_spinup_netcdf(
     nc_put_att_text(ncid, var_point_x, "long_name", "X coordinate for each compact valid GrIS cell")
     nc_put_att_text(ncid, var_point_x, "units", "km")
     var_step = nc_def_var(ncid, "step", NC_INT, Cint[dim_step])
-    nc_put_att_text(ncid, var_step, "long_name", "Sequential model step index across repeated annual cycles")
+    nc_put_att_text(ncid, var_step, "long_name", "Sequential yearly output index across repeated annual cycles")
     var_step_cycle = nc_def_var(ncid, "step_cycle", NC_INT, Cint[dim_step])
-    nc_put_att_text(ncid, var_step_cycle, "long_name", "Repeated annual forcing cycle index for each model step")
+    nc_put_att_text(ncid, var_step_cycle, "long_name", "Repeated annual forcing cycle index for each yearly output")
     var_step_source_index = nc_def_var(ncid, "step_source_index", NC_INT, Cint[dim_step])
-    nc_put_att_text(ncid, var_step_source_index, "long_name", "1-based index into the original forcing year for each model step")
+    nc_put_att_text(ncid, var_step_source_index, "long_name", "1-based index of the last forcing step included in each yearly output")
     var_step_source_code = nc_def_var(ncid, "step_source_code", NC_INT, Cint[dim_step])
-    nc_put_att_text(ncid, var_step_source_code, "long_name", "Source forcing timestamp code YYYYMMDDHH for each model step")
+    nc_put_att_text(ncid, var_step_source_code, "long_name", "Source forcing timestamp code YYYYMMDDHH for the final step included in each yearly output")
     var_step_valid = nc_def_var(ncid, "step_valid", NC_INT, Cint[dim_step])
-    nc_put_att_text(ncid, var_step_valid, "long_name", "1 where a model step was completed and written, 0 for unused trailing slots")
+    nc_put_att_text(ncid, var_step_valid, "long_name", "1 where a yearly output record was completed and written, 0 for unused trailing slots")
 
     var_mask = define_nc_output_variable(ncid, dims_yx, "gris_mask", "MAR ice-sheet mask", "1")
     var_init_th = define_nc_output_variable(ncid, dims_yx, "initial_thickness", "Initial snow thickness", "m")
@@ -849,15 +874,8 @@ function init_spinup_netcdf(
     var_monthly_export = define_nc_output_variable(ncid, dims_myx, "monthly_export_to_ice", "Monthly firn mass exported to the ice model", "mmWE")
     var_monthly_net_ice = define_nc_output_variable(ncid, dims_myx, "monthly_net_ice_sheet_forcing", "Monthly net mass forcing to the ice sheet", "mmWE")
     var_monthly_runoff = define_nc_output_variable(ncid, dims_myx, "monthly_runoff", "Monthly runoff production", "mmWE")
-    var_step_export = define_nc_output_variable(ncid, dims_syx, "step_export_to_ice", "Firn mass exported to the ice model for each model step", "mmWE")
-    var_step_smb_ice = define_nc_output_variable(ncid, dims_syx, "step_ice_sheet_smb", "Net mass forcing to the ice sheet for each model step", "mmWE")
-    var_step_layer_temp = define_nc_output_variable(
-        ncid,
-        dims_slyx,
-        "step_layer_temperature_c",
-        "Chion layer temperature for every model step",
-        "C",
-    )
+    var_step_export = define_nc_output_variable(ncid, dims_syx, "step_export_to_ice", "Annual firn mass exported to the ice model for each written output interval", "mmWE")
+    var_step_smb_ice = define_nc_output_variable(ncid, dims_syx, "step_ice_sheet_smb", "Annual net mass forcing to the ice sheet for each written output interval", "mmWE")
 
     nc_put_att_text(ncid, NC_GLOBAL, "title", "Chion GrIS spin-up final state")
     nc_put_att_text(ncid, NC_GLOBAL, "source_model", "Chion")
@@ -870,7 +888,7 @@ function init_spinup_netcdf(
     nc_put_att_text(ncid, NC_GLOBAL, "firn_export_note", "final_base_mass is the cumulative firn mass transferred to the ice model proxy; last_cycle_delta_base_mass is the export during the final annual cycle.")
     nc_put_att_text(ncid, NC_GLOBAL, "ice_sheet_smb_note", "final_ice_sheet_smb is the cumulative net mass forcing to the ice sheet: positive firn export minus bare-ice ablation.")
     nc_put_att_text(ncid, NC_GLOBAL, "monthly_note", "Monthly mean state fields are averages over Chion daily states; monthly forcing fields are integrated monthly totals.")
-    nc_put_att_text(ncid, NC_GLOBAL, "step_note", "step_layer_temperature_c uses dimensions (step, layer, y, x); inactive layers and non-GrIS cells are stored as NaN.")
+    nc_put_att_text(ncid, NC_GLOBAL, "step_note", "step_export_to_ice and step_ice_sheet_smb are yearly accumulated fields written once per source year in each repeated forcing cycle.")
     nc_put_att_text(ncid, NC_GLOBAL, "created", string(now()))
 
     nc_enddef(ncid)
@@ -931,7 +949,6 @@ function init_spinup_netcdf(
         var_step_valid,
         var_step_export,
         var_step_smb_ice,
-        var_step_layer_temp,
         max_steps,
         config.max_cycles,
     )
@@ -944,11 +961,6 @@ end
 
 function write_step_ice_sheet_smb!(writer::SpinupNetCDFWriter, step_index::Int, step_ice_sheet_smb::AbstractMatrix{<:Real})
     nc_put_vara_float_3d_step_yx(writer.ncid, writer.var_step_smb_ice, step_index, step_ice_sheet_smb)
-    return
-end
-
-function write_step_layer_temperature!(writer::SpinupNetCDFWriter, step_index::Int, step_layer_temperature_c::Array{Float64, 3})
-    nc_put_vara_float_4d_step_layer_yx(writer.ncid, writer.var_step_layer_temp, step_index, step_layer_temperature_c)
     return
 end
 
@@ -1135,6 +1147,7 @@ function main(args::Vector{String})
     valid_indices = findall(valid_mask)
     nvalid = length(valid_indices)
     ntime = length(time_values)
+    annual_output = build_annual_output_schedule(time_values)
     unique_month_keys = unique((year(t), month(t)) for t in time_values)
     month_lookup = Dict{Tuple{Int, Int}, Int}()
     for (idx, key) in enumerate(unique_month_keys)
@@ -1260,6 +1273,9 @@ function main(args::Vector{String})
     time_block!(timings, :summarize_columns_initial) do
         summarize_columns!(prev, domain; backend=summary_backend(config.backend))
     end
+    previous_base_mass_vec = config.write_netcdf ? copy(prev.base_mass) : Float64[]
+    previous_smb_ice_vec = config.write_netcdf ? copy(prev.smb_ice) : Float64[]
+    previous_runoff_vec = config.write_netcdf ? copy(prev.runoff) : Float64[]
     initial_thickness = config.write_outputs ? scatter_to_grid(initial_thickness_vec, js, is, (ny, nx)) : Matrix{Float64}(undef, 0, 0)
     nc_path = isempty(config.out_nc) ? joinpath(config.out_dir, "gris_equilibrium_final_state.nc") : config.out_nc
     writer = config.write_netcdf ? time_block!(timings, :init_netcdf) do
@@ -1276,11 +1292,12 @@ function main(args::Vector{String})
             month_cycle,
             month_of_year,
             source_month_code,
+            annual_output.source_indices,
+            annual_output.source_codes,
         )
     end : nothing
-    step_export_to_ice = config.write_netcdf ? fill(NaN, ny, nx) : Matrix{Float64}(undef, 0, 0)
-    step_ice_sheet_smb = config.write_netcdf ? fill(NaN, ny, nx) : Matrix{Float64}(undef, 0, 0)
-    step_layer_temperature_c = config.write_netcdf ? fill(NaN, config.ntot, ny, nx) : Array{Float64, 3}(undef, 0, 0, 0)
+    annual_export_to_ice = config.write_netcdf ? zeros(Float64, nvalid) : Float64[]
+    annual_ice_sheet_smb = config.write_netcdf ? zeros(Float64, nvalid) : Float64[]
     steps_written = 0
     history = NamedTuple[]
     status = :max_cycles
@@ -1309,12 +1326,6 @@ function main(args::Vector{String})
             step_wall_t0 = time_ns()
             if config.backend == :gpu
                 if config.write_netcdf
-                    base_before = Array(domain.mass_base)
-                    smb_ice_before = Array(domain.smb_ice)
-                    runoff_before = Array(domain.runoff)
-                    fill!(step_export_to_ice, NaN)
-                    fill!(step_ice_sheet_smb, NaN)
-                    fill!(step_layer_temperature_c, NaN)
                     fill!(diag_thread_sec, 0.0)
                 end
                 t0 = time_ns()
@@ -1341,39 +1352,29 @@ function main(args::Vector{String})
                     t1 = time_ns()
                     step_summary = allocate_summary_buffers(nvalid)
                     summarize_columns!(step_summary, domain; backend=:kernelabstractions)
-                    current_base = Array(domain.mass_base)
-                    current_smb_ice = Array(domain.smb_ice)
-                    current_runoff = Array(domain.runoff)
-                    current_N = Array(domain.N)
-                    current_temperature = Array(domain.temperature)
-                    monthly_sum_thickness[month_idx, :] .+= Array(step_summary.thickness)
-                    monthly_sum_wet_mass[month_idx, :] .+= Array(step_summary.wet_mass)
-                    monthly_sum_bulk_density[month_idx, :] .+= Array(step_summary.bulk_density)
+                    current_base = step_summary.base_mass
+                    current_smb_ice = step_summary.smb_ice
+                    current_runoff = step_summary.runoff
+                    monthly_sum_thickness[month_idx, :] .+= step_summary.thickness
+                    monthly_sum_wet_mass[month_idx, :] .+= step_summary.wet_mass
+                    monthly_sum_bulk_density[month_idx, :] .+= step_summary.bulk_density
                     monthly_sum_base_mass[month_idx, :] .+= current_base
-                    monthly_sum_ice_sheet_smb[month_idx, :] .+= current_smb_ice .- smb_ice_before
-                    monthly_sum_export[month_idx, :] .+= current_base .- base_before
-                    monthly_sum_net_ice_sheet_forcing[month_idx, :] .+= current_smb_ice .- smb_ice_before
-                    monthly_sum_runoff[month_idx, :] .+= current_runoff .- runoff_before
-                    @inbounds for idx in 1:ncol
-                        step_export_to_ice[js[idx], is[idx]] = current_base[idx] - base_before[idx]
-                        step_ice_sheet_smb[js[idx], is[idx]] = current_smb_ice[idx] - smb_ice_before[idx]
-                        if current_N[idx] > 0
-                            @views step_layer_temperature_c[1:current_N[idx], js[idx], is[idx]] .= current_temperature[1:current_N[idx], idx] .- domain.c.T0
-                        end
-                    end
+                    monthly_sum_ice_sheet_smb[month_idx, :] .+= current_smb_ice .- previous_smb_ice_vec
+                    monthly_sum_export[month_idx, :] .+= current_base .- previous_base_mass_vec
+                    monthly_sum_net_ice_sheet_forcing[month_idx, :] .+= current_smb_ice .- previous_smb_ice_vec
+                    monthly_sum_runoff[month_idx, :] .+= current_runoff .- previous_runoff_vec
+                    annual_export_to_ice .+= current_base .- previous_base_mass_vec
+                    annual_ice_sheet_smb .+= current_smb_ice .- previous_smb_ice_vec
+                    previous_base_mass_vec .= current_base
+                    previous_smb_ice_vec .= current_smb_ice
+                    previous_runoff_vec .= current_runoff
                     diag_thread_sec[1] = (time_ns() - t1) * 1.0e-9
                 end
             elseif config.write_netcdf
-                fill!(step_export_to_ice, NaN)
-                fill!(step_ice_sheet_smb, NaN)
-                fill!(step_layer_temperature_c, NaN)
                 fill!(diag_thread_sec, 0.0)
                 @threads :static for idx in 1:ncol
                     @inbounds P_snow = snow_rate[idx, t]
                     @inbounds P_rain = rain_rate[idx, t]
-                    base_before = domain.mass_base[idx]
-                    smb_ice_before = domain.smb_ice[idx]
-                    runoff_before = domain.runoff[idx]
                     tid = threadid()
                     t0 = time_ns()
                     forcing = make_step_forcing(
@@ -1398,15 +1399,15 @@ function main(args::Vector{String})
                     monthly_sum_wet_mass[month_idx, idx] += summary.wet_mass
                     monthly_sum_bulk_density[month_idx, idx] += summary.bulk_density
                     monthly_sum_base_mass[month_idx, idx] += domain.mass_base[idx]
-                    monthly_sum_ice_sheet_smb[month_idx, idx] += domain.smb_ice[idx] - smb_ice_before
-                    monthly_sum_export[month_idx, idx] += domain.mass_base[idx] - base_before
-                    monthly_sum_net_ice_sheet_forcing[month_idx, idx] += domain.smb_ice[idx] - smb_ice_before
-                    monthly_sum_runoff[month_idx, idx] += domain.runoff[idx] - runoff_before
-                    step_export_to_ice[js[idx], is[idx]] = domain.mass_base[idx] - base_before
-                    step_ice_sheet_smb[js[idx], is[idx]] = domain.smb_ice[idx] - smb_ice_before
-                    if domain.N[idx] > 0
-                        @views step_layer_temperature_c[1:domain.N[idx], js[idx], is[idx]] .= domain.temperature[1:domain.N[idx], idx] .- domain.c.T0
-                    end
+                    monthly_sum_ice_sheet_smb[month_idx, idx] += domain.smb_ice[idx] - previous_smb_ice_vec[idx]
+                    monthly_sum_export[month_idx, idx] += domain.mass_base[idx] - previous_base_mass_vec[idx]
+                    monthly_sum_net_ice_sheet_forcing[month_idx, idx] += domain.smb_ice[idx] - previous_smb_ice_vec[idx]
+                    monthly_sum_runoff[month_idx, idx] += domain.runoff[idx] - previous_runoff_vec[idx]
+                    annual_export_to_ice[idx] += domain.mass_base[idx] - previous_base_mass_vec[idx]
+                    annual_ice_sheet_smb[idx] += domain.smb_ice[idx] - previous_smb_ice_vec[idx]
+                    previous_base_mass_vec[idx] = domain.mass_base[idx]
+                    previous_smb_ice_vec[idx] = domain.smb_ice[idx]
+                    previous_runoff_vec[idx] = domain.runoff[idx]
                     diag_thread_sec[tid] += (time_ns() - t1) * 1.0e-9
                 end
             else
@@ -1437,11 +1438,16 @@ function main(args::Vector{String})
             if config.write_netcdf
                 add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), ncol)
                 monthly_count[month_idx] += 1
-                steps_written += 1
-                time_block!(timings, :step_output_write) do
-                    write_step_export_to_ice!(writer, steps_written, step_export_to_ice)
-                    write_step_ice_sheet_smb!(writer, steps_written, step_ice_sheet_smb)
-                    write_step_layer_temperature!(writer, steps_written, step_layer_temperature_c)
+                if annual_output.write_output[t]
+                    steps_written += 1
+                    step_export_to_ice = scatter_to_grid(annual_export_to_ice, js, is, (ny, nx))
+                    step_ice_sheet_smb = scatter_to_grid(annual_ice_sheet_smb, js, is, (ny, nx))
+                    time_block!(timings, :step_output_write) do
+                        write_step_export_to_ice!(writer, steps_written, step_export_to_ice)
+                        write_step_ice_sheet_smb!(writer, steps_written, step_ice_sheet_smb)
+                    end
+                    fill!(annual_export_to_ice, 0.0)
+                    fill!(annual_ice_sheet_smb, 0.0)
                 end
             end
         end
