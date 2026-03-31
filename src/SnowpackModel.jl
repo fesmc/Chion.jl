@@ -17,7 +17,10 @@ export AbstractSnowpackDomain
 export SnowpackDomain
 export StepWorkspace
 export threaded_workspaces
+export ColumnarStepWorkspace
+export column_workspace
 export step!
+export step_columns!
 export go_percolation!
 export go_refreezing!
 export continuous_bottom_deplete!

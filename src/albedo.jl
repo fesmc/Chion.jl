@@ -48,7 +48,7 @@ function _refresh_dynamic_albedo_from_snowfall!(
 )
     snowfall_mass <= EPS_TINY && return _get_scalar(albedo_dynamic, idx)
 
-    if c.albedo_scheme == :constant
+    if _uses_constant_albedo(c)
         _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
         return _get_scalar(albedo_dynamic, idx)
     end
@@ -77,7 +77,7 @@ function _update_surface_albedo_arrays!(
         return c.alpha_ice
     end
 
-    if c.albedo_scheme == :constant
+    if _uses_constant_albedo(c)
         updated = _constant_surface_albedo(N_storage, mass, temperature, idx, c)
         _set_scalar!(albedo_dynamic, idx, updated)
         return updated

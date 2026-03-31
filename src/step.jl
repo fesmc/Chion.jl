@@ -116,7 +116,7 @@ function _copy_liquid_water_before_energy!(
     idx::Int,
 )
     n = _n_active(N_storage, idx)
-    fill!(liquid_water_before_energy, zero(eltype(liquid_water_before_energy)))
+    _fill_prefix!(liquid_water_before_energy, zero(eltype(liquid_water_before_energy)), length(liquid_water_before_energy))
     @inbounds for layer_index in 1:n
         liquid_water_before_energy[layer_index] = _get_layer(mass_w, layer_index, idx)
     end
@@ -146,7 +146,7 @@ function _run_liquid_water_processes!(
         has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     end
 
-    if c.low_density_densification == :htessel &&
+    if _uses_htessel_densification(c) &&
        n_liquid_water_before_energy > 0 &&
        has_liquid_water
         _time_block!(timings, :liquid_water_compaction) do
@@ -383,7 +383,7 @@ function _step_state_resolved!(
         return nothing
     end
 
-    n_liquid_water_before_energy = if c.low_density_densification == :htessel
+    n_liquid_water_before_energy = if _uses_htessel_densification(c)
         _copy_liquid_water_before_energy!(workspace.liquid_water_before_energy, N_storage, mass_w, idx)
     else
         0
@@ -516,6 +516,213 @@ function _step_state_resolved!(
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
 
+    return nothing
+end
+
+@inline function _step_forcing_from_fields(
+    air_temperature,
+    snowfall_rate,
+    rainfall_rate,
+    dt_days,
+    shortwave_down,
+    wind_speed,
+    q_lw_down,
+    has_q_lw_down::Bool,
+    q_sh,
+    has_q_sh::Bool,
+    q_lh,
+    has_q_lh::Bool,
+)
+    return SnowpackStepForcing(
+        air_temperature,
+        snowfall_rate + rainfall_rate,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        zero(air_temperature),
+        q_lw_down,
+        q_sh,
+        q_lh,
+        false,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        false,
+        zero(air_temperature),
+        zero(air_temperature),
+    )
+end
+
+@kernel function _step_columns_kernel!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    Tsrf,
+    snow_cover,
+    albedo_dynamic,
+    c::SnowpackPhysicalConstants,
+    Ntot::Int,
+    mass_max,
+    mass_split,
+    mass_min,
+    f_base_max,
+    workspace::ColumnarStepWorkspace,
+    air_temperature,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed,
+    q_lw_down,
+    has_q_lw_down,
+    q_sh,
+    has_q_sh,
+    q_lh,
+    has_q_lh,
+    time_index::Int,
+    dt_days,
+)
+    idx = @index(Global)
+    if idx <= length(N_storage)
+        forcing = _step_forcing_from_fields(
+            air_temperature[idx, time_index],
+            snowfall_rate[idx, time_index],
+            rainfall_rate[idx, time_index],
+            dt_days,
+            shortwave_down[idx, time_index],
+            wind_speed[idx, time_index],
+            q_lw_down[idx, time_index],
+            has_q_lw_down[idx, time_index],
+            q_sh[idx, time_index],
+            has_q_sh[idx, time_index],
+            q_lh[idx, time_index],
+            has_q_lh[idx, time_index],
+        )
+        _step_state_resolved!(
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            temperature,
+            mass_base,
+            smb_ice,
+            runoff,
+            Tsrf,
+            snow_cover,
+            albedo_dynamic,
+            idx,
+            c,
+            Ntot,
+            mass_max,
+            mass_split,
+            mass_min,
+            f_base_max,
+            forcing,
+            column_workspace(workspace, idx),
+        )
+    end
+end
+
+function step_columns!(
+    domain::AbstractSnowpackDomain,
+    air_temperature::AbstractMatrix,
+    snowfall_rate::AbstractMatrix,
+    rainfall_rate::AbstractMatrix,
+    shortwave_down::AbstractMatrix,
+    wind_speed::AbstractMatrix,
+    q_lw_down::AbstractMatrix,
+    has_q_lw_down::AbstractMatrix{Bool},
+    q_sh::AbstractMatrix,
+    has_q_sh::AbstractMatrix{Bool},
+    q_lh::AbstractMatrix,
+    has_q_lh::AbstractMatrix{Bool},
+    time_index::Int,
+    dt_days,
+    workspaces::AbstractVector{<:StepWorkspace};
+    backend::Symbol=:threads,
+)
+    backend == :threads || error("Threaded workspaces require `backend=:threads`.")
+    Threads.@threads for idx in 1:column_count(domain)
+        forcing = _step_forcing_from_fields(
+            @inbounds(air_temperature[idx, time_index]),
+            @inbounds(snowfall_rate[idx, time_index]),
+            @inbounds(rainfall_rate[idx, time_index]),
+            dt_days,
+            @inbounds(shortwave_down[idx, time_index]),
+            @inbounds(wind_speed[idx, time_index]),
+            @inbounds(q_lw_down[idx, time_index]),
+            @inbounds(has_q_lw_down[idx, time_index]),
+            @inbounds(q_sh[idx, time_index]),
+            @inbounds(has_q_sh[idx, time_index]),
+            @inbounds(q_lh[idx, time_index]),
+            @inbounds(has_q_lh[idx, time_index]),
+        )
+        step!(domain, idx, forcing, workspaces[Threads.threadid()])
+    end
+    return nothing
+end
+
+function step_columns!(
+    domain::AbstractSnowpackDomain,
+    air_temperature::AbstractMatrix,
+    snowfall_rate::AbstractMatrix,
+    rainfall_rate::AbstractMatrix,
+    shortwave_down::AbstractMatrix,
+    wind_speed::AbstractMatrix,
+    q_lw_down::AbstractMatrix,
+    has_q_lw_down::AbstractMatrix{Bool},
+    q_sh::AbstractMatrix,
+    has_q_sh::AbstractMatrix{Bool},
+    q_lh::AbstractMatrix,
+    has_q_lh::AbstractMatrix{Bool},
+    time_index::Int,
+    dt_days,
+    workspace::ColumnarStepWorkspace;
+    backend::Symbol=:kernelabstractions,
+)
+    backend == :kernelabstractions || error("Columnar GPU workspaces require `backend=:kernelabstractions`.")
+    kernel! = _step_columns_kernel!(_ka_backend(domain.mass))
+    event = kernel!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.temperature,
+        domain.mass_base,
+        domain.smb_ice,
+        domain.runoff,
+        domain.Tsrf,
+        domain.snow_cover,
+        domain.albedo_dynamic,
+        domain.c,
+        domain.Ntot,
+        domain.mass_max,
+        domain.mass_split,
+        domain.mass_min,
+        domain.f_base_max,
+        workspace,
+        air_temperature,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        q_lw_down,
+        has_q_lw_down,
+        q_sh,
+        has_q_sh,
+        q_lh,
+        has_q_lh,
+        time_index,
+        dt_days;
+        ndrange=column_count(domain),
+    )
+    _wait_kernel(event)
     return nothing
 end
 

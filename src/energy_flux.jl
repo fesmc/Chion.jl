@@ -254,9 +254,9 @@ function _go_energy_flux_resolved!(
     end
 
     function assemble_system!(surface_diag, use_melt_rhs::Bool)
-        fill!(lower, zero(eltype(lower)))
-        fill!(diag, zero(eltype(diag)))
-        fill!(upper, zero(eltype(upper)))
+        _fill_prefix!(lower, zero(eltype(lower)), n_layers - 1)
+        _fill_prefix!(diag, zero(eltype(diag)), n_layers)
+        _fill_prefix!(upper, zero(eltype(upper)), n_layers - 1)
 
         β1 = -oftype(dt_seconds, 2.0) * dt_seconds / (_safe_positive(_get_layer(density, 1, idx)) * c.ci * _safe_positive(layer_thickness[1]))
         upper[1] = β1 * interface_terms[1]
@@ -273,7 +273,7 @@ function _go_energy_flux_resolved!(
             diag[layer_index] = one(dt_seconds) - lower[layer_index - 1] - upper[layer_index]
         end
 
-        copyto!(rhs, previous_temperature)
+        _copy_prefix!(rhs, previous_temperature, n_layers)
         if use_melt_rhs
             rhs[1] = c.T0
         else

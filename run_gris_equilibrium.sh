@@ -1,14 +1,14 @@
 #!/bin/bash
 
-#SBATCH --qos=priority
-##SBATCH --partition=gpu
+#SBATCH --qos=gpushort
+#SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 ##SBATCH --time=2-1:00:00
 #SBATCH --time=0-0:30:00
 #SBATCH --job-name=gris_equilibrium
-##SBATCH --gres=gpu
+#SBATCH --gres=gpu:1
 
 # Don't change anything below this line:
 #SBATCH --output=/p/projects/ou/labs/ai/Nils/Chion.jl/logs/gris-%j.log
@@ -44,8 +44,19 @@ mkdir -p "${LOG_DIR}"
 cd "${PROJECT_DIR}"
 
 EXTRA_ARGS_ARR=()
+HAS_BACKEND_ARG=0
 if [[ -n "${EXTRA_ARGS}" ]]; then
     read -r -a EXTRA_ARGS_ARR <<< "${EXTRA_ARGS}"
+    for arg in "${EXTRA_ARGS_ARR[@]}"; do
+        if [[ "${arg}" == --backend=* ]]; then
+            HAS_BACKEND_ARG=1
+            break
+        fi
+    done
+fi
+
+if [[ "${HAS_BACKEND_ARG}" -eq 0 ]]; then
+    EXTRA_ARGS_ARR+=(--backend=gpu)
 fi
 
 if [[ -n "${NC_PATH}" ]]; then

@@ -14,7 +14,7 @@ end
     air_temperature,
     wind_speed,
 )
-    if c.fresh_snow_density_scheme == :constant
+    if _uses_constant_fresh_snow_density(c)
         return clamp(c.rho_s, oftype(c.rho_s, 50), c.rho_i)
     end
 

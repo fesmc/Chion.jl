@@ -112,13 +112,14 @@ end
 function summarize_domain_state(domain::AbstractSnowpackDomain; backend::Symbol=:threads)
     ncol = column_count(domain)
     NF = eltype(domain)
-    thickness = zeros(NF, ncol)
-    wet_mass = zeros(NF, ncol)
-    bulk_density = zeros(NF, ncol)
-    base_mass = zeros(NF, ncol)
-    smb_ice = zeros(NF, ncol)
-    liquid_water = zeros(NF, ncol)
-    runoff = zeros(NF, ncol)
+    allocate() = similar(domain.mass, NF, ncol)
+    thickness = allocate()
+    wet_mass = allocate()
+    bulk_density = allocate()
+    base_mass = allocate()
+    smb_ice = allocate()
+    liquid_water = allocate()
+    runoff = allocate()
     summarize_domain_state!(
         thickness,
         wet_mass,

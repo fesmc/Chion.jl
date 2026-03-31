@@ -2,6 +2,13 @@
 Core snowpack types, Terrarium-style state containers, and reusable step workspaces.
 """
 
+const FRESH_SNOW_DENSITY_CONSTANT = UInt8(1)
+const FRESH_SNOW_DENSITY_PARAMETERIZED = UInt8(2)
+const ALBEDO_CONSTANT = UInt8(1)
+const ALBEDO_DYNAMIC = UInt8(2)
+const LOW_DENSIFICATION_BESSI = UInt8(1)
+const LOW_DENSIFICATION_HTESSEL = UInt8(2)
+
 struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     # Densities (kg/m^3)
     rho_s::NF
@@ -10,7 +17,7 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     rho_s_a::NF
     rho_s_b::NF
     rho_s_c::NF
-    fresh_snow_density_scheme::Symbol
+    fresh_snow_density_scheme::UInt8
 
     # Thermal properties
     Ki::NF
@@ -24,7 +31,7 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     alpha_wet::NF
     alpha_ice::NF
     max_lwc_albedo::NF
-    albedo_scheme::Symbol
+    albedo_scheme::UInt8
 
     # Emissivity
     ϵ_air::NF
@@ -37,7 +44,7 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     seconds_per_day::NF
     seconds_per_month::NF
     seconds_per_year::NF
-    low_density_densification::Symbol
+    low_density_densification::UInt8
 end
 
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
@@ -46,7 +53,7 @@ Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 @inline function _normalize_low_density_densification(scheme::Symbol)
     scheme in (:bessi, :htessel) ||
         error("Unsupported low-density densification scheme '$scheme'. Use :bessi or :htessel.")
-    return scheme
+    return scheme == :htessel ? LOW_DENSIFICATION_HTESSEL : LOW_DENSIFICATION_BESSI
 end
 
 @inline function _normalize_fresh_snow_density_scheme(scheme::Symbol)
@@ -62,7 +69,7 @@ end
             "Unsupported fresh-snow density scheme '$scheme'. " *
             "Use :constant, :parameterized, or the aliases :bessi / :htessel.",
         )
-    return normalized_scheme
+    return normalized_scheme == :constant ? FRESH_SNOW_DENSITY_CONSTANT : FRESH_SNOW_DENSITY_PARAMETERIZED
 end
 
 @inline function _normalize_albedo_scheme(scheme::Symbol)
@@ -78,8 +85,17 @@ end
             "Unsupported albedo scheme '$scheme'. " *
             "Use :constant, :dynamic, or the aliases :legacy / :bessi.",
         )
-    return normalized_scheme
+    return normalized_scheme == :constant ? ALBEDO_CONSTANT : ALBEDO_DYNAMIC
 end
+
+@inline _uses_constant_fresh_snow_density(c::SnowpackPhysicalConstants) =
+    c.fresh_snow_density_scheme == FRESH_SNOW_DENSITY_CONSTANT
+
+@inline _uses_constant_albedo(c::SnowpackPhysicalConstants) =
+    c.albedo_scheme == ALBEDO_CONSTANT
+
+@inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
+    c.low_density_densification == LOW_DENSIFICATION_HTESSEL
 
 function SnowpackPhysicalConstants(::Type{NF};
     rho_s::Real=315.0,
@@ -335,6 +351,35 @@ struct StepWorkspace{NF <: AbstractFloat, VT <: AbstractVector{NF}, ET}
     energy::ET
 end
 
+struct ColumnBuffer{T, MT <: AbstractMatrix{T}} <: AbstractVector{T}
+    parent::MT
+    column::Int
+    len::Int
+end
+
+Base.IndexStyle(::Type{<:ColumnBuffer}) = IndexLinear()
+Base.eltype(::Type{ColumnBuffer{T, MT}}) where {T, MT <: AbstractMatrix{T}} = T
+Base.size(buffer::ColumnBuffer) = (buffer.len,)
+Base.length(buffer::ColumnBuffer) = buffer.len
+@inline Base.getindex(buffer::ColumnBuffer, i::Int) = @inbounds buffer.parent[i, buffer.column]
+@inline Base.setindex!(buffer::ColumnBuffer, value, i::Int) = (@inbounds buffer.parent[i, buffer.column] = value)
+
+struct ColumnarEnergyWorkspace{NF <: AbstractFloat, MT <: AbstractMatrix{NF}}
+    lower::MT
+    diag::MT
+    upper::MT
+    rhs::MT
+    interface_conductance::MT
+    previous_temperature::MT
+    layer_thickness::MT
+    thermal_conductivity::MT
+end
+
+struct ColumnarStepWorkspace{NF <: AbstractFloat, MT <: AbstractMatrix{NF}, ET}
+    liquid_water_before_energy::MT
+    energy::ET
+end
+
 function StepWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
     return StepWorkspace(zeros(NF, Ntot), EnergyWorkspace(NF, Ntot))
 end
@@ -344,6 +389,48 @@ StepWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat} =
 
 function threaded_workspaces(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
     return [StepWorkspace(NF, domain.Ntot) for _ in 1:Threads.maxthreadid()]
+end
+
+function ColumnarEnergyWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
+    allocate() = similar(domain.mass, NF, domain.Ntot, domain.ncol)
+    return ColumnarEnergyWorkspace(
+        allocate(),
+        allocate(),
+        allocate(),
+        allocate(),
+        allocate(),
+        allocate(),
+        allocate(),
+        allocate(),
+    )
+end
+
+function ColumnarStepWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
+    return ColumnarStepWorkspace(
+        similar(domain.mass, NF, domain.Ntot, domain.ncol),
+        ColumnarEnergyWorkspace(domain),
+    )
+end
+
+@inline function _column_buffer(parent::AbstractMatrix{T}, column::Int) where {T}
+    return ColumnBuffer(parent, column, size(parent, 1))
+end
+
+@inline function column_workspace(workspace::ColumnarStepWorkspace{NF}, idx::Int) where {NF <: AbstractFloat}
+    energy_workspace = EnergyWorkspace(
+        _column_buffer(workspace.energy.lower, idx),
+        _column_buffer(workspace.energy.diag, idx),
+        _column_buffer(workspace.energy.upper, idx),
+        _column_buffer(workspace.energy.rhs, idx),
+        _column_buffer(workspace.energy.interface_conductance, idx),
+        _column_buffer(workspace.energy.previous_temperature, idx),
+        _column_buffer(workspace.energy.layer_thickness, idx),
+        _column_buffer(workspace.energy.thermal_conductivity, idx),
+    )
+    return StepWorkspace(
+        _column_buffer(workspace.liquid_water_before_energy, idx),
+        energy_workspace,
+    )
 end
 
 function SnowpackStepForcing(
@@ -409,3 +496,5 @@ variables(::AbstractSnowpackDomain) = (
 @adapt_structure SnowpackStepForcing
 @adapt_structure EnergyWorkspace
 @adapt_structure StepWorkspace
+@adapt_structure ColumnarEnergyWorkspace
+@adapt_structure ColumnarStepWorkspace

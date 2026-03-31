@@ -7,6 +7,7 @@ using Dates
 using Printf
 using Statistics
 using Base.Threads
+using CUDA
 using Chion
 
 include("run_gris_one_step.jl")
@@ -121,9 +122,18 @@ function print_spinup_help()
     println("  --tol-thickness=VALUE        Mean abs cycle delta-thickness tolerance in m (default: 1e-3)")
     println("  --tol-swe=VALUE              Mean abs cycle delta-SWE tolerance in mmWE (default: 0.1)")
     println("  --drift-window=N             Stop early when last N cycles show persistent drift (default: 3)")
+    println("  --backend=threads|gpu        Execution backend (default: threads)")
     println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 before forcing Chion")
     println("  --help                       Show this message")
 end
+
+function normalize_backend(name::AbstractString)
+    backend = Symbol(lowercase(strip(name)))
+    backend in (:threads, :gpu) || error("Unsupported backend '$name'. Use `threads` or `gpu`.")
+    return backend
+end
+
+@inline summary_backend(backend::Symbol) = backend == :gpu ? :kernelabstractions : :threads
 
 function parse_spinup_config(args::Vector{String})
     nc_path = arg_value(args, "nc", DEFAULT_NC_PATH)
@@ -141,6 +151,7 @@ function parse_spinup_config(args::Vector{String})
         tol_thickness = parse(Float64, arg_value(args, "tol-thickness", "1.0e-3")),
         tol_swe = parse(Float64, arg_value(args, "tol-swe", "0.1")),
         drift_window = parse(Int, arg_value(args, "drift-window", "3")),
+        backend = normalize_backend(arg_value(args, "backend", "threads")),
         turbulent_flux_sign = has_flag(args, "flip-turbulent-fluxes") ? -1.0 : 1.0,
     )
 end
@@ -339,19 +350,42 @@ function allocate_summary_buffers(n::Int)
     )
 end
 
-function summarize_columns!(summary, domain::SM.SnowpackDomain)
-    SM.summarize_domain_state!(
-        summary.thickness,
-        summary.wet_mass,
-        summary.bulk_density,
-        summary.base_mass,
-        summary.smb_ice,
-        summary.liquid_water,
-        summary.runoff,
-        domain;
-        backend=:threads,
-    )
+function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads)
+    if backend == :kernelabstractions
+        device_summary = SM.summarize_domain_state(domain; backend=backend)
+        summary.thickness .= Array(device_summary.thickness)
+        summary.wet_mass .= Array(device_summary.wet_mass)
+        summary.bulk_density .= Array(device_summary.bulk_density)
+        summary.base_mass .= Array(device_summary.base_mass)
+        summary.smb_ice .= Array(device_summary.smb_ice)
+        summary.liquid_water .= Array(device_summary.liquid_water)
+        summary.runoff .= Array(device_summary.runoff)
+    else
+        SM.summarize_domain_state!(
+            summary.thickness,
+            summary.wet_mass,
+            summary.bulk_density,
+            summary.base_mass,
+            summary.smb_ice,
+            summary.liquid_water,
+            summary.runoff,
+            domain;
+            backend=backend,
+        )
+    end
     return summary
+end
+
+function cpu_summary(summary)
+    return (
+        thickness=Array(summary.thickness),
+        wet_mass=Array(summary.wet_mass),
+        bulk_density=Array(summary.bulk_density),
+        base_mass=Array(summary.base_mass),
+        smb_ice=Array(summary.smb_ice),
+        liquid_water=Array(summary.liquid_water),
+        runoff=Array(summary.runoff),
+    )
 end
 
 @inline function make_step_forcing(
@@ -490,6 +524,7 @@ function write_spinup_summary(
         println(io, "Forcing steps      : ", length(time_values))
         println(io, "GrIS cells         : ", nvalid, " / ", ngrid)
         println(io, @sprintf("Mask threshold     : %.2f", config.mask_threshold))
+        println(io, "Backend            : ", String(config.backend))
         println(io, "Threads            : ", nthreads())
         println(io, "File output        : ", config.write_outputs ? "enabled" : "disabled (--no-output)")
         println(io, "NetCDF output      : ", config.write_netcdf ? "enabled" : "disabled (--no-nc)")
@@ -1120,8 +1155,6 @@ function main(args::Vector{String})
     js = Vector{Int}(undef, nvalid)
     is = Vector{Int}(undef, nvalid)
     domain = SM.SnowpackDomain(ncol=nvalid, Ntot=config.ntot)
-    ncol = SM.column_count(domain)
-    workspaces = SM.threaded_workspaces(domain)
     initial_thickness_vec = Vector{Float64}(undef, nvalid)
     initial_wet_mass_vec = Vector{Float64}(undef, nvalid)
 
@@ -1176,10 +1209,56 @@ function main(args::Vector{String})
         end
     end
 
+    if config.backend == :gpu
+        SM.cuda_available() || error("`--backend=gpu` requested, but CUDA is not functional in the current environment.")
+        domain = time_block!(timings, :gpu_transfer) do
+            SM.gpu_domain(domain)
+        end
+        tair_k = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(tair_k)
+        end
+        snow_rate = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(snow_rate)
+        end
+        rain_rate = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(rain_rate)
+        end
+        s_boa = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(s_boa)
+        end
+        q_lw = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(q_lw)
+        end
+        has_q_lw = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(has_q_lw)
+        end
+        q_sh = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(q_sh)
+        end
+        has_q_sh = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(has_q_sh)
+        end
+        q_lh = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(q_lh)
+        end
+        has_q_lh = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(has_q_lh)
+        end
+        wind_speed = time_block!(timings, :gpu_transfer) do
+            CUDA.CuArray(wind_speed)
+        end
+        workspaces = time_block!(timings, :gpu_transfer) do
+            SM.ColumnarStepWorkspace(domain)
+        end
+    else
+        workspaces = SM.threaded_workspaces(domain)
+    end
+
+    ncol = SM.column_count(domain)
     prev = allocate_summary_buffers(nvalid)
     final = allocate_summary_buffers(nvalid)
     time_block!(timings, :summarize_columns_initial) do
-        summarize_columns!(prev, domain)
+        summarize_columns!(prev, domain; backend=summary_backend(config.backend))
     end
     initial_thickness = config.write_outputs ? scatter_to_grid(initial_thickness_vec, js, is, (ny, nx)) : Matrix{Float64}(undef, 0, 0)
     nc_path = isempty(config.out_nc) ? joinpath(config.out_dir, "gris_equilibrium_final_state.nc") : config.out_nc
@@ -1228,7 +1307,63 @@ function main(args::Vector{String})
             month_idx = (cycle - 1) * nmonth_per_cycle + step_month[t]
             fill!(step_thread_sec, 0.0)
             step_wall_t0 = time_ns()
-            if config.write_netcdf
+            if config.backend == :gpu
+                if config.write_netcdf
+                    base_before = Array(domain.mass_base)
+                    smb_ice_before = Array(domain.smb_ice)
+                    runoff_before = Array(domain.runoff)
+                    fill!(step_export_to_ice, NaN)
+                    fill!(step_ice_sheet_smb, NaN)
+                    fill!(step_layer_temperature_c, NaN)
+                    fill!(diag_thread_sec, 0.0)
+                end
+                t0 = time_ns()
+                SM.step_columns!(
+                    domain,
+                    tair_k,
+                    snow_rate,
+                    rain_rate,
+                    s_boa,
+                    wind_speed,
+                    q_lw,
+                    has_q_lw,
+                    q_sh,
+                    has_q_sh,
+                    q_lh,
+                    has_q_lh,
+                    t,
+                    dt,
+                    workspaces;
+                    backend=:kernelabstractions,
+                )
+                step_thread_sec[1] = (time_ns() - t0) * 1.0e-9
+                if config.write_netcdf
+                    t1 = time_ns()
+                    step_summary = allocate_summary_buffers(nvalid)
+                    summarize_columns!(step_summary, domain; backend=:kernelabstractions)
+                    current_base = Array(domain.mass_base)
+                    current_smb_ice = Array(domain.smb_ice)
+                    current_runoff = Array(domain.runoff)
+                    current_N = Array(domain.N)
+                    current_temperature = Array(domain.temperature)
+                    monthly_sum_thickness[month_idx, :] .+= Array(step_summary.thickness)
+                    monthly_sum_wet_mass[month_idx, :] .+= Array(step_summary.wet_mass)
+                    monthly_sum_bulk_density[month_idx, :] .+= Array(step_summary.bulk_density)
+                    monthly_sum_base_mass[month_idx, :] .+= current_base
+                    monthly_sum_ice_sheet_smb[month_idx, :] .+= current_smb_ice .- smb_ice_before
+                    monthly_sum_export[month_idx, :] .+= current_base .- base_before
+                    monthly_sum_net_ice_sheet_forcing[month_idx, :] .+= current_smb_ice .- smb_ice_before
+                    monthly_sum_runoff[month_idx, :] .+= current_runoff .- runoff_before
+                    @inbounds for idx in 1:ncol
+                        step_export_to_ice[js[idx], is[idx]] = current_base[idx] - base_before[idx]
+                        step_ice_sheet_smb[js[idx], is[idx]] = current_smb_ice[idx] - smb_ice_before[idx]
+                        if current_N[idx] > 0
+                            @views step_layer_temperature_c[1:current_N[idx], js[idx], is[idx]] .= current_temperature[1:current_N[idx], idx] .- domain.c.T0
+                        end
+                    end
+                    diag_thread_sec[1] = (time_ns() - t1) * 1.0e-9
+                end
+            elseif config.write_netcdf
                 fill!(step_export_to_ice, NaN)
                 fill!(step_ice_sheet_smb, NaN)
                 fill!(step_layer_temperature_c, NaN)
@@ -1312,7 +1447,7 @@ function main(args::Vector{String})
         end
 
         time_block!(timings, :summarize_columns_cycle) do
-            summarize_columns!(final, domain)
+            summarize_columns!(final, domain; backend=summary_backend(config.backend))
         end
         last_delta_thickness_vec .= final.thickness .- prev.thickness
         last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
@@ -1362,7 +1497,11 @@ function main(args::Vector{String})
         prev, final = final, prev
     end
     simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
-    final_state = (status == :max_cycles && length(history) == config.max_cycles) ? prev : final
+    final_state = if status == :max_cycles
+        history[end].cycle == config.max_cycles ? final : prev
+    else
+        final
+    end
 
     if config.write_outputs
         final_thickness = scatter_to_grid(final_state.thickness, js, is, (ny, nx))
@@ -1377,8 +1516,11 @@ function main(args::Vector{String})
         last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_vec, js, is, (ny, nx))
     end
     if config.write_netcdf
+        final_domain = config.backend == :gpu ? time_block!(timings, :gpu_transfer) do
+            SM.cpu_domain(domain)
+        end : domain
         layer_grids = time_block!(timings, :collect_final_layer_grids) do
-            collect_final_layer_grids(domain, js, is, (ny, nx), config.ntot)
+            collect_final_layer_grids(final_domain, js, is, (ny, nx), config.ntot)
         end
         monthly_mean_thickness = similar(monthly_sum_thickness)
         monthly_mean_wet_mass = similar(monthly_sum_wet_mass)
@@ -1484,6 +1626,7 @@ function main(args::Vector{String})
     println("MAR file       : $(abspath(config.nc_path))")
     println("Forcing start  : $(first(time_values))")
     println("Forcing end    : $(last(time_values))")
+    println("Backend        : $(String(config.backend))")
     println("Cycles         : $(length(history))")
     println("Status         : $(string(status))")
     println(@sprintf("Simulation wall: %.3f s", simulation_wall_sec))

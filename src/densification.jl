@@ -219,7 +219,7 @@ function _go_densification!(
     accumulation_rate,
     dt_seconds,
 )
-    if c.low_density_densification == :htessel
+    if _uses_htessel_densification(c)
         return _go_densification_scheme!(
             N_storage,
             mass,

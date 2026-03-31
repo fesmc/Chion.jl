@@ -15,3 +15,17 @@ end
     end
     return nothing
 end
+
+@inline function _fill_prefix!(buffer, value, n::Int)
+    @inbounds for i in 1:n
+        buffer[i] = value
+    end
+    return buffer
+end
+
+@inline function _copy_prefix!(dest, src, n::Int)
+    @inbounds for i in 1:n
+        dest[i] = src[i]
+    end
+    return dest
+end
