@@ -1,5 +1,5 @@
 """
-Terrarium-style abstract interfaces for snowpack processes, models, and states.
+Abstract interfaces for snowpack processes, models, and states.
 """
 
 abstract type AbstractProcess{NF} end
