@@ -39,17 +39,20 @@ LOG_DIR="${PROJECT_DIR}/logs"
 # sbatch --export=ALL,NC_PATH=/path/to/file.nc run_gris_equilibrium.sh
 NC_PATH="${NC_PATH:-/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc}"
 EXTRA_ARGS="${EXTRA_ARGS:-}"
+THREAD_COUNT="${THREAD_COUNT:-8}"
 
 mkdir -p "${LOG_DIR}"
 cd "${PROJECT_DIR}"
 
 EXTRA_ARGS_ARR=()
 HAS_BACKEND_ARG=0
+REQUESTED_BACKEND="gpu"
 if [[ -n "${EXTRA_ARGS}" ]]; then
     read -r -a EXTRA_ARGS_ARR <<< "${EXTRA_ARGS}"
     for arg in "${EXTRA_ARGS_ARR[@]}"; do
         if [[ "${arg}" == --backend=* ]]; then
             HAS_BACKEND_ARG=1
+            REQUESTED_BACKEND="${arg#--backend=}"
             break
         fi
     done
@@ -59,10 +62,15 @@ if [[ "${HAS_BACKEND_ARG}" -eq 0 ]]; then
     EXTRA_ARGS_ARR+=(--backend=gpu)
 fi
 
+SRUN_ARGS=()
+if [[ "${REQUESTED_BACKEND}" == "threads" ]]; then
+    SRUN_ARGS+=(--cpu-bind=cores --distribution=block:block --mem-bind=local)
+fi
+
 if [[ -n "${NC_PATH}" ]]; then
-    srun julia -O3 --check-bounds=no --math-mode=fast --threads 8 "${SCRIPT_PATH}" --nc="${NC_PATH}" "${EXTRA_ARGS_ARR[@]}"
+    srun "${SRUN_ARGS[@]}" env JULIA_NUM_THREADS="${THREAD_COUNT}" julia -O3 --check-bounds=no --math-mode=fast --threads "${THREAD_COUNT}" "${SCRIPT_PATH}" --nc="${NC_PATH}" "${EXTRA_ARGS_ARR[@]}"
 else
-    srun julia -O3 --check-bounds=no --math-mode=fast --threads 8 "${SCRIPT_PATH}" "${EXTRA_ARGS_ARR[@]}"
+    srun "${SRUN_ARGS[@]}" env JULIA_NUM_THREADS="${THREAD_COUNT}" julia -O3 --check-bounds=no --math-mode=fast --threads "${THREAD_COUNT}" "${SCRIPT_PATH}" "${EXTRA_ARGS_ARR[@]}"
 fi
 
 wait
