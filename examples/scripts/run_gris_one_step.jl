@@ -4,6 +4,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 using Dates
+using HDF5
 import Plots
 using Printf
 using Statistics
@@ -77,49 +78,21 @@ function parse_config(args::Vector{String})
     )
 end
 
-function resolve_bin(env_name::String, default_bin::String)
-    env_bin = strip(get(ENV, env_name, ""))
-    if !isempty(env_bin)
-        return env_bin
-    end
-    bin = Sys.which(default_bin)
-    isnothing(bin) && error("Could not find '$default_bin'. Set $env_name to the executable path.")
-    return bin
-end
-
-const H5DUMP_BIN = Ref{String}("")
-const H5LS_BIN = Ref{String}("")
-
-function ensure_tools!()
-    H5DUMP_BIN[] = resolve_bin("H5DUMP_BIN", "h5dump")
-    H5LS_BIN[] = resolve_bin("H5LS_BIN", "h5ls")
-    return
-end
+ensure_tools!() = nothing
 
 function read_dataset_shapes(nc_path::AbstractString)
-    txt = read(Cmd([H5LS_BIN[], nc_path]), String)
     shapes = Dict{String, Vector{Int}}()
-    for m in eachmatch(r"(?m)^([A-Za-z0-9_]+)\s+Dataset\s+\{([^}]+)\}$", txt)
-        raw_dims = split(strip(m.captures[2]), ',')
-        dims = Int[]
-        sizehint!(dims, length(raw_dims))
-        for raw_dim in raw_dims
-            token = strip(raw_dim)
-            slash = findfirst(==('/'), token)
-            if !isnothing(slash)
-                token = strip(token[1:(slash - 1)])
+    h5open(nc_path, "r") do file
+        for name in keys(file)
+            obj = file[name]
+            if obj isa HDF5.Dataset
+                # Preserve the existing logical dimension order expected by the scripts:
+                # time, optional layer, y, x.
+                shapes[String(name)] = reverse(collect(size(obj)))
             end
-            push!(dims, parse(Int, token))
         end
-        shapes[m.captures[1]] = dims
     end
     return shapes
-end
-
-function reshape_hdf5_flat(data::Vector{Float32}, dims::Vector{Int})
-    arr_rev = reshape(Float64.(data), reverse(dims)...)
-    perm = length(dims):-1:1
-    return permutedims(arr_rev, perm)
 end
 
 function _clean_fill!(A)
@@ -142,30 +115,19 @@ function read_hdf5_subset(
     count_vec = isnothing(count) ? copy(full_shape) : count
     length(start_vec) == length(full_shape) || error("start rank mismatch for $varname")
     length(count_vec) == length(full_shape) || error("count rank mismatch for $varname")
-
-    tmp_path, io = mktemp()
-    close(io)
-
-    cmd_parts = String[
-        H5DUMP_BIN[],
-        "-A", "0",
-        "-d", varname,
-        "-s", join(start_vec, ","),
-        "-c", join(count_vec, ","),
-        "-b", "LE",
-        "-o", tmp_path,
-        nc_path,
-    ]
-    run(pipeline(Cmd(cmd_parts), stdout=devnull))
-
-    n = prod(count_vec)
-    raw = Vector{Float32}(undef, n)
-    open(tmp_path, "r") do fio
-        read!(fio, raw)
+    data = h5open(nc_path, "r") do file
+        dataset = file[varname]
+        nd = length(full_shape)
+        file_ranges = ntuple(nd) do dim
+            logical_dim = nd - dim + 1
+            first_index = start_vec[logical_dim] + 1
+            last_index = start_vec[logical_dim] + count_vec[logical_dim]
+            first_index:last_index
+        end
+        raw = dataset[file_ranges...]
+        logical = Float64.(raw)
+        return nd > 1 ? permutedims(logical, nd:-1:1) : logical
     end
-    rm(tmp_path, force=true)
-
-    data = reshape_hdf5_flat(raw, count_vec)
     _clean_fill!(data)
     return data
 end
