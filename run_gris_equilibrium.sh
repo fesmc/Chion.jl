@@ -6,7 +6,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=16
 ##SBATCH --time=2-1:00:00
-#SBATCH --time=0-0:30:00
+#SBATCH --time=0-2:30:00
 #SBATCH --job-name=gris_equilibrium
 #SBATCH --gres=gpu:1
 
