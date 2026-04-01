@@ -5,3 +5,5 @@ Manifest.toml
 *.zip
 *.pdf
 *.txt
+*.log
+*.err
