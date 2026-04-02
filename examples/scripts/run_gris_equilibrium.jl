@@ -409,6 +409,19 @@ function allocate_cycle_summary_buffers(n::Int)
     )
 end
 
+function allocate_cycle_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int)
+    thickness = similar(domain.mass, Float64, n)
+    wet_mass = similar(domain.mass, Float64, n)
+    bulk_density = similar(domain.mass, Float64, n)
+    base_mass = similar(domain.mass, Float64, n)
+    return (
+        thickness=thickness,
+        wet_mass=wet_mass,
+        bulk_density=bulk_density,
+        base_mass=base_mass,
+    )
+end
+
 function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads, device_summary=nothing)
     if backend == :kernelabstractions
         if isnothing(device_summary)
@@ -448,13 +461,23 @@ function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=
     return summary
 end
 
-function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads)
+function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads, device_summary=nothing)
     if backend == :kernelabstractions
-        device_summary = SM.summarize_cycle_state(domain; backend=backend)
-        summary.thickness .= Array(device_summary.thickness)
-        summary.wet_mass .= Array(device_summary.wet_mass)
-        summary.bulk_density .= Array(device_summary.bulk_density)
-        summary.base_mass .= Array(device_summary.base_mass)
+        if isnothing(device_summary)
+            device_summary = allocate_cycle_summary_buffers(domain, length(summary.thickness))
+        end
+        SM.summarize_cycle_state!(
+            device_summary.thickness,
+            device_summary.wet_mass,
+            device_summary.bulk_density,
+            device_summary.base_mass,
+            domain;
+            backend=backend,
+        )
+        copyto!(summary.thickness, device_summary.thickness)
+        copyto!(summary.wet_mass, device_summary.wet_mass)
+        copyto!(summary.bulk_density, device_summary.bulk_density)
+        copyto!(summary.base_mass, device_summary.base_mass)
     else
         SM.summarize_cycle_state!(
             summary.thickness,
@@ -477,6 +500,15 @@ function cpu_summary(summary)
         smb_ice=Array(summary.smb_ice),
         liquid_water=Array(summary.liquid_water),
         runoff=Array(summary.runoff),
+    )
+end
+
+function cpu_cycle_summary(summary)
+    return (
+        thickness=Array(summary.thickness),
+        wet_mass=Array(summary.wet_mass),
+        bulk_density=Array(summary.bulk_density),
+        base_mass=Array(summary.base_mass),
     )
 end
 
@@ -567,6 +599,177 @@ function persistent_drift(history::Vector{NamedTuple}, window::Int, tol_thicknes
            minimum(abs.(dswe)) > tol_swe &&
            nearly_constant(dth) &&
            nearly_constant(dswe)
+end
+
+function make_cycle_record(
+    cycle::Int,
+    thickness,
+    wet_mass,
+    bulk_density,
+    base_mass,
+    delta_thickness,
+    delta_wet_mass,
+    delta_base_mass,
+)
+    n = length(thickness)
+    return (
+        cycle=cycle,
+        mean_thickness=sum(thickness) / n,
+        mean_wet_mass=sum(wet_mass) / n,
+        mean_bulk_density=sum(bulk_density) / n,
+        mean_base_mass=sum(base_mass) / n,
+        mean_signed_delta_thickness=sum(delta_thickness) / n,
+        mean_abs_delta_thickness=sum(abs, delta_thickness) / n,
+        max_abs_delta_thickness=maximum(abs, delta_thickness),
+        mean_signed_delta_wet_mass=sum(delta_wet_mass) / n,
+        mean_abs_delta_wet_mass=sum(abs, delta_wet_mass) / n,
+        max_abs_delta_wet_mass=maximum(abs, delta_wet_mass),
+        mean_signed_delta_base_mass=sum(delta_base_mass) / n,
+        mean_abs_delta_base_mass=sum(abs, delta_base_mass) / n,
+        max_abs_delta_base_mass=maximum(abs, delta_base_mass),
+    )
+end
+
+function cycle_log_line(record)
+    return @sprintf(
+        "cycle=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",
+        record.cycle,
+        record.mean_thickness,
+        record.mean_wet_mass,
+        record.mean_base_mass,
+        record.mean_abs_delta_thickness,
+        record.mean_abs_delta_wet_mass,
+        record.mean_abs_delta_base_mass,
+    )
+end
+
+function run_spinup_cycles_threads_no_netcdf!(
+    timings::TimingStats,
+    config,
+    domain::SM.SnowpackDomain,
+    workspaces::AbstractVector{<:SM.StepWorkspace},
+    tair_k::AbstractMatrix{<:Float64},
+    snow_rate::AbstractMatrix{<:Float64},
+    rain_rate::AbstractMatrix{<:Float64},
+    dt_days::AbstractVector{<:Float64},
+    s_boa::AbstractMatrix{<:Float64},
+    wind_speed::AbstractMatrix{<:Float64},
+    q_lw::AbstractMatrix{<:Float64},
+    has_q_lw::AbstractMatrix{Bool},
+    q_sh::AbstractMatrix{<:Float64},
+    has_q_sh::AbstractMatrix{Bool},
+    q_lh::AbstractMatrix{<:Float64},
+    has_q_lh::AbstractMatrix{Bool},
+    nvalid::Int,
+)
+    config.backend == :threads || error("Threaded fast path requires `--backend=threads`.")
+    !config.write_netcdf || error("Threaded fast path only applies when NetCDF output is disabled.")
+
+    ntime = length(dt_days)
+    ncol = SM.column_count(domain)
+    prev = allocate_cycle_summary_buffers(nvalid)
+    final = allocate_cycle_summary_buffers(nvalid)
+    time_block!(timings, :summarize_columns_initial) do
+        summarize_cycle_columns!(prev, domain; backend=:threads)
+    end
+
+    previous_cycle_smb_ice_vec = config.write_outputs ? copy(domain.smb_ice) : Float64[]
+    history = NamedTuple[]
+    status = :max_cycles
+    last_delta_thickness_vec = fill(NaN, nvalid)
+    last_delta_wet_mass_vec = fill(NaN, nvalid)
+    last_delta_base_mass_vec = fill(NaN, nvalid)
+    last_delta_ice_sheet_smb_vec = fill(NaN, nvalid)
+    simulation_wall_t0 = time_ns()
+
+    for cycle in 1:config.max_cycles
+        for t in 1:ntime
+            dt = dt_days[t]
+            step_wall_t0 = time_ns()
+            @threads :static for idx in 1:ncol
+                tid = threadid()
+                forcing = make_step_forcing(
+                    @inbounds(tair_k[idx, t]),
+                    @inbounds(snow_rate[idx, t]),
+                    @inbounds(rain_rate[idx, t]),
+                    dt,
+                    @inbounds(s_boa[idx, t]),
+                    @inbounds(wind_speed[idx, t]),
+                    @inbounds(q_lw[idx, t]),
+                    @inbounds(has_q_lw[idx, t]),
+                    @inbounds(q_sh[idx, t]),
+                    @inbounds(has_q_sh[idx, t]),
+                    @inbounds(q_lh[idx, t]),
+                    @inbounds(has_q_lh[idx, t]),
+                )
+                SM.step!(domain, idx, forcing, workspaces[tid])
+            end
+            step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
+            add_timing!(timings, :model_step, step_wall_sec, ncol)
+            add_timing!(timings, :model_step_wall, step_wall_sec, ncol)
+        end
+
+        time_block!(timings, :summarize_columns_cycle) do
+            summarize_cycle_columns!(final, domain; backend=:threads)
+        end
+        last_delta_thickness_vec .= final.thickness .- prev.thickness
+        last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+        last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+        if config.write_outputs
+            current_smb_ice_vec = copy(domain.smb_ice)
+            last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
+            previous_cycle_smb_ice_vec .= current_smb_ice_vec
+        end
+
+        record = (
+            cycle = cycle,
+            mean_thickness = domain_mean_vector(final.thickness),
+            mean_wet_mass = domain_mean_vector(final.wet_mass),
+            mean_bulk_density = domain_mean_vector(final.bulk_density),
+            mean_base_mass = domain_mean_vector(final.base_mass),
+            mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
+            mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
+            max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
+            mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
+            mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
+            max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
+            mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
+            mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
+            max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
+        )
+        push!(history, record)
+
+        println(cycle_log_line(record))
+
+        if record.mean_abs_delta_thickness <= config.tol_thickness &&
+           record.mean_abs_delta_wet_mass <= config.tol_swe
+            status = :converged
+            break
+        elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
+            status = :drifting
+            break
+        end
+
+        prev, final = final, prev
+    end
+
+    simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
+    final_state = if status == :max_cycles
+        history[end].cycle == config.max_cycles ? final : prev
+    else
+        final
+    end
+
+    return (
+        history=history,
+        status=status,
+        final_state=final_state,
+        simulation_wall_sec=simulation_wall_sec,
+        last_delta_thickness_vec=last_delta_thickness_vec,
+        last_delta_wet_mass_vec=last_delta_wet_mass_vec,
+        last_delta_base_mass_vec=last_delta_base_mass_vec,
+        last_delta_ice_sheet_smb_vec=last_delta_ice_sheet_smb_vec,
+    )
 end
 
 function write_spinup_history_csv(out_path::AbstractString, history::Vector{NamedTuple})
@@ -1128,6 +1331,7 @@ function main(args::Vector{String})
     config = parse_spinup_config(args)
     timings = TimingStats()
     run_wall_t0 = time_ns()
+    needs_spatial_output = config.write_outputs || config.write_netcdf
     shapes = time_block!(timings, :read_dataset_shapes) do
         read_dataset_shapes(config.nc_path)
     end
@@ -1136,12 +1340,12 @@ function main(args::Vector{String})
     end
     dt_days = [infer_dt_days(time_values, t) for t in eachindex(time_values)]
 
-    x = time_block!(timings, :read_grid) do
+    x = needs_spatial_output ? time_block!(timings, :read_grid) do
         vec(read_hdf5_full(config.nc_path, "x", shapes))
-    end
-    y = time_block!(timings, :read_grid) do
+    end : Float64[]
+    y = needs_spatial_output ? time_block!(timings, :read_grid) do
         vec(read_hdf5_full(config.nc_path, "y", shapes))
-    end
+    end : Float64[]
     mask = time_block!(timings, :read_mask) do
         read_hdf5_full(config.nc_path, "MSK", shapes)
     end
@@ -1212,29 +1416,32 @@ function main(args::Vector{String})
     valid_indices = findall(valid_mask)
     nvalid = length(valid_indices)
     ntime = length(time_values)
-    annual_output = build_annual_output_schedule(time_values)
-    unique_month_keys = unique((year(t), month(t)) for t in time_values)
+    annual_output = config.write_netcdf ? build_annual_output_schedule(time_values) : nothing
+    unique_month_keys = config.write_netcdf ? unique((year(t), month(t)) for t in time_values) : Tuple{Int, Int}[]
     month_lookup = Dict{Tuple{Int, Int}, Int}()
-    for (idx, key) in enumerate(unique_month_keys)
-        month_lookup[key] = idx
+    if config.write_netcdf
+        for (idx, key) in enumerate(unique_month_keys)
+            month_lookup[key] = idx
+        end
     end
-    step_month = [month_lookup[(year(t), month(t))] for t in time_values]
-    nmonth_per_cycle = length(unique_month_keys)
-    nmonth_total = config.max_cycles * nmonth_per_cycle
+    step_month = config.write_netcdf ? [month_lookup[(year(t), month(t))] for t in time_values] : Int[]
+    nmonth_per_cycle = config.write_netcdf ? length(unique_month_keys) : 0
+    nmonth_total = config.write_netcdf ? config.max_cycles * nmonth_per_cycle : 0
     month_cycle = Int32[]
     month_of_year = Int32[]
     source_month_code = Int32[]
-    for cyc in 1:config.max_cycles, key in unique_month_keys
-        push!(month_cycle, Int32(cyc))
-        push!(month_of_year, Int32(key[2]))
-        push!(source_month_code, Int32(key[1] * 100 + key[2]))
+    if config.write_netcdf
+        for cyc in 1:config.max_cycles, key in unique_month_keys
+            push!(month_cycle, Int32(cyc))
+            push!(month_of_year, Int32(key[2]))
+            push!(source_month_code, Int32(key[1] * 100 + key[2]))
+        end
     end
 
-    js = Vector{Int}(undef, nvalid)
-    is = Vector{Int}(undef, nvalid)
+    js = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
+    is = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
     domain = SM.SnowpackDomain(ncol=nvalid, Ntot=config.ntot)
-    initial_thickness_vec = Vector{Float64}(undef, nvalid)
-    initial_wet_mass_vec = Vector{Float64}(undef, nvalid)
+    initial_thickness_vec = config.write_outputs ? Vector{Float64}(undef, nvalid) : Float64[]
 
     tair_k = Matrix{Float64}(undef, nvalid, ntime)
     snow_rate = Matrix{Float64}(undef, nvalid, ntime)
@@ -1251,8 +1458,10 @@ function main(args::Vector{String})
     time_block!(timings, :initialize_columns_and_forcing) do
         @threads :static for idx in eachindex(valid_indices)
             j, i = Tuple(valid_indices[idx])
-            js[idx] = j
-            is[idx] = i
+            if needs_spatial_output
+                js[idx] = j
+                is[idx] = i
+            end
 
             populate_domain_column_from_mar!(
                 domain,
@@ -1264,9 +1473,10 @@ function main(args::Vector{String})
                 outlay_bounds,
             )
 
-            init_summary = summarize_column(domain, idx)
-            initial_thickness_vec[idx] = init_summary.thickness
-            initial_wet_mass_vec[idx] = init_summary.wet_mass
+            if config.write_outputs
+                init_summary = summarize_column(domain, idx)
+                initial_thickness_vec[idx] = init_summary.thickness
+            end
 
             for t in 1:ntime
                 tair_k[idx, t] = valid_or(-15.0, Float64(tt_full[t, j, i])) + domain.c.T0
@@ -1285,6 +1495,47 @@ function main(args::Vector{String})
                 wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : valid_or(5.0, Float64(wind_full[t, j, i]))
             end
         end
+    end
+
+    if config.backend == :threads && !config.write_outputs && !config.write_netcdf
+        workspaces = SM.threaded_workspaces(domain)
+        sim = run_spinup_cycles_threads_no_netcdf!(
+            timings,
+            config,
+            domain,
+            workspaces,
+            tair_k,
+            snow_rate,
+            rain_rate,
+            dt_days,
+            s_boa,
+            wind_speed,
+            q_lw,
+            has_q_lw,
+            q_sh,
+            has_q_sh,
+            q_lh,
+            has_q_lh,
+            nvalid,
+        )
+        run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
+
+        println("GrIS equilibrium spin-up complete.")
+        println("MAR file       : $(abspath(config.nc_path))")
+        println("Forcing start  : $(first(time_values))")
+        println("Forcing end    : $(last(time_values))")
+        println("Backend        : $(String(config.backend))")
+        println("Cycles         : $(length(sim.history))")
+        println("Status         : $(string(sim.status))")
+        println(@sprintf("Simulation wall: %.3f s", sim.simulation_wall_sec))
+        println(@sprintf("Run wall total : %.3f s", run_wall_sec))
+        if haskey(timings.totals, :model_step_wall)
+            println(@sprintf("Model step wall: %.3f s", timings.totals[:model_step_wall]))
+        end
+        println("Output NetCDF  : skipped (--no-nc)")
+        println("File outputs   : skipped (--no-output)")
+        print_timing_summary(stdout, timings)
+        return
     end
 
     if config.backend == :gpu
@@ -1334,13 +1585,28 @@ function main(args::Vector{String})
 
     gpu_netcdf_diagnostics = config.write_netcdf && config.backend == :gpu
     ncol = SM.column_count(domain)
-    prev = allocate_cycle_summary_buffers(nvalid)
-    final = allocate_cycle_summary_buffers(nvalid)
+    prev = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
+    final = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
+    last_delta_thickness_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+    last_delta_wet_mass_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+    last_delta_base_mass_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+    last_delta_ice_sheet_smb_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
     time_block!(timings, :summarize_columns_initial) do
-        summarize_cycle_columns!(prev, domain; backend=summary_backend(config.backend))
+        if config.backend == :gpu
+            SM.summarize_cycle_state!(
+                prev.thickness,
+                prev.wet_mass,
+                prev.bulk_density,
+                prev.base_mass,
+                domain;
+                backend=:kernelabstractions,
+            )
+        else
+            summarize_cycle_columns!(prev, domain; backend=:threads)
+        end
     end
     previous_base_mass_vec = if gpu_netcdf_diagnostics
-        CUDA.CuArray(prev.base_mass)
+        copy(prev.base_mass)
     elseif config.write_netcdf
         copy(prev.base_mass)
     else
@@ -1361,7 +1627,7 @@ function main(args::Vector{String})
         Float64[]
     end
     previous_cycle_smb_ice_vec = if config.write_outputs || config.write_netcdf
-        config.backend == :gpu ? Array(domain.smb_ice) : copy(domain.smb_ice)
+        copy(domain.smb_ice)
     else
         Float64[]
     end
@@ -1404,10 +1670,6 @@ function main(args::Vector{String})
     steps_written = 0
     history = NamedTuple[]
     status = :max_cycles
-    last_delta_thickness_vec = fill(NaN, nvalid)
-    last_delta_wet_mass_vec = fill(NaN, nvalid)
-    last_delta_base_mass_vec = fill(NaN, nvalid)
-    last_delta_ice_sheet_smb_vec = fill(NaN, nvalid)
     monthly_sum_thickness = if gpu_netcdf_diagnostics
         CUDA.zeros(Float64, nmonth_total, nvalid)
     elseif config.write_netcdf
@@ -1472,7 +1734,7 @@ function main(args::Vector{String})
     for cycle in 1:config.max_cycles
         for t in 1:ntime
             dt = dt_days[t]
-            month_idx = (cycle - 1) * nmonth_per_cycle + step_month[t]
+            month_idx = config.write_netcdf ? (cycle - 1) * nmonth_per_cycle + step_month[t] : 0
             fill!(step_thread_sec, 0.0)
             step_wall_t0 = time_ns()
             if config.backend == :gpu
@@ -1632,48 +1894,66 @@ function main(args::Vector{String})
             end
         end
 
-        time_block!(timings, :summarize_columns_cycle) do
-            summarize_cycle_columns!(final, domain; backend=summary_backend(config.backend))
+        record = if config.backend == :gpu
+            time_block!(timings, :summarize_columns_cycle) do
+                SM.summarize_cycle_state!(
+                    final.thickness,
+                    final.wet_mass,
+                    final.bulk_density,
+                    final.base_mass,
+                    domain;
+                    backend=:kernelabstractions,
+                )
+            end
+            last_delta_thickness_vec .= final.thickness .- prev.thickness
+            last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+            last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+            if config.write_outputs || config.write_netcdf
+                last_delta_ice_sheet_smb_vec .= domain.smb_ice .- previous_cycle_smb_ice_vec
+                previous_cycle_smb_ice_vec .= domain.smb_ice
+            end
+            make_cycle_record(
+                cycle,
+                final.thickness,
+                final.wet_mass,
+                final.bulk_density,
+                final.base_mass,
+                last_delta_thickness_vec,
+                last_delta_wet_mass_vec,
+                last_delta_base_mass_vec,
+            )
+        else
+            time_block!(timings, :summarize_columns_cycle) do
+                summarize_cycle_columns!(final, domain; backend=:threads)
+            end
+            last_delta_thickness_vec .= final.thickness .- prev.thickness
+            last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+            last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+            if config.write_outputs || config.write_netcdf
+                current_smb_ice_vec = copy(domain.smb_ice)
+                last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
+                previous_cycle_smb_ice_vec .= current_smb_ice_vec
+            end
+            (
+                cycle = cycle,
+                mean_thickness = domain_mean_vector(final.thickness),
+                mean_wet_mass = domain_mean_vector(final.wet_mass),
+                mean_bulk_density = domain_mean_vector(final.bulk_density),
+                mean_base_mass = domain_mean_vector(final.base_mass),
+                mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
+                mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
+                max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
+                mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
+                mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
+                max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
+                mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
+                mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
+                max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
+            )
         end
-        last_delta_thickness_vec .= final.thickness .- prev.thickness
-        last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
-        last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
-        if config.write_outputs || config.write_netcdf
-            current_smb_ice_vec = Array(domain.smb_ice)
-            last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
-            previous_cycle_smb_ice_vec .= current_smb_ice_vec
-        end
-
-        record = (
-            cycle = cycle,
-            mean_thickness = domain_mean_vector(final.thickness),
-            mean_wet_mass = domain_mean_vector(final.wet_mass),
-            mean_bulk_density = domain_mean_vector(final.bulk_density),
-            mean_base_mass = domain_mean_vector(final.base_mass),
-            mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
-            mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
-            max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
-            mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
-            mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
-            max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
-            mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
-            mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
-            max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
-        )
         push!(history, record)
 
-        println(
-            @sprintf(
-                "cycle=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",
-                record.cycle,
-                record.mean_thickness,
-                record.mean_wet_mass,
-                record.mean_base_mass,
-                record.mean_abs_delta_thickness,
-                record.mean_abs_delta_wet_mass,
-                record.mean_abs_delta_base_mass,
-            ),
-        )
+        println(cycle_log_line(record))
 
         if record.mean_abs_delta_thickness <= config.tol_thickness &&
            record.mean_abs_delta_wet_mass <= config.tol_swe
@@ -1692,18 +1972,33 @@ function main(args::Vector{String})
     else
         final
     end
+    final_state_host = config.backend == :gpu ? cpu_cycle_summary(final_state) : final_state
+    final_smb_ice_vec = if config.write_outputs || config.write_netcdf
+        config.backend == :gpu ? Array(domain.smb_ice) : copy(domain.smb_ice)
+    else
+        Float64[]
+    end
+    final_runoff_vec = if config.write_outputs || config.write_netcdf
+        config.backend == :gpu ? Array(domain.runoff) : copy(domain.runoff)
+    else
+        Float64[]
+    end
+    last_delta_thickness_host = config.backend == :gpu ? Array(last_delta_thickness_vec) : last_delta_thickness_vec
+    last_delta_wet_mass_host = config.backend == :gpu ? Array(last_delta_wet_mass_vec) : last_delta_wet_mass_vec
+    last_delta_base_mass_host = config.backend == :gpu ? Array(last_delta_base_mass_vec) : last_delta_base_mass_vec
+    last_delta_ice_sheet_smb_host = config.backend == :gpu ? Array(last_delta_ice_sheet_smb_vec) : last_delta_ice_sheet_smb_vec
 
     if config.write_outputs
-        final_thickness = scatter_to_grid(final_state.thickness, js, is, (ny, nx))
-        final_wet_mass = scatter_to_grid(final_state.wet_mass, js, is, (ny, nx))
-        final_bulk_density = scatter_to_grid(final_state.bulk_density, js, is, (ny, nx))
-        final_base_mass = scatter_to_grid(final_state.base_mass, js, is, (ny, nx))
-        final_ice_sheet_smb = scatter_to_grid(Array(domain.smb_ice), js, is, (ny, nx))
-        final_runoff = scatter_to_grid(Array(domain.runoff), js, is, (ny, nx))
-        last_delta_thickness = scatter_to_grid(last_delta_thickness_vec, js, is, (ny, nx))
-        last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_vec, js, is, (ny, nx))
-        last_delta_base_mass = scatter_to_grid(last_delta_base_mass_vec, js, is, (ny, nx))
-        last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_vec, js, is, (ny, nx))
+        final_thickness = scatter_to_grid(final_state_host.thickness, js, is, (ny, nx))
+        final_wet_mass = scatter_to_grid(final_state_host.wet_mass, js, is, (ny, nx))
+        final_bulk_density = scatter_to_grid(final_state_host.bulk_density, js, is, (ny, nx))
+        final_base_mass = scatter_to_grid(final_state_host.base_mass, js, is, (ny, nx))
+        final_ice_sheet_smb = scatter_to_grid(final_smb_ice_vec, js, is, (ny, nx))
+        final_runoff = scatter_to_grid(final_runoff_vec, js, is, (ny, nx))
+        last_delta_thickness = scatter_to_grid(last_delta_thickness_host, js, is, (ny, nx))
+        last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_host, js, is, (ny, nx))
+        last_delta_base_mass = scatter_to_grid(last_delta_base_mass_host, js, is, (ny, nx))
+        last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_host, js, is, (ny, nx))
     end
     if config.write_netcdf
         final_domain = config.backend == :gpu ? time_block!(timings, :gpu_transfer) do
