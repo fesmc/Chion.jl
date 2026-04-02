@@ -62,9 +62,10 @@ end
 
 time_block!(f::F, stats::TimingStats, key::Symbol) where {F<:Function} = time_block!(stats, key, f)
 
-function timing_rows(stats::TimingStats)
+function timing_rows(stats::TimingStats; total_wall_sec::Union{Nothing, Float64}=nothing)
     rows = NamedTuple[]
     total = sum(values(stats.totals))
+    share_total = isnothing(total_wall_sec) ? total : total_wall_sec
     for key in keys(stats.totals)
         dt = stats.totals[key]
         count = stats.counts[key]
@@ -73,15 +74,15 @@ function timing_rows(stats::TimingStats)
             total_sec = dt,
             count = count,
             mean_sec = count > 0 ? dt / count : NaN,
-            share_pct = total > 0.0 ? 100.0 * dt / total : 0.0,
+            share_pct = share_total > 0.0 ? 100.0 * dt / share_total : 0.0,
         ))
     end
     sort!(rows; by=row -> row.total_sec, rev=true)
     return rows, total
 end
 
-function print_timing_summary(io::IO, stats::TimingStats)
-    rows, total = timing_rows(stats)
+function print_timing_summary(io::IO, stats::TimingStats; total_wall_sec::Union{Nothing, Float64}=nothing)
+    rows, total = timing_rows(stats; total_wall_sec=total_wall_sec)
     println(io, "Timing summary")
     println(io, @sprintf("  %-24s %12s %9s %12s %10s", "stage", "total [s]", "share", "mean [ms]", "count"))
     for row in rows
@@ -97,11 +98,23 @@ function print_timing_summary(io::IO, stats::TimingStats)
             ),
         )
     end
-    println(io, @sprintf("  %-24s %12.3f", "total_timed", total))
-    if haskey(stats.totals, :model_step_wall)
-        println(io)
-        println(io, "  note: use model_step_wall for cross-run step-performance comparisons.")
-        println(io, "  note: model_step sums per-thread elapsed time, so it is scheduler-sensitive.")
+    if !isnothing(total_wall_sec)
+        unaccounted = max(total_wall_sec - total, 0.0)
+        println(
+            io,
+            @sprintf(
+                "  %-24s %12.3f %8.1f%% %12s %10s",
+                "unaccounted",
+                unaccounted,
+                total_wall_sec > 0.0 ? 100.0 * unaccounted / total_wall_sec : 0.0,
+                "",
+                "",
+            ),
+        )
+        println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+        println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
+    else
+        println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
     end
     return
 end
@@ -705,48 +718,59 @@ function run_spinup_cycles_threads_no_netcdf!(
                 SM.step!(domain, idx, forcing, workspaces[tid])
             end
             step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
-            add_timing!(timings, :model_step, step_wall_sec, ncol)
             add_timing!(timings, :model_step_wall, step_wall_sec, ncol)
         end
 
         time_block!(timings, :summarize_columns_cycle) do
             summarize_cycle_columns!(final, domain; backend=:threads)
         end
-        last_delta_thickness_vec .= final.thickness .- prev.thickness
-        last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
-        last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
-        if config.write_outputs
-            current_smb_ice_vec = copy(domain.smb_ice)
-            last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
-            previous_cycle_smb_ice_vec .= current_smb_ice_vec
+        time_block!(timings, :cycle_state_deltas) do
+            last_delta_thickness_vec .= final.thickness .- prev.thickness
+            last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+            last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+            if config.write_outputs
+                current_smb_ice_vec = copy(domain.smb_ice)
+                last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
+                previous_cycle_smb_ice_vec .= current_smb_ice_vec
+            end
         end
 
-        record = (
-            cycle = cycle,
-            mean_thickness = domain_mean_vector(final.thickness),
-            mean_wet_mass = domain_mean_vector(final.wet_mass),
-            mean_bulk_density = domain_mean_vector(final.bulk_density),
-            mean_base_mass = domain_mean_vector(final.base_mass),
-            mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
-            mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
-            max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
-            mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
-            mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
-            max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
-            mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
-            mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
-            max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
-        )
+        record = time_block!(timings, :cycle_metrics) do
+            (
+                cycle = cycle,
+                mean_thickness = domain_mean_vector(final.thickness),
+                mean_wet_mass = domain_mean_vector(final.wet_mass),
+                mean_bulk_density = domain_mean_vector(final.bulk_density),
+                mean_base_mass = domain_mean_vector(final.base_mass),
+                mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
+                mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
+                max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
+                mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
+                mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
+                max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
+                mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
+                mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
+                max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
+            )
+        end
         push!(history, record)
 
-        println(cycle_log_line(record))
+        time_block!(timings, :cycle_logging) do
+            println(cycle_log_line(record))
+        end
 
-        if record.mean_abs_delta_thickness <= config.tol_thickness &&
-           record.mean_abs_delta_wet_mass <= config.tol_swe
-            status = :converged
-            break
-        elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
-            status = :drifting
+        stop_status = time_block!(timings, :cycle_convergence_check) do
+            if record.mean_abs_delta_thickness <= config.tol_thickness &&
+               record.mean_abs_delta_wet_mass <= config.tol_swe
+                :converged
+            elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
+                :drifting
+            else
+                :continue
+            end
+        end
+        if stop_status !== :continue
+            status = stop_status
             break
         end
 
@@ -1338,7 +1362,9 @@ function main(args::Vector{String})
     date_codes, time_values = time_block!(timings, :read_mar_times) do
         read_mar_times(config.nc_path, shapes)
     end
-    dt_days = [infer_dt_days(time_values, t) for t in eachindex(time_values)]
+    dt_days = time_block!(timings, :prepare_timestep_sizes) do
+        [infer_dt_days(time_values, t) for t in eachindex(time_values)]
+    end
 
     x = needs_spatial_output ? time_block!(timings, :read_grid) do
         vec(read_hdf5_full(config.nc_path, "x", shapes))
@@ -1380,20 +1406,24 @@ function main(args::Vector{String})
     v_wind_info = time_block!(timings, :read_forcing_wind) do
         read_first_available_timeseries_3d(config.nc_path, ["VV", "V10"], shapes)
     end
-    wind_full = if !isnothing(u_wind_info) && !isnothing(v_wind_info)
-        hypot.(u_wind_info.data, v_wind_info.data)
-    else
-        nothing
+    wind_full, wind_forcing_message = time_block!(timings, :prepare_wind_forcing) do
+        wind_full_local = if !isnothing(u_wind_info) && !isnothing(v_wind_info)
+            hypot.(u_wind_info.data, v_wind_info.data)
+        else
+            nothing
+        end
+        wind_message = if isnothing(wind_full_local)
+            "Wind forcing: MAR wind components not found; using default 5.0 m s^-1."
+        else
+            @sprintf(
+                "Wind forcing: |V| from MAR components %s and %s.",
+                u_wind_info.name,
+                v_wind_info.name,
+            )
+        end
+        return wind_full_local, wind_message
     end
-    if isnothing(wind_full)
-        println("Wind forcing: MAR wind components not found; using default 5.0 m s^-1.")
-    else
-        println(@sprintf(
-            "Wind forcing: |V| from MAR components %s and %s.",
-            u_wind_info.name,
-            v_wind_info.name,
-        ))
-    end
+    println(wind_forcing_message)
 
     zn3_init = time_block!(timings, :read_initial_state) do
         read_timeslice_2d(config.nc_path, "ZN3", 1, shapes)
@@ -1409,51 +1439,86 @@ function main(args::Vector{String})
     end
 
     ny, nx = size(mask)
-    valid_mask = falses(ny, nx)
-    @inbounds for j in 1:ny, i in 1:nx
-        valid_mask[j, i] = isfinite(mask[j, i]) && mask[j, i] >= config.mask_threshold && isfinite(tt_full[1, j, i])
+    valid_mask, valid_indices, nvalid = time_block!(timings, :build_valid_domain) do
+        valid_mask_local = falses(ny, nx)
+        @inbounds for j in 1:ny, i in 1:nx
+            valid_mask_local[j, i] = isfinite(mask[j, i]) && mask[j, i] >= config.mask_threshold && isfinite(tt_full[1, j, i])
+        end
+        valid_indices_local = findall(valid_mask_local)
+        return valid_mask_local, valid_indices_local, length(valid_indices_local)
     end
-    valid_indices = findall(valid_mask)
-    nvalid = length(valid_indices)
     ntime = length(time_values)
-    annual_output = config.write_netcdf ? build_annual_output_schedule(time_values) : nothing
-    unique_month_keys = config.write_netcdf ? unique((year(t), month(t)) for t in time_values) : Tuple{Int, Int}[]
-    month_lookup = Dict{Tuple{Int, Int}, Int}()
-    if config.write_netcdf
-        for (idx, key) in enumerate(unique_month_keys)
-            month_lookup[key] = idx
+    annual_output, unique_month_keys, step_month, nmonth_per_cycle, nmonth_total, month_cycle, month_of_year, source_month_code =
+        time_block!(timings, :prepare_output_schedule) do
+            annual_output_local = config.write_netcdf ? build_annual_output_schedule(time_values) : nothing
+            unique_month_keys_local = config.write_netcdf ? unique((year(t), month(t)) for t in time_values) : Tuple{Int, Int}[]
+            month_lookup = Dict{Tuple{Int, Int}, Int}()
+            if config.write_netcdf
+                for (idx, key) in enumerate(unique_month_keys_local)
+                    month_lookup[key] = idx
+                end
+            end
+            step_month_local = config.write_netcdf ? [month_lookup[(year(t), month(t))] for t in time_values] : Int[]
+            nmonth_per_cycle_local = config.write_netcdf ? length(unique_month_keys_local) : 0
+            nmonth_total_local = config.write_netcdf ? config.max_cycles * nmonth_per_cycle_local : 0
+            month_cycle_local = Int32[]
+            month_of_year_local = Int32[]
+            source_month_code_local = Int32[]
+            if config.write_netcdf
+                for cyc in 1:config.max_cycles, key in unique_month_keys_local
+                    push!(month_cycle_local, Int32(cyc))
+                    push!(month_of_year_local, Int32(key[2]))
+                    push!(source_month_code_local, Int32(key[1] * 100 + key[2]))
+                end
+            end
+            return (
+                annual_output_local,
+                unique_month_keys_local,
+                step_month_local,
+                nmonth_per_cycle_local,
+                nmonth_total_local,
+                month_cycle_local,
+                month_of_year_local,
+                source_month_code_local,
+            )
         end
-    end
-    step_month = config.write_netcdf ? [month_lookup[(year(t), month(t))] for t in time_values] : Int[]
-    nmonth_per_cycle = config.write_netcdf ? length(unique_month_keys) : 0
-    nmonth_total = config.write_netcdf ? config.max_cycles * nmonth_per_cycle : 0
-    month_cycle = Int32[]
-    month_of_year = Int32[]
-    source_month_code = Int32[]
-    if config.write_netcdf
-        for cyc in 1:config.max_cycles, key in unique_month_keys
-            push!(month_cycle, Int32(cyc))
-            push!(month_of_year, Int32(key[2]))
-            push!(source_month_code, Int32(key[1] * 100 + key[2]))
+
+    js, is, domain, initial_thickness_vec, tair_k, snow_rate, rain_rate, s_boa, q_lw, has_q_lw, q_sh, has_q_sh, q_lh, has_q_lh, wind_speed =
+        time_block!(timings, :allocate_simulation_arrays) do
+            js_local = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
+            is_local = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
+            domain_local = SM.SnowpackDomain(ncol=nvalid, Ntot=config.ntot)
+            initial_thickness_vec_local = config.write_outputs ? Vector{Float64}(undef, nvalid) : Float64[]
+
+            tair_k_local = Matrix{Float64}(undef, nvalid, ntime)
+            snow_rate_local = Matrix{Float64}(undef, nvalid, ntime)
+            rain_rate_local = Matrix{Float64}(undef, nvalid, ntime)
+            s_boa_local = Matrix{Float64}(undef, nvalid, ntime)
+            q_lw_local = Matrix{Float64}(undef, nvalid, ntime)
+            has_q_lw_local = fill(false, nvalid, ntime)
+            q_sh_local = Matrix{Float64}(undef, nvalid, ntime)
+            has_q_sh_local = fill(false, nvalid, ntime)
+            q_lh_local = Matrix{Float64}(undef, nvalid, ntime)
+            has_q_lh_local = fill(false, nvalid, ntime)
+            wind_speed_local = Matrix{Float64}(undef, nvalid, ntime)
+            return (
+                js_local,
+                is_local,
+                domain_local,
+                initial_thickness_vec_local,
+                tair_k_local,
+                snow_rate_local,
+                rain_rate_local,
+                s_boa_local,
+                q_lw_local,
+                has_q_lw_local,
+                q_sh_local,
+                has_q_sh_local,
+                q_lh_local,
+                has_q_lh_local,
+                wind_speed_local,
+            )
         end
-    end
-
-    js = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
-    is = needs_spatial_output ? Vector{Int}(undef, nvalid) : Int[]
-    domain = SM.SnowpackDomain(ncol=nvalid, Ntot=config.ntot)
-    initial_thickness_vec = config.write_outputs ? Vector{Float64}(undef, nvalid) : Float64[]
-
-    tair_k = Matrix{Float64}(undef, nvalid, ntime)
-    snow_rate = Matrix{Float64}(undef, nvalid, ntime)
-    rain_rate = Matrix{Float64}(undef, nvalid, ntime)
-    s_boa = Matrix{Float64}(undef, nvalid, ntime)
-    q_lw = Matrix{Float64}(undef, nvalid, ntime)
-    has_q_lw = fill(false, nvalid, ntime)
-    q_sh = Matrix{Float64}(undef, nvalid, ntime)
-    has_q_sh = fill(false, nvalid, ntime)
-    q_lh = Matrix{Float64}(undef, nvalid, ntime)
-    has_q_lh = fill(false, nvalid, ntime)
-    wind_speed = Matrix{Float64}(undef, nvalid, ntime)
 
     time_block!(timings, :initialize_columns_and_forcing) do
         @threads :static for idx in eachindex(valid_indices)
@@ -1498,7 +1563,9 @@ function main(args::Vector{String})
     end
 
     if config.backend == :threads && !config.write_outputs && !config.write_netcdf
-        workspaces = SM.threaded_workspaces(domain)
+        workspaces = time_block!(timings, :create_workspaces) do
+            SM.threaded_workspaces(domain)
+        end
         sim = run_spinup_cycles_threads_no_netcdf!(
             timings,
             config,
@@ -1534,7 +1601,7 @@ function main(args::Vector{String})
         end
         println("Output NetCDF  : skipped (--no-nc)")
         println("File outputs   : skipped (--no-output)")
-        print_timing_summary(stdout, timings)
+        print_timing_summary(stdout, timings; total_wall_sec=run_wall_sec)
         return
     end
 
@@ -1580,17 +1647,30 @@ function main(args::Vector{String})
             SM.ColumnarStepWorkspace(domain)
         end
     else
-        workspaces = SM.threaded_workspaces(domain)
+        workspaces = time_block!(timings, :create_workspaces) do
+            SM.threaded_workspaces(domain)
+        end
     end
 
     gpu_netcdf_diagnostics = config.write_netcdf && config.backend == :gpu
     ncol = SM.column_count(domain)
-    prev = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
-    final = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
-    last_delta_thickness_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
-    last_delta_wet_mass_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
-    last_delta_base_mass_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
-    last_delta_ice_sheet_smb_vec = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+    prev, final, last_delta_thickness_vec, last_delta_wet_mass_vec, last_delta_base_mass_vec, last_delta_ice_sheet_smb_vec =
+        time_block!(timings, :allocate_cycle_buffers) do
+            prev_local = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
+            final_local = config.backend == :gpu ? allocate_cycle_summary_buffers(domain, nvalid) : allocate_cycle_summary_buffers(nvalid)
+            last_delta_thickness_vec_local = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+            last_delta_wet_mass_vec_local = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+            last_delta_base_mass_vec_local = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+            last_delta_ice_sheet_smb_vec_local = config.backend == :gpu ? similar(domain.mass, Float64, nvalid) : fill(NaN, nvalid)
+            return (
+                prev_local,
+                final_local,
+                last_delta_thickness_vec_local,
+                last_delta_wet_mass_vec_local,
+                last_delta_base_mass_vec_local,
+                last_delta_ice_sheet_smb_vec_local,
+            )
+        end
     time_block!(timings, :summarize_columns_initial) do
         if config.backend == :gpu
             SM.summarize_cycle_state!(
@@ -1605,33 +1685,44 @@ function main(args::Vector{String})
             summarize_cycle_columns!(prev, domain; backend=:threads)
         end
     end
-    previous_base_mass_vec = if gpu_netcdf_diagnostics
-        copy(prev.base_mass)
-    elseif config.write_netcdf
-        copy(prev.base_mass)
-    else
-        Float64[]
-    end
-    previous_smb_ice_vec = if gpu_netcdf_diagnostics
-        copy(domain.smb_ice)
-    elseif config.write_netcdf
-        copy(domain.smb_ice)
-    else
-        Float64[]
-    end
-    previous_runoff_vec = if gpu_netcdf_diagnostics
-        copy(domain.runoff)
-    elseif config.write_netcdf
-        copy(domain.runoff)
-    else
-        Float64[]
-    end
-    previous_cycle_smb_ice_vec = if config.write_outputs || config.write_netcdf
-        copy(domain.smb_ice)
-    else
-        Float64[]
-    end
-    initial_thickness = config.write_outputs ? scatter_to_grid(initial_thickness_vec, js, is, (ny, nx)) : Matrix{Float64}(undef, 0, 0)
+    previous_base_mass_vec, previous_smb_ice_vec, previous_runoff_vec, previous_cycle_smb_ice_vec =
+        time_block!(timings, :initialize_cycle_tracking) do
+            previous_base_mass_vec_local = if gpu_netcdf_diagnostics
+                copy(prev.base_mass)
+            elseif config.write_netcdf
+                copy(prev.base_mass)
+            else
+                Float64[]
+            end
+            previous_smb_ice_vec_local = if gpu_netcdf_diagnostics
+                copy(domain.smb_ice)
+            elseif config.write_netcdf
+                copy(domain.smb_ice)
+            else
+                Float64[]
+            end
+            previous_runoff_vec_local = if gpu_netcdf_diagnostics
+                copy(domain.runoff)
+            elseif config.write_netcdf
+                copy(domain.runoff)
+            else
+                Float64[]
+            end
+            previous_cycle_smb_ice_vec_local = if config.write_outputs || config.write_netcdf
+                copy(domain.smb_ice)
+            else
+                Float64[]
+            end
+            return (
+                previous_base_mass_vec_local,
+                previous_smb_ice_vec_local,
+                previous_runoff_vec_local,
+                previous_cycle_smb_ice_vec_local,
+            )
+        end
+    initial_thickness = config.write_outputs ? time_block!(timings, :prepare_initial_output_fields) do
+        scatter_to_grid(initial_thickness_vec, js, is, (ny, nx))
+    end : Matrix{Float64}(undef, 0, 0)
     nc_path = isempty(config.out_nc) ? joinpath(config.out_dir, "gris_equilibrium_final_state.nc") : config.out_nc
     writer = config.write_netcdf ? time_block!(timings, :init_netcdf) do
         init_spinup_netcdf(
@@ -1651,96 +1742,111 @@ function main(args::Vector{String})
             annual_output.source_codes,
         )
     end : nothing
-    step_summary = config.write_netcdf && !gpu_netcdf_diagnostics ? allocate_summary_buffers(nvalid) : nothing
-    device_step_summary = gpu_netcdf_diagnostics ? allocate_summary_buffers(domain, nvalid) : nothing
-    annual_export_to_ice = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nvalid)
-    else
-        Float64[]
-    end
-    annual_ice_sheet_smb = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nvalid)
-    else
-        Float64[]
-    end
-    steps_written = 0
-    history = NamedTuple[]
-    status = :max_cycles
-    monthly_sum_thickness = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_wet_mass = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_bulk_density = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_base_mass = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_ice_sheet_smb = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_export = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_net_ice_sheet_forcing = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_sum_runoff = if gpu_netcdf_diagnostics
-        CUDA.zeros(Float64, nmonth_total, nvalid)
-    elseif config.write_netcdf
-        zeros(Float64, nmonth_total, nvalid)
-    else
-        Matrix{Float64}(undef, 0, 0)
-    end
-    monthly_count = config.write_netcdf ? zeros(Int32, nmonth_total) : Int32[]
+    step_summary, device_step_summary, annual_export_to_ice, annual_ice_sheet_smb, steps_written, history, status,
+    monthly_sum_thickness, monthly_sum_wet_mass, monthly_sum_bulk_density, monthly_sum_base_mass,
+    monthly_sum_ice_sheet_smb, monthly_sum_export, monthly_sum_net_ice_sheet_forcing, monthly_sum_runoff, monthly_count =
+        time_block!(timings, :allocate_output_buffers) do
+            step_summary_local = config.write_netcdf && !gpu_netcdf_diagnostics ? allocate_summary_buffers(nvalid) : nothing
+            device_step_summary_local = gpu_netcdf_diagnostics ? allocate_summary_buffers(domain, nvalid) : nothing
+            annual_export_to_ice_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nvalid)
+            else
+                Float64[]
+            end
+            annual_ice_sheet_smb_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nvalid)
+            else
+                Float64[]
+            end
+            history_local = NamedTuple[]
+            status_local = :max_cycles
+            monthly_sum_thickness_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_wet_mass_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_bulk_density_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_base_mass_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_ice_sheet_smb_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_export_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_net_ice_sheet_forcing_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_sum_runoff_local = if gpu_netcdf_diagnostics
+                CUDA.zeros(Float64, nmonth_total, nvalid)
+            elseif config.write_netcdf
+                zeros(Float64, nmonth_total, nvalid)
+            else
+                Matrix{Float64}(undef, 0, 0)
+            end
+            monthly_count_local = config.write_netcdf ? zeros(Int32, nmonth_total) : Int32[]
+            return (
+                step_summary_local,
+                device_step_summary_local,
+                annual_export_to_ice_local,
+                annual_ice_sheet_smb_local,
+                0,
+                history_local,
+                status_local,
+                monthly_sum_thickness_local,
+                monthly_sum_wet_mass_local,
+                monthly_sum_bulk_density_local,
+                monthly_sum_base_mass_local,
+                monthly_sum_ice_sheet_smb_local,
+                monthly_sum_export_local,
+                monthly_sum_net_ice_sheet_forcing_local,
+                monthly_sum_runoff_local,
+                monthly_count_local,
+            )
+        end
     simulation_wall_t0 = time_ns()
-    step_thread_sec = zeros(Float64, Threads.maxthreadid())
-    diag_thread_sec = zeros(Float64, Threads.maxthreadid())
 
     for cycle in 1:config.max_cycles
         for t in 1:ntime
             dt = dt_days[t]
             month_idx = config.write_netcdf ? (cycle - 1) * nmonth_per_cycle + step_month[t] : 0
-            fill!(step_thread_sec, 0.0)
-            step_wall_t0 = time_ns()
             if config.backend == :gpu
-                if config.write_netcdf
-                    fill!(diag_thread_sec, 0.0)
-                end
                 t0 = time_ns()
                 SM.step_columns!(
                     domain,
@@ -1760,7 +1866,7 @@ function main(args::Vector{String})
                     workspaces;
                     backend=:kernelabstractions,
                 )
-                step_thread_sec[1] = (time_ns() - t0) * 1.0e-9
+                add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
                 if config.write_netcdf
                     t1 = time_ns()
                     if gpu_netcdf_diagnostics
@@ -1810,10 +1916,9 @@ function main(args::Vector{String})
                         previous_smb_ice_vec .= current_smb_ice
                         previous_runoff_vec .= current_runoff
                     end
-                    diag_thread_sec[1] = (time_ns() - t1) * 1.0e-9
+                    add_timing!(timings, :step_diagnostics, (time_ns() - t1) * 1.0e-9, ncol)
                 end
             elseif config.write_netcdf
-                fill!(diag_thread_sec, 0.0)
                 t0 = time_ns()
                 @threads :static for idx in 1:ncol
                     @inbounds P_snow = snow_rate[idx, t]
@@ -1849,7 +1954,7 @@ function main(args::Vector{String})
                     previous_smb_ice_vec[idx] = domain.smb_ice[idx]
                     previous_runoff_vec[idx] = domain.runoff[idx]
                 end
-                step_thread_sec[1] = (time_ns() - t0) * 1.0e-9
+                add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
             else
                 t0 = time_ns()
                 @threads :static for idx in 1:ncol
@@ -1870,20 +1975,25 @@ function main(args::Vector{String})
                     )
                     SM.step!(domain, idx, forcing, workspaces[tid])
                 end
-                step_thread_sec[1] = (time_ns() - t0) * 1.0e-9
+                add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
             end
-            step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
-            add_timing!(timings, :model_step, sum(step_thread_sec), ncol)
-            add_timing!(timings, :model_step_wall, step_wall_sec, ncol)
             if config.write_netcdf
-                add_timing!(timings, :step_diagnostics, sum(diag_thread_sec), ncol)
                 monthly_count[month_idx] += 1
                 if annual_output.write_output[t]
                     steps_written += 1
-                    step_export_to_ice_vec = gpu_netcdf_diagnostics ? Array(annual_export_to_ice) : annual_export_to_ice
-                    step_ice_sheet_smb_vec = gpu_netcdf_diagnostics ? Array(annual_ice_sheet_smb) : annual_ice_sheet_smb
-                    step_export_to_ice = scatter_to_grid(step_export_to_ice_vec, js, is, (ny, nx))
-                    step_ice_sheet_smb = scatter_to_grid(step_ice_sheet_smb_vec, js, is, (ny, nx))
+                    step_export_to_ice_vec, step_ice_sheet_smb_vec, step_export_to_ice, step_ice_sheet_smb =
+                        time_block!(timings, :step_output_prepare) do
+                            step_export_to_ice_vec_local = gpu_netcdf_diagnostics ? Array(annual_export_to_ice) : annual_export_to_ice
+                            step_ice_sheet_smb_vec_local = gpu_netcdf_diagnostics ? Array(annual_ice_sheet_smb) : annual_ice_sheet_smb
+                            step_export_to_ice_local = scatter_to_grid(step_export_to_ice_vec_local, js, is, (ny, nx))
+                            step_ice_sheet_smb_local = scatter_to_grid(step_ice_sheet_smb_vec_local, js, is, (ny, nx))
+                            return (
+                                step_export_to_ice_vec_local,
+                                step_ice_sheet_smb_vec_local,
+                                step_export_to_ice_local,
+                                step_ice_sheet_smb_local,
+                            )
+                        end
                     time_block!(timings, :step_output_write) do
                         write_step_export_to_ice!(writer, steps_written, step_export_to_ice)
                         write_step_ice_sheet_smb!(writer, steps_written, step_ice_sheet_smb)
@@ -1905,62 +2015,78 @@ function main(args::Vector{String})
                     backend=:kernelabstractions,
                 )
             end
-            last_delta_thickness_vec .= final.thickness .- prev.thickness
-            last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
-            last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
-            if config.write_outputs || config.write_netcdf
-                last_delta_ice_sheet_smb_vec .= domain.smb_ice .- previous_cycle_smb_ice_vec
-                previous_cycle_smb_ice_vec .= domain.smb_ice
+            time_block!(timings, :cycle_state_deltas) do
+                last_delta_thickness_vec .= final.thickness .- prev.thickness
+                last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+                last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+                if config.write_outputs || config.write_netcdf
+                    last_delta_ice_sheet_smb_vec .= domain.smb_ice .- previous_cycle_smb_ice_vec
+                    previous_cycle_smb_ice_vec .= domain.smb_ice
+                end
             end
-            make_cycle_record(
-                cycle,
-                final.thickness,
-                final.wet_mass,
-                final.bulk_density,
-                final.base_mass,
-                last_delta_thickness_vec,
-                last_delta_wet_mass_vec,
-                last_delta_base_mass_vec,
-            )
+            time_block!(timings, :cycle_metrics) do
+                make_cycle_record(
+                    cycle,
+                    final.thickness,
+                    final.wet_mass,
+                    final.bulk_density,
+                    final.base_mass,
+                    last_delta_thickness_vec,
+                    last_delta_wet_mass_vec,
+                    last_delta_base_mass_vec,
+                )
+            end
         else
             time_block!(timings, :summarize_columns_cycle) do
                 summarize_cycle_columns!(final, domain; backend=:threads)
             end
-            last_delta_thickness_vec .= final.thickness .- prev.thickness
-            last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
-            last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
-            if config.write_outputs || config.write_netcdf
-                current_smb_ice_vec = copy(domain.smb_ice)
-                last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
-                previous_cycle_smb_ice_vec .= current_smb_ice_vec
+            time_block!(timings, :cycle_state_deltas) do
+                last_delta_thickness_vec .= final.thickness .- prev.thickness
+                last_delta_wet_mass_vec .= final.wet_mass .- prev.wet_mass
+                last_delta_base_mass_vec .= final.base_mass .- prev.base_mass
+                if config.write_outputs || config.write_netcdf
+                    current_smb_ice_vec = copy(domain.smb_ice)
+                    last_delta_ice_sheet_smb_vec .= current_smb_ice_vec .- previous_cycle_smb_ice_vec
+                    previous_cycle_smb_ice_vec .= current_smb_ice_vec
+                end
             end
-            (
-                cycle = cycle,
-                mean_thickness = domain_mean_vector(final.thickness),
-                mean_wet_mass = domain_mean_vector(final.wet_mass),
-                mean_bulk_density = domain_mean_vector(final.bulk_density),
-                mean_base_mass = domain_mean_vector(final.base_mass),
-                mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
-                mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
-                max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
-                mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
-                mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
-                max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
-                mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
-                mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
-                max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
-            )
+            time_block!(timings, :cycle_metrics) do
+                (
+                    cycle = cycle,
+                    mean_thickness = domain_mean_vector(final.thickness),
+                    mean_wet_mass = domain_mean_vector(final.wet_mass),
+                    mean_bulk_density = domain_mean_vector(final.bulk_density),
+                    mean_base_mass = domain_mean_vector(final.base_mass),
+                    mean_signed_delta_thickness = domain_mean_vector(last_delta_thickness_vec),
+                    mean_abs_delta_thickness = domain_mean_abs_vector(last_delta_thickness_vec),
+                    max_abs_delta_thickness = domain_max_abs_vector(last_delta_thickness_vec),
+                    mean_signed_delta_wet_mass = domain_mean_vector(last_delta_wet_mass_vec),
+                    mean_abs_delta_wet_mass = domain_mean_abs_vector(last_delta_wet_mass_vec),
+                    max_abs_delta_wet_mass = domain_max_abs_vector(last_delta_wet_mass_vec),
+                    mean_signed_delta_base_mass = domain_mean_vector(last_delta_base_mass_vec),
+                    mean_abs_delta_base_mass = domain_mean_abs_vector(last_delta_base_mass_vec),
+                    max_abs_delta_base_mass = domain_max_abs_vector(last_delta_base_mass_vec),
+                )
+            end
         end
         push!(history, record)
 
-        println(cycle_log_line(record))
+        time_block!(timings, :cycle_logging) do
+            println(cycle_log_line(record))
+        end
 
-        if record.mean_abs_delta_thickness <= config.tol_thickness &&
-           record.mean_abs_delta_wet_mass <= config.tol_swe
-            status = :converged
-            break
-        elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
-            status = :drifting
+        stop_status = time_block!(timings, :cycle_convergence_check) do
+            if record.mean_abs_delta_thickness <= config.tol_thickness &&
+               record.mean_abs_delta_wet_mass <= config.tol_swe
+                :converged
+            elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
+                :drifting
+            else
+                :continue
+            end
+        end
+        if stop_status !== :continue
+            status = stop_status
             break
         end
 
@@ -1972,33 +2098,42 @@ function main(args::Vector{String})
     else
         final
     end
-    final_state_host = config.backend == :gpu ? cpu_cycle_summary(final_state) : final_state
-    final_smb_ice_vec = if config.write_outputs || config.write_netcdf
-        config.backend == :gpu ? Array(domain.smb_ice) : copy(domain.smb_ice)
-    else
-        Float64[]
-    end
-    final_runoff_vec = if config.write_outputs || config.write_netcdf
-        config.backend == :gpu ? Array(domain.runoff) : copy(domain.runoff)
-    else
-        Float64[]
-    end
-    last_delta_thickness_host = config.backend == :gpu ? Array(last_delta_thickness_vec) : last_delta_thickness_vec
-    last_delta_wet_mass_host = config.backend == :gpu ? Array(last_delta_wet_mass_vec) : last_delta_wet_mass_vec
-    last_delta_base_mass_host = config.backend == :gpu ? Array(last_delta_base_mass_vec) : last_delta_base_mass_vec
-    last_delta_ice_sheet_smb_host = config.backend == :gpu ? Array(last_delta_ice_sheet_smb_vec) : last_delta_ice_sheet_smb_vec
-
     if config.write_outputs
-        final_thickness = scatter_to_grid(final_state_host.thickness, js, is, (ny, nx))
-        final_wet_mass = scatter_to_grid(final_state_host.wet_mass, js, is, (ny, nx))
-        final_bulk_density = scatter_to_grid(final_state_host.bulk_density, js, is, (ny, nx))
-        final_base_mass = scatter_to_grid(final_state_host.base_mass, js, is, (ny, nx))
-        final_ice_sheet_smb = scatter_to_grid(final_smb_ice_vec, js, is, (ny, nx))
-        final_runoff = scatter_to_grid(final_runoff_vec, js, is, (ny, nx))
-        last_delta_thickness = scatter_to_grid(last_delta_thickness_host, js, is, (ny, nx))
-        last_delta_wet_mass = scatter_to_grid(last_delta_wet_mass_host, js, is, (ny, nx))
-        last_delta_base_mass = scatter_to_grid(last_delta_base_mass_host, js, is, (ny, nx))
-        last_delta_ice_sheet_smb = scatter_to_grid(last_delta_ice_sheet_smb_host, js, is, (ny, nx))
+        final_state_host, final_smb_ice_vec, final_runoff_vec, last_delta_thickness_host, last_delta_wet_mass_host,
+        last_delta_base_mass_host, last_delta_ice_sheet_smb_host = time_block!(timings, :finalize_state_transfer) do
+            final_state_host_local = config.backend == :gpu ? cpu_cycle_summary(final_state) : final_state
+            final_smb_ice_vec_local = config.backend == :gpu ? Array(domain.smb_ice) : copy(domain.smb_ice)
+            final_runoff_vec_local = config.backend == :gpu ? Array(domain.runoff) : copy(domain.runoff)
+            last_delta_thickness_host_local = config.backend == :gpu ? Array(last_delta_thickness_vec) : last_delta_thickness_vec
+            last_delta_wet_mass_host_local = config.backend == :gpu ? Array(last_delta_wet_mass_vec) : last_delta_wet_mass_vec
+            last_delta_base_mass_host_local = config.backend == :gpu ? Array(last_delta_base_mass_vec) : last_delta_base_mass_vec
+            last_delta_ice_sheet_smb_host_local = config.backend == :gpu ? Array(last_delta_ice_sheet_smb_vec) : last_delta_ice_sheet_smb_vec
+            return (
+                final_state_host_local,
+                final_smb_ice_vec_local,
+                final_runoff_vec_local,
+                last_delta_thickness_host_local,
+                last_delta_wet_mass_host_local,
+                last_delta_base_mass_host_local,
+                last_delta_ice_sheet_smb_host_local,
+            )
+        end
+        final_thickness, final_wet_mass, final_bulk_density, final_base_mass, final_ice_sheet_smb, final_runoff,
+        last_delta_thickness, last_delta_wet_mass, last_delta_base_mass, last_delta_ice_sheet_smb =
+            time_block!(timings, :scatter_final_outputs) do
+                return (
+                    scatter_to_grid(final_state_host.thickness, js, is, (ny, nx)),
+                    scatter_to_grid(final_state_host.wet_mass, js, is, (ny, nx)),
+                    scatter_to_grid(final_state_host.bulk_density, js, is, (ny, nx)),
+                    scatter_to_grid(final_state_host.base_mass, js, is, (ny, nx)),
+                    scatter_to_grid(final_smb_ice_vec, js, is, (ny, nx)),
+                    scatter_to_grid(final_runoff_vec, js, is, (ny, nx)),
+                    scatter_to_grid(last_delta_thickness_host, js, is, (ny, nx)),
+                    scatter_to_grid(last_delta_wet_mass_host, js, is, (ny, nx)),
+                    scatter_to_grid(last_delta_base_mass_host, js, is, (ny, nx)),
+                    scatter_to_grid(last_delta_ice_sheet_smb_host, js, is, (ny, nx)),
+                )
+            end
     end
     if config.write_netcdf
         final_domain = config.backend == :gpu ? time_block!(timings, :gpu_transfer) do
@@ -2156,7 +2291,7 @@ function main(args::Vector{String})
     else
         println("File outputs   : skipped (--no-output)")
     end
-    print_timing_summary(stdout, timings)
+    print_timing_summary(stdout, timings; total_wall_sec=run_wall_sec)
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
