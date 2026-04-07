@@ -172,7 +172,29 @@ function _run_liquid_water_processes!(
     return nothing
 end
 
-function _bare_ice_ablation_mass_resolved(
+@inline function _resolved_nonshortwave_surface_flux_components(
+    c::SnowpackPhysicalConstants,
+    air_temperature,
+    rainfall_rate,
+    dt_seconds,
+    surface_temperature,
+    use_q_lw_down::Bool,
+    q_lw_down_value,
+    use_q_sh::Bool,
+    q_sh_value,
+    use_q_lh::Bool,
+    q_lh_value,
+)
+    longwave_flux = use_q_lw_down ?
+        q_lw_down_value - c.σ * c.ϵ_snow * surface_temperature^4 :
+        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * surface_temperature^4)
+    sensible_heat_flux = use_q_sh ? q_sh_value : c.D_sh * (air_temperature - surface_temperature)
+    latent_heat_flux = use_q_lh ? q_lh_value : zero(dt_seconds)
+    rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
+    return longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux
+end
+
+@inline function _resolved_bare_ice_surface_flux_components(
     c::SnowpackPhysicalConstants,
     air_temperature,
     rainfall_rate,
@@ -190,12 +212,54 @@ function _bare_ice_ablation_mass_resolved(
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
         max(shortwave_down, zero(dt_seconds)) * (one(dt_seconds) - c.alpha_ice)
-    longwave_flux = use_q_lw_down ?
-        q_lw_down_value - c.σ * c.ϵ_snow * c.T0^4 :
-        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * c.T0^4)
-    sensible_heat_flux = use_q_sh ? q_sh_value : c.D_sh * (air_temperature - c.T0)
-    latent_heat_flux = use_q_lh ? q_lh_value : zero(dt_seconds)
-    rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
+    longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
+        _resolved_nonshortwave_surface_flux_components(
+        c,
+        air_temperature,
+        rainfall_rate,
+        dt_seconds,
+        c.T0,
+        use_q_lw_down,
+        q_lw_down_value,
+        use_q_sh,
+        q_sh_value,
+        use_q_lh,
+        q_lh_value,
+    )
+    return absorbed_shortwave, longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux
+end
+
+function _bare_ice_ablation_mass_resolved(
+    c::SnowpackPhysicalConstants,
+    air_temperature,
+    rainfall_rate,
+    dt_seconds,
+    shortwave_down,
+    use_q_sw_net::Bool,
+    q_sw_net_value,
+    use_q_lw_down::Bool,
+    q_lw_down_value,
+    use_q_sh::Bool,
+    q_sh_value,
+    use_q_lh::Bool,
+    q_lh_value,
+)
+    absorbed_shortwave, longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
+        _resolved_bare_ice_surface_flux_components(
+        c,
+        air_temperature,
+        rainfall_rate,
+        dt_seconds,
+        shortwave_down,
+        use_q_sw_net,
+        q_sw_net_value,
+        use_q_lw_down,
+        q_lw_down_value,
+        use_q_sh,
+        q_sh_value,
+        use_q_lh,
+        q_lh_value,
+    )
     net_surface_flux = absorbed_shortwave + longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
     return max(net_surface_flux, zero(net_surface_flux)) * dt_seconds / c.Lm
 end
@@ -217,21 +281,24 @@ function _bare_ice_ablation_mass_diurnal_resolved(
     latitude,
     day_of_year,
 )
-    absorbed_shortwave = use_q_sw_net ?
-        q_sw_net_value :
-        max(shortwave_down, zero(dt_seconds)) * (one(dt_seconds) - c.alpha_ice)
-    longwave_flux = use_q_lw_down ?
-        q_lw_down_value - c.σ * c.ϵ_snow * c.T0^4 :
-        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * c.T0^4)
-    sensible_heat_flux = use_q_sh ? q_sh_value : c.D_sh * (air_temperature - c.T0)
-    latent_heat_flux = use_q_lh ? q_lh_value : zero(dt_seconds)
-    rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
-    partition = _debm_melt_window_fluxes(
-        absorbed_shortwave,
-        longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux,
-        latitude,
-        day_of_year,
+    absorbed_shortwave, longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
+        _resolved_bare_ice_surface_flux_components(
+        c,
+        air_temperature,
+        rainfall_rate,
+        dt_seconds,
+        shortwave_down,
+        use_q_sw_net,
+        q_sw_net_value,
+        use_q_lw_down,
+        q_lw_down_value,
+        use_q_sh,
+        q_sh_value,
+        use_q_lh,
+        q_lh_value,
     )
+    nonshortwave_flux = longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
+    partition = _debm_melt_window_fluxes(absorbed_shortwave, nonshortwave_flux, latitude, day_of_year)
     return max(partition.melt_window_daily_flux, zero(dt_seconds)) * dt_seconds / c.Lm
 end
 
@@ -251,12 +318,20 @@ function _diagnose_debm_diurnal_adjustment_resolved(
     latitude,
     day_of_year,
 )
-    longwave_component = use_q_lw_down ?
-        q_lw_down_value - c.σ * c.ϵ_snow * surface_temperature^4 :
-        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * surface_temperature^4)
-    sensible_component = use_q_sh ? q_sh_value : c.D_sh * (air_temperature - surface_temperature)
-    latent_component = use_q_lh ? q_lh_value : zero(dt_seconds)
-    rain_component = rainfall_rate * c.cw * (air_temperature - c.T0)
+    longwave_component, sensible_component, latent_component, rain_component =
+        _resolved_nonshortwave_surface_flux_components(
+        c,
+        air_temperature,
+        rainfall_rate,
+        dt_seconds,
+        surface_temperature,
+        use_q_lw_down,
+        q_lw_down_value,
+        use_q_sh,
+        q_sh_value,
+        use_q_lh,
+        q_lh_value,
+    )
     baseline_nonshortwave_flux = longwave_component + sensible_component + latent_component + rain_component
     partition = _debm_melt_window_fluxes(q_sw_net_value, baseline_nonshortwave_flux, latitude, day_of_year)
     baseline_positive_flux = max(q_sw_net_value + baseline_nonshortwave_flux, zero(dt_seconds))
@@ -519,42 +594,6 @@ function _step_state_resolved!(
     return nothing
 end
 
-@inline function _step_forcing_from_fields(
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    dt_days,
-    shortwave_down,
-    wind_speed,
-    q_lw_down,
-    has_q_lw_down::Bool,
-    q_sh,
-    has_q_sh::Bool,
-    q_lh,
-    has_q_lh::Bool,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        snowfall_rate + rainfall_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        zero(air_temperature),
-        q_lw_down,
-        q_sh,
-        q_lh,
-        false,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        false,
-        zero(air_temperature),
-        zero(air_temperature),
-    )
-end
-
 @kernel function _step_columns_kernel!(
     N_storage,
     mass,
@@ -629,6 +668,83 @@ end
     end
 end
 
+@kernel function _step_cycle_columns_kernel!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    Tsrf,
+    snow_cover,
+    albedo_dynamic,
+    c::SnowpackPhysicalConstants,
+    Ntot::Int,
+    mass_max,
+    mass_split,
+    mass_min,
+    f_base_max,
+    workspace::ColumnarStepWorkspace,
+    air_temperature,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed,
+    q_lw_down,
+    has_q_lw_down,
+    q_sh,
+    has_q_sh,
+    q_lh,
+    has_q_lh,
+    dt_days,
+    ntime::Int,
+)
+    idx = @index(Global)
+    if idx <= length(N_storage)
+        column_ws = column_workspace(workspace, idx)
+        for time_index in 1:ntime
+            forcing = _step_forcing_from_fields(
+                air_temperature[idx, time_index],
+                snowfall_rate[idx, time_index],
+                rainfall_rate[idx, time_index],
+                dt_days[time_index],
+                shortwave_down[idx, time_index],
+                wind_speed[idx, time_index],
+                q_lw_down[idx, time_index],
+                has_q_lw_down[idx, time_index],
+                q_sh[idx, time_index],
+                has_q_sh[idx, time_index],
+                q_lh[idx, time_index],
+                has_q_lh[idx, time_index],
+            )
+            _step_state_resolved!(
+                N_storage,
+                mass,
+                mass_w,
+                density,
+                temperature,
+                mass_base,
+                smb_ice,
+                runoff,
+                Tsrf,
+                snow_cover,
+                albedo_dynamic,
+                idx,
+                c,
+                Ntot,
+                mass_max,
+                mass_split,
+                mass_min,
+                f_base_max,
+                forcing,
+                column_ws,
+            )
+        end
+    end
+end
+
 function step_columns!(
     domain::AbstractSnowpackDomain,
     air_temperature::AbstractMatrix,
@@ -688,24 +804,9 @@ function step_columns!(
 )
     backend == :kernelabstractions || error("Columnar GPU workspaces require `backend=:kernelabstractions`.")
     kernel! = _step_columns_kernel!(_ka_backend(domain.mass))
-    event = kernel!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        domain.f_base_max,
+    event = _launch_step_columns_kernel!(
+        kernel!,
+        domain,
         workspace,
         air_temperature,
         snowfall_rate,
@@ -719,57 +820,60 @@ function step_columns!(
         q_lh,
         has_q_lh,
         time_index,
-        dt_days;
-        ndrange=column_count(domain),
+        dt_days,
     )
     _wait_kernel(event)
     return nothing
 end
 
-function step!(
+function step_cycle_columns!(
     domain::AbstractSnowpackDomain,
-    idx::Int,
-    forcing::SnowpackStepForcing,
+    air_temperature::AbstractMatrix,
+    snowfall_rate::AbstractMatrix,
+    rainfall_rate::AbstractMatrix,
+    shortwave_down::AbstractMatrix,
+    wind_speed::AbstractMatrix,
+    q_lw_down::AbstractMatrix,
+    has_q_lw_down::AbstractMatrix{Bool},
+    q_sh::AbstractMatrix,
+    has_q_sh::AbstractMatrix{Bool},
+    q_lh::AbstractMatrix,
+    has_q_lh::AbstractMatrix{Bool},
+    dt_days,
+    workspace::ColumnarStepWorkspace;
+    backend::Symbol=:kernelabstractions,
 )
-    return step!(domain, idx, forcing, StepWorkspace(domain))
-end
-
-function step!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
-    forcing::SnowpackStepForcing,
-    workspace::StepWorkspace,
-)
-    return _step_state_resolved!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        idx,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        domain.f_base_max,
-        forcing,
+    backend == :kernelabstractions || error("Columnar GPU workspaces require `backend=:kernelabstractions`.")
+    ntime = size(air_temperature, 2)
+    kernel! = _step_cycle_columns_kernel!(_ka_backend(domain.mass))
+    event = _launch_step_columns_kernel!(
+        kernel!,
+        domain,
         workspace,
+        air_temperature,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        q_lw_down,
+        has_q_lw_down,
+        q_sh,
+        has_q_sh,
+        q_lh,
+        has_q_lh,
+        dt_days,
+        ntime,
     )
+    _wait_kernel(event)
+    return nothing
 end
 
-function step!(
+@inline function _step_domain_resolved!(
     domain::AbstractSnowpackDomain,
     idx::Int,
     forcing::SnowpackStepForcing,
-    workspace::StepWorkspace,
-    timings::StepTimingStats,
+    workspace::StepWorkspace;
+    timings=nothing,
 )
     return _step_state_resolved!(
         domain.N,
@@ -794,6 +898,33 @@ function step!(
         workspace;
         timings=timings,
     )
+end
+
+function step!(
+    domain::AbstractSnowpackDomain,
+    idx::Int,
+    forcing::SnowpackStepForcing,
+)
+    return step!(domain, idx, forcing, StepWorkspace(domain))
+end
+
+function step!(
+    domain::AbstractSnowpackDomain,
+    idx::Int,
+    forcing::SnowpackStepForcing,
+    workspace::StepWorkspace,
+)
+    return _step_domain_resolved!(domain, idx, forcing, workspace)
+end
+
+function step!(
+    domain::AbstractSnowpackDomain,
+    idx::Int,
+    forcing::SnowpackStepForcing,
+    workspace::StepWorkspace,
+    timings::StepTimingStats,
+)
+    return _step_domain_resolved!(domain, idx, forcing, workspace; timings=timings)
 end
 
 function step!(

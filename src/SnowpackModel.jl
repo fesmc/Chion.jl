@@ -21,6 +21,7 @@ export ColumnarStepWorkspace
 export column_workspace
 export step!
 export step_columns!
+export step_cycle_columns!
 export go_percolation!
 export go_refreezing!
 export continuous_bottom_deplete!
