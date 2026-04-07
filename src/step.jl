@@ -116,7 +116,6 @@ function _copy_liquid_water_before_energy!(
     idx::Int,
 )
     n = _n_active(N_storage, idx)
-    _fill_prefix!(liquid_water_before_energy, zero(eltype(liquid_water_before_energy)), length(liquid_water_before_energy))
     @inbounds for layer_index in 1:n
         liquid_water_before_energy[layer_index] = _get_layer(mass_w, layer_index, idx)
     end
@@ -160,7 +159,6 @@ function _run_liquid_water_processes!(
                 c.rho_i,
             )
         end
-        has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     end
 
     if has_liquid_water
@@ -368,7 +366,8 @@ function _step_state_resolved!(
     mass_min,
     f_base_max,
     forcing::SnowpackStepForcing,
-    workspace::StepWorkspace;
+    workspace::StepWorkspace,
+    update_snow_cover::Bool=true;
     timings=nothing,
 )
     dt_seconds = forcing.dt_days * c.seconds_per_day
@@ -408,15 +407,11 @@ function _step_state_resolved!(
         _set_layer!(temperature, 1, idx, forcing.air_temperature)
     end
 
-    _time_block!(timings, :snow_cover) do
-        _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
-    end
-    _time_block!(timings, :surface_albedo) do
-        _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c)
-    end
-
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
+        _time_block!(timings, :surface_albedo) do
+            _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        end
         bare_ice_ablation = _time_block!(timings, :bare_ice_ablation) do
             if forcing.diurnal_shortwave
                 _bare_ice_ablation_mass_diurnal_resolved(
@@ -454,8 +449,17 @@ function _step_state_resolved!(
                 )
             end
         end
+        if update_snow_cover
+            _time_block!(timings, :snow_cover) do
+                _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
+            end
+        end
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - bare_ice_ablation)
         return nothing
+    end
+
+    _time_block!(timings, :surface_albedo) do
+        _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c)
     end
 
     n_liquid_water_before_energy = if _uses_htessel_densification(c)
@@ -584,8 +588,10 @@ function _step_state_resolved!(
         timings=timings,
     )
 
-    _time_block!(timings, :snow_cover) do
-        _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
+    if update_snow_cover
+        _time_block!(timings, :snow_cover) do
+            _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
+        end
     end
     if !_surface_has_snow(N_storage, mass, idx)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
@@ -700,6 +706,7 @@ end
     has_q_lh,
     dt_days,
     ntime::Int,
+    update_snow_cover::Bool,
 )
     idx = @index(Global)
     if idx <= length(N_storage)
@@ -740,6 +747,7 @@ end
                 f_base_max,
                 forcing,
                 column_ws,
+                update_snow_cover,
             )
         end
     end
@@ -842,6 +850,7 @@ function step_cycle_columns!(
     dt_days,
     workspace::ColumnarStepWorkspace;
     backend::Symbol=:kernelabstractions,
+    update_snow_cover::Bool=true,
 )
     backend == :kernelabstractions || error("Columnar GPU workspaces require `backend=:kernelabstractions`.")
     ntime = size(air_temperature, 2)
@@ -863,6 +872,7 @@ function step_cycle_columns!(
         has_q_lh,
         dt_days,
         ntime,
+        update_snow_cover,
     )
     _wait_kernel(event)
     return nothing

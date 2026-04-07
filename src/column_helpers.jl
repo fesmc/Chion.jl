@@ -90,16 +90,29 @@ end
     density,
     idx::Int,
 )
-    if _n_active(N_storage, idx) <= 0
+    n = _n_active(N_storage, idx)
+    if n <= 0
         return zero(eltype(density))
     end
 
-    total_wet_mass = _total_snow_water_mass(N_storage, mass, mass_w, idx)
+    total_wet_mass = zero(eltype(density))
+    total_solid_mass = zero(eltype(density))
+    total_thickness = zero(eltype(density))
+    @inbounds for layer_index in 1:n
+        solid_mass = max(_get_layer(mass, layer_index, idx), zero(eltype(density)))
+        liquid_mass = max(_get_layer(mass_w, layer_index, idx), zero(eltype(density)))
+        layer_density = _get_layer(density, layer_index, idx)
+        total_wet_mass += solid_mass + liquid_mass
+        if solid_mass > zero(solid_mass) && layer_density > EPS_TINY
+            total_solid_mass += solid_mass
+            total_thickness += solid_mass / layer_density
+        end
+    end
     total_wet_mass <= zero(total_wet_mass) && return zero(total_wet_mass)
+    total_solid_mass <= zero(total_solid_mass) && return zero(total_solid_mass)
+    total_thickness <= EPS_TINY && return zero(total_thickness)
 
-    bulk_density = _bulk_snow_density(N_storage, mass, density, idx)
-    bulk_density <= EPS_TINY && return zero(bulk_density)
-
+    bulk_density = total_solid_mass / total_thickness
     return min(one(bulk_density), (total_wet_mass / bulk_density) / oftype(bulk_density, 0.1))
 end
 
