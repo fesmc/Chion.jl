@@ -66,47 +66,7 @@ function _step_state_resolved!(
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
         _time_call!(timings, :surface_albedo, _set_scalar!, albedo_dynamic, idx, c.alpha_ice)
-        bare_ice_ablation = if forcing.diurnal_shortwave
-            _time_call!(
-                timings,
-                :bare_ice_ablation,
-                _bare_ice_ablation_mass_diurnal_resolved,
-                c,
-                forcing.air_temperature,
-                forcing.rainfall_rate,
-                dt_seconds,
-                forcing.shortwave_down,
-                forcing.has_q_sw_net,
-                forcing.q_sw_net,
-                forcing.has_q_lw_down,
-                forcing.q_lw_down,
-                forcing.has_q_sh,
-                forcing.q_sh,
-                forcing.has_q_lh,
-                forcing.q_lh,
-                forcing.latitude,
-                forcing.day_of_year,
-            )
-        else
-            _time_call!(
-                timings,
-                :bare_ice_ablation,
-                _bare_ice_ablation_mass_resolved,
-                c,
-                forcing.air_temperature,
-                forcing.rainfall_rate,
-                dt_seconds,
-                forcing.shortwave_down,
-                forcing.has_q_sw_net,
-                forcing.q_sw_net,
-                forcing.has_q_lw_down,
-                forcing.q_lw_down,
-                forcing.has_q_sh,
-                forcing.q_sh,
-                forcing.has_q_lh,
-                forcing.q_lh,
-            )
-        end
+        bare_ice_ablation = _time_call!(timings, :bare_ice_ablation, _bare_ice_ablation_mass, c, forcing, dt_seconds)
         if update_snow_cover
             _time_call!(timings, :snow_cover, _update_snow_cover_arrays!, N_storage, mass, mass_w, density, snow_cover, idx)
         end

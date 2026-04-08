@@ -525,42 +525,6 @@ function cpu_cycle_summary(summary)
     )
 end
 
-@inline function make_step_forcing(
-    air_temperature::Float64,
-    snowfall_rate::Float64,
-    rainfall_rate::Float64,
-    dt_days::Float64,
-    shortwave_down::Float64,
-    wind_speed::Float64,
-    q_lw_down::Float64,
-    has_q_lw_down::Bool,
-    q_sh::Float64,
-    has_q_sh::Bool,
-    q_lh::Float64,
-    has_q_lh::Bool,
-)
-    return SM.SnowpackStepForcing(
-        air_temperature,
-        snowfall_rate + rainfall_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        0.0,
-        q_lw_down,
-        q_sh,
-        q_lh,
-        false,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        false,
-        0.0,
-        0.0,
-    )
-end
-
 function domain_mean_vector(v::Vector{Float64})
     total = 0.0
     n = 0
@@ -661,24 +625,13 @@ function run_spinup_cycles_threads_no_netcdf!(
     config,
     domain::SM.SnowpackDomain,
     workspaces::AbstractVector{<:SM.StepWorkspace},
-    tair_k::AbstractMatrix{<:Float64},
-    snow_rate::AbstractMatrix{<:Float64},
-    rain_rate::AbstractMatrix{<:Float64},
-    dt_days::AbstractVector{<:Float64},
-    s_boa::AbstractMatrix{<:Float64},
-    wind_speed::AbstractMatrix{<:Float64},
-    q_lw::AbstractMatrix{<:Float64},
-    has_q_lw::AbstractMatrix{Bool},
-    q_sh::AbstractMatrix{<:Float64},
-    has_q_sh::AbstractMatrix{Bool},
-    q_lh::AbstractMatrix{<:Float64},
-    has_q_lh::AbstractMatrix{Bool},
+    step_fields::SM.SnowpackStepFields,
     nvalid::Int,
 )
     config.backend == :threads || error("Threaded fast path requires `--backend=threads`.")
     !config.write_netcdf || error("Threaded fast path only applies when NetCDF output is disabled.")
 
-    ntime = length(dt_days)
+    ntime = size(step_fields.air_temperature, 2)
     ncol = SM.column_count(domain)
     prev = allocate_cycle_summary_buffers(nvalid)
     final = allocate_cycle_summary_buffers(nvalid)
@@ -696,29 +649,8 @@ function run_spinup_cycles_threads_no_netcdf!(
     simulation_wall_t0 = time_ns()
 
     for cycle in 1:config.max_cycles
-        for t in 1:ntime
-            dt = dt_days[t]
-            step_wall_t0 = time_ns()
-            @threads :static for idx in 1:ncol
-                tid = threadid()
-                forcing = make_step_forcing(
-                    @inbounds(tair_k[idx, t]),
-                    @inbounds(snow_rate[idx, t]),
-                    @inbounds(rain_rate[idx, t]),
-                    dt,
-                    @inbounds(s_boa[idx, t]),
-                    @inbounds(wind_speed[idx, t]),
-                    @inbounds(q_lw[idx, t]),
-                    @inbounds(has_q_lw[idx, t]),
-                    @inbounds(q_sh[idx, t]),
-                    @inbounds(has_q_sh[idx, t]),
-                    @inbounds(q_lh[idx, t]),
-                    @inbounds(has_q_lh[idx, t]),
-                )
-                SM.step!(domain, idx, forcing, workspaces[tid])
-            end
-            step_wall_sec = (time_ns() - step_wall_t0) * 1.0e-9
-            add_timing!(timings, :model_step_wall, step_wall_sec, ncol)
+        time_counted_block!(timings, :model_step_wall, ncol * ntime) do
+            SM.step!(domain, step_fields, workspaces)
         end
 
         time_block!(timings, :summarize_columns_cycle) do
@@ -1562,6 +1494,21 @@ function main(args::Vector{String})
         end
     end
 
+    step_fields = SM.SnowpackStepFields(
+        dt_days=dt_days,
+        air_temperature=tair_k,
+        snowfall_rate=snow_rate,
+        rainfall_rate=rain_rate,
+        shortwave_down=s_boa,
+        wind_speed=wind_speed,
+        q_lw_down=q_lw,
+        has_q_lw_down=has_q_lw,
+        q_sh=q_sh,
+        has_q_sh=has_q_sh,
+        q_lh=q_lh,
+        has_q_lh=has_q_lh,
+    )
+
     if config.backend == :threads && !config.write_outputs && !config.write_netcdf
         workspaces = time_block!(timings, :create_workspaces) do
             SM.threaded_workspaces(domain)
@@ -1571,18 +1518,7 @@ function main(args::Vector{String})
             config,
             domain,
             workspaces,
-            tair_k,
-            snow_rate,
-            rain_rate,
-            dt_days,
-            s_boa,
-            wind_speed,
-            q_lw,
-            has_q_lw,
-            q_sh,
-            has_q_sh,
-            q_lh,
-            has_q_lh,
+            step_fields,
             nvalid,
         )
         run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
@@ -1610,38 +1546,8 @@ function main(args::Vector{String})
         domain = time_block!(timings, :gpu_transfer) do
             SM.gpu_domain(domain)
         end
-        tair_k = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(tair_k)
-        end
-        snow_rate = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(snow_rate)
-        end
-        rain_rate = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(rain_rate)
-        end
-        s_boa = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(s_boa)
-        end
-        q_lw = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(q_lw)
-        end
-        has_q_lw = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(has_q_lw)
-        end
-        q_sh = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(q_sh)
-        end
-        has_q_sh = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(has_q_sh)
-        end
-        q_lh = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(q_lh)
-        end
-        has_q_lh = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(has_q_lh)
-        end
-        wind_speed = time_block!(timings, :gpu_transfer) do
-            CUDA.CuArray(wind_speed)
+        step_fields = time_block!(timings, :gpu_transfer) do
+            SM.adapt(CUDA.CuArray, step_fields)
         end
         workspaces = time_block!(timings, :gpu_transfer) do
             SM.ColumnarStepWorkspace(domain)
@@ -1844,28 +1750,10 @@ function main(args::Vector{String})
 
     for cycle in 1:config.max_cycles
         for t in 1:ntime
-            dt = dt_days[t]
             month_idx = config.write_netcdf ? (cycle - 1) * nmonth_per_cycle + step_month[t] : 0
             if config.backend == :gpu
                 t0 = time_ns()
-                SM.step_columns!(
-                    domain,
-                    tair_k,
-                    snow_rate,
-                    rain_rate,
-                    s_boa,
-                    wind_speed,
-                    q_lw,
-                    has_q_lw,
-                    q_sh,
-                    has_q_sh,
-                    q_lh,
-                    has_q_lh,
-                    t,
-                    dt,
-                    workspaces;
-                    backend=:kernelabstractions,
-                )
+                SM.step!(domain, step_fields, t, workspaces)
                 add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
                 if config.write_netcdf
                     t1 = time_ns()
@@ -1920,25 +1808,8 @@ function main(args::Vector{String})
                 end
             elseif config.write_netcdf
                 t0 = time_ns()
+                SM.step!(domain, step_fields, t, workspaces)
                 @threads :static for idx in 1:ncol
-                    @inbounds P_snow = snow_rate[idx, t]
-                    @inbounds P_rain = rain_rate[idx, t]
-                    tid = threadid()
-                    forcing = make_step_forcing(
-                        @inbounds(tair_k[idx, t]),
-                        P_snow,
-                        P_rain,
-                        dt,
-                        @inbounds(s_boa[idx, t]),
-                        @inbounds(wind_speed[idx, t]),
-                        @inbounds(q_lw[idx, t]),
-                        @inbounds(has_q_lw[idx, t]),
-                        @inbounds(q_sh[idx, t]),
-                        @inbounds(has_q_sh[idx, t]),
-                        @inbounds(q_lh[idx, t]),
-                        @inbounds(has_q_lh[idx, t]),
-                    )
-                    SM.step!(domain, idx, forcing, workspaces[tid])
                     summary = summarize_column(domain, idx)
                     monthly_sum_thickness[month_idx, idx] += summary.thickness
                     monthly_sum_wet_mass[month_idx, idx] += summary.wet_mass
@@ -1957,24 +1828,7 @@ function main(args::Vector{String})
                 add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
             else
                 t0 = time_ns()
-                @threads :static for idx in 1:ncol
-                    tid = threadid()
-                    forcing = make_step_forcing(
-                        @inbounds(tair_k[idx, t]),
-                        @inbounds(snow_rate[idx, t]),
-                        @inbounds(rain_rate[idx, t]),
-                        dt,
-                        @inbounds(s_boa[idx, t]),
-                        @inbounds(wind_speed[idx, t]),
-                        @inbounds(q_lw[idx, t]),
-                        @inbounds(has_q_lw[idx, t]),
-                        @inbounds(q_sh[idx, t]),
-                        @inbounds(has_q_sh[idx, t]),
-                        @inbounds(q_lh[idx, t]),
-                        @inbounds(has_q_lh[idx, t]),
-                    )
-                    SM.step!(domain, idx, forcing, workspaces[tid])
-                end
+                SM.step!(domain, step_fields, t, workspaces)
                 add_timing!(timings, :model_step_wall, (time_ns() - t0) * 1.0e-9, ncol)
             end
             if config.write_netcdf
