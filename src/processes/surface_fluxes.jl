@@ -2,6 +2,13 @@
 Bare-ice and diurnal surface-flux helpers used by `step.jl`.
 """
 
+"""
+    _resolved_nonshortwave_surface_flux_components(c, air_temperature, rainfall_rate, dt_seconds, surface_temperature, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+
+Resolve longwave, sensible, latent, and rain heat flux components for a known
+surface temperature. Returned fluxes are instantaneous energy fluxes in model
+surface-flux units.
+"""
 @inline function _resolved_nonshortwave_surface_flux_components(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -24,6 +31,12 @@ Bare-ice and diurnal surface-flux helpers used by `step.jl`.
     return longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux
 end
 
+"""
+    _resolved_bare_ice_surface_flux_components(c, air_temperature, rainfall_rate, dt_seconds, shortwave_down, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+
+Resolve all bare-ice surface-flux components, including absorbed shortwave
+energy.
+"""
 @inline function _resolved_bare_ice_surface_flux_components(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -60,6 +73,12 @@ end
     )
 end
 
+"""
+    _bare_ice_ablation_mass_resolved(c, air_temperature, rainfall_rate, dt_seconds, shortwave_down, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+
+Convert net positive bare-ice surface energy into melt mass over `dt_seconds`.
+Returns zero when the surface energy balance is negative.
+"""
 function _bare_ice_ablation_mass_resolved(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -95,6 +114,12 @@ function _bare_ice_ablation_mass_resolved(
     return max(net_surface_flux, zero(net_surface_flux)) * dt_seconds / c.Lm
 end
 
+"""
+    _bare_ice_ablation_mass_diurnal_resolved(c, air_temperature, rainfall_rate, dt_seconds, shortwave_down, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value, latitude, day_of_year)
+
+Estimate bare-ice ablation using the dEBM-style diurnal melt-window
+partitioning.
+"""
 function _bare_ice_ablation_mass_diurnal_resolved(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -133,6 +158,12 @@ function _bare_ice_ablation_mass_diurnal_resolved(
     return max(partition.melt_window_daily_flux, zero(dt_seconds)) * dt_seconds / c.Lm
 end
 
+"""
+    _bare_ice_ablation_mass(c, forcing, dt_seconds)
+
+Dispatch bare-ice ablation to the standard or diurnal formulation according to
+`forcing.diurnal_shortwave`.
+"""
 function _bare_ice_ablation_mass(
     c::SnowpackPhysicalConstants,
     forcing::SnowpackStepForcing,
@@ -175,6 +206,12 @@ function _bare_ice_ablation_mass(
     end
 end
 
+"""
+    _diagnose_debm_diurnal_adjustment_resolved(c, air_temperature, rainfall_rate, dt_seconds, surface_temperature, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value, latitude, day_of_year)
+
+Diagnose the extra melt energy and refreezing recharge implied by the dEBM
+diurnal melt-window partition for an existing snow surface.
+"""
 function _diagnose_debm_diurnal_adjustment_resolved(
     c::SnowpackPhysicalConstants,
     air_temperature,

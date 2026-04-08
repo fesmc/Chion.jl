@@ -4,6 +4,12 @@ Simple dEBM-style diurnal shortwave partitioning helpers.
 
 @inline _debm_declination(day_of_year) = oftype(day_of_year, 23.44) * sind(oftype(day_of_year, 360) * (day_of_year - oftype(day_of_year, 79)) / oftype(day_of_year, 365))
 
+"""
+    _debm_sunny_hours_q(latitude_deg, day_of_year, orbital_phase_deg=0.0)
+
+Compute simple orbital geometry diagnostics for the dEBM-style diurnal melt
+partition, including sunny hours and geometric scaling factors.
+"""
 function _debm_sunny_hours_q(latitude_deg, day_of_year, orbital_phase_deg=0.0)
     declination = _debm_declination(day_of_year + orbital_phase_deg / 360)
     cos_omega = clamp(-tand(latitude_deg) * tand(declination), -1.0, 1.0)
@@ -14,6 +20,12 @@ function _debm_sunny_hours_q(latitude_deg, day_of_year, orbital_phase_deg=0.0)
     return (hours=hours, q=q, fluxfac=fluxfac)
 end
 
+"""
+    _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
+
+Partition daily energy into melt-window and refreezing-window components for a
+simple dEBM-style diurnal cycle.
+"""
 function _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
     geometry = _debm_sunny_hours_q(latitude_deg, day_of_year, 0.0)
     sunny_fraction = clamp(geometry.hours / 24.0, 1.0 / 24.0, 1.0)
@@ -38,6 +50,12 @@ function _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, la
     )
 end
 
+"""
+    _diagnose_debm_diurnal_adjustment(c, air_temperature, snowfall_rate, rainfall_rate, dt_seconds, surface_temperature, surface_mass; ...)
+
+Diagnose how a dEBM-style diurnal partition changes melt energy and
+refreezing-recharge energy over one time step.
+"""
 function _diagnose_debm_diurnal_adjustment(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -75,6 +93,13 @@ function _diagnose_debm_diurnal_adjustment(
     )
 end
 
+"""
+    _apply_diurnal_refreezing_recharge!(N_storage, mass, mass_w, temperature, idx, c, recharge_energy, refreezing_period_seconds)
+
+Deposit refreezing recharge energy into cold snow layers by lowering their
+temperature in-place. Returns a named tuple describing how much recharge energy
+was applied and how much remains.
+"""
 function _apply_diurnal_refreezing_recharge!(
     N_storage,
     mass,

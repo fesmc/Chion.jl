@@ -2,6 +2,12 @@
 Liquid-water percolation for column and domain states.
 """
 
+"""
+    _is_lowest_active_snow_layer(N_storage, mass, idx, layer_index)
+
+Return `true` when `layer_index` is the last active snow layer in column
+`idx`.
+"""
 @inline function _is_lowest_active_snow_layer(
     N_storage,
     mass,
@@ -11,6 +17,13 @@ Liquid-water percolation for column and domain states.
     return layer_index == _n_active(N_storage, idx) || _get_layer(mass, layer_index + 1, idx) <= zero(eltype(mass))
 end
 
+"""
+    _go_percolation!(N_storage, mass, mass_w, density, idx, ice_density, water_density; max_lwc=0.1, rho_i_tol=10.0)
+
+Route excess liquid water downward through column `idx` until each layer is at
+or below the liquid-water-content threshold. Mutates `mass_w` in-place and
+returns runoff leaving the bottom of the column.
+"""
 function _go_percolation!(
     N_storage,
     mass,
@@ -62,6 +75,12 @@ function _go_percolation!(
     return runoff
 end
 
+"""
+    go_percolation!(solid_mass, liquid_water_mass, snow_density, ice_density, water_density; ...)
+
+Run the percolation scheme on one vector-backed snow column. Mutates
+`liquid_water_mass` in-place and returns the runoff mass.
+"""
 function go_percolation!(
     solid_mass::AbstractVector,
     liquid_water_mass::AbstractVector,
@@ -85,6 +104,12 @@ function go_percolation!(
     )
 end
 
+"""
+    go_percolation!(domain, idx; ...)
+
+Run liquid-water percolation for column `idx` of `domain`. Mutates
+`domain.mass_w` and accumulates routed runoff into `domain.runoff[idx]`.
+"""
 function go_percolation!(
     domain::AbstractSnowpackDomain,
     idx::Int;

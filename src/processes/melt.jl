@@ -2,6 +2,13 @@
 Surface melt for array-backed snowpack states.
 """
 
+"""
+    _apply_melt!(..., idx, mass_split, mass_min, melt_mass, c)
+
+Convert up to `melt_mass` of surface snow into liquid water in column `idx`.
+This mutates snow mass, liquid water, runoff routing, surface temperature, and
+surface albedo as depleted layers are removed or merged.
+"""
 function _apply_melt!(
     N_storage,
     mass,

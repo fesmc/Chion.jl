@@ -24,6 +24,11 @@ Firn densification translated into array-backed kernels.
     -oftype(density, 4.2e-2) * (melting_temperature - temperature) - oftype(density, 460.0) * max(zero(density), density - oftype(density, 150.0)),
 )
 
+"""
+    _htessel_low_density_rate(c, overburden_pressure, temperature, density)
+
+Return the HTESSEL low-density densification tendency for one layer.
+"""
 @inline function _htessel_low_density_rate(
     c::SnowpackPhysicalConstants,
     overburden_pressure,
@@ -37,6 +42,13 @@ end
 
 @inline _relative_porosity(density, ice_density) = clamp(one(density) - density / ice_density, zero(density), one(density))
 
+"""
+    _apply_htessel_liquid_water_compaction!(N_storage, mass, mass_w, density, idx, liquid_water_before_energy, ice_density)
+
+Apply the HTESSEL liquid-water compaction correction after percolation and
+energy updates. Mutates `density` in-place for low-density layers that retain
+additional liquid water.
+"""
 function _apply_htessel_liquid_water_compaction!(
     N_storage,
     mass,
@@ -69,6 +81,12 @@ function _apply_htessel_liquid_water_compaction!(
     return nothing
 end
 
+"""
+    _bubble_pressure_mpa(density, rho_e, ice_density, P_atm)
+
+Compute bubble pressure in MPa for firn densification at densities above the
+critical close-off density `rho_e`.
+"""
 @inline function _bubble_pressure_mpa(density, rho_e, ice_density, P_atm)
     if density <= rho_e
         return zero(density)
@@ -79,6 +97,11 @@ end
     ) / oftype(density, 1.0e6)
 end
 
+"""
+    _low_density_tendency(::Val{:bessi}, c, overburden_pressure, temperature, density, accumulation_rate)
+
+Return the low-density densification tendency for the BESSI formulation.
+"""
 @inline function _low_density_tendency(
     ::Val{:bessi},
     c::SnowpackPhysicalConstants,
@@ -90,6 +113,11 @@ end
     return _bessi_low_density_rate(density, temperature, c.rho_i, accumulation_rate)
 end
 
+"""
+    _low_density_tendency(::Val{:htessel}, c, overburden_pressure, temperature, density, accumulation_rate)
+
+Return the low-density densification tendency for the HTESSEL formulation.
+"""
 @inline function _low_density_tendency(
     ::Val{:htessel},
     c::SnowpackPhysicalConstants,
@@ -101,6 +129,12 @@ end
     return _htessel_low_density_rate(c, overburden_pressure, temperature, density)
 end
 
+"""
+    _mid_density_tendency(density, temperature, pressure_excess_mpa, ice_density)
+
+Return the intermediate-density densification tendency used between low-density
+firn and near-close-off firn.
+"""
 @inline function _mid_density_tendency(
     density,
     temperature,
@@ -118,6 +152,11 @@ end
            density * densification_shape_factor * pressure_excess_mpa^3
 end
 
+"""
+    _high_density_tendency(density, temperature, pressure_excess_mpa, ice_density)
+
+Return the high-density densification tendency used near pore close-off.
+"""
 @inline function _high_density_tendency(
     density,
     temperature,
@@ -136,6 +175,13 @@ end
            density * densification_shape_factor * pressure_excess_mpa^3
 end
 
+"""
+    _go_densification_scheme!(N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds, low_density_scheme)
+
+Advance layer densities for column `idx` over one time step using the selected
+low-density scheme and the shared mid/high-density parameterizations. Mutates
+`density` in-place.
+"""
 function _go_densification_scheme!(
     N_storage,
     mass,
@@ -208,6 +254,11 @@ function _go_densification_scheme!(
     return nothing
 end
 
+"""
+    _go_densification!(N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds)
+
+Dispatch densification for column `idx` to the scheme configured in `c`.
+"""
 function _go_densification!(
     N_storage,
     mass,
@@ -244,6 +295,12 @@ function _go_densification!(
     )
 end
 
+"""
+    go_densification!(domain, idx, accumulation_rate, dt_seconds)
+
+Advance snow density for column `idx` of `domain` over one time step. Mutates
+`domain.density` in-place and returns `nothing`.
+"""
 function go_densification!(
     domain::AbstractSnowpackDomain,
     idx::Int,

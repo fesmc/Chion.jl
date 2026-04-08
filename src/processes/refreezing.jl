@@ -2,6 +2,13 @@
 Liquid-water refreezing for array-backed snowpack states.
 """
 
+"""
+    _go_refreezing!(N_storage, mass_w, mass, density, temperature, idx, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density)
+
+Refreeze liquid water in subfreezing layers of column `idx` until either cold
+content or liquid water is exhausted. Mutates liquid water, solid mass,
+density, and temperature in-place and returns the refrozen mass.
+"""
 function _go_refreezing!(
     N_storage,
     mass_w,
@@ -61,6 +68,13 @@ function _go_refreezing!(
     return refrozen_mass
 end
 
+"""
+    go_refreezing!(liquid_water_mass, solid_mass, snow_density, layer_temperature, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density)
+
+Run the refreezing scheme on vector-backed column data. Mutates the supplied
+arrays in-place and returns the refrozen mass together with released latent
+heat.
+"""
 function go_refreezing!(
     liquid_water_mass::AbstractVector,
     solid_mass::AbstractVector,
@@ -90,6 +104,12 @@ function go_refreezing!(
     )
 end
 
+"""
+    go_refreezing!(domain, idx)
+
+Run the refreezing scheme for column `idx` of `domain`. Mutates the domain
+state in-place and returns the refrozen mass and released latent heat.
+"""
 function go_refreezing!(domain::AbstractSnowpackDomain, idx::Int)
     if _n_active(domain.N, idx) <= 0
         return (

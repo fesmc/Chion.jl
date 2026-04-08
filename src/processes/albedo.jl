@@ -2,6 +2,12 @@
 Surface albedo state and update rules for array-backed snow states.
 """
 
+"""
+    _constant_surface_albedo(N_storage, mass, temperature, idx, c)
+
+Return the constant-scheme surface albedo for column `idx`, switching between
+ice, dry snow, and wet snow according to surface state.
+"""
 @inline function _constant_surface_albedo(
     N_storage,
     mass,
@@ -15,6 +21,12 @@ Surface albedo state and update rules for array-backed snow states.
     return _get_layer(temperature, 1, idx) >= c.T0 ? c.alpha_wet : c.alpha_dry
 end
 
+"""
+    _surface_liquid_water_content(N_storage, mass, mass_w, density, idx, c)
+
+Estimate volumetric liquid-water content in the surface layer of column `idx`.
+Returns zero when the layer is empty, ice-dense, or has no pore volume.
+"""
 @inline function _surface_liquid_water_content(
     N_storage,
     mass,
@@ -40,6 +52,12 @@ end
     return max(_get_layer(mass_w, 1, idx), zero(eltype(mass))) / c.rho_w / pore_volume
 end
 
+"""
+    _refresh_dynamic_albedo_from_snowfall!(albedo_dynamic, idx, c, snowfall_mass)
+
+Refresh the dynamic surface albedo after snowfall on column `idx`. Mutates
+`albedo_dynamic[idx]` and returns the updated albedo.
+"""
 function _refresh_dynamic_albedo_from_snowfall!(
     albedo_dynamic,
     idx::Int,
@@ -62,6 +80,12 @@ function _refresh_dynamic_albedo_from_snowfall!(
     return updated
 end
 
+"""
+    _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c)
+
+Update the diagnosed surface albedo for column `idx` in-place using either the
+constant or dynamic albedo scheme.
+"""
 function _update_surface_albedo_arrays!(
     N_storage,
     mass,
@@ -104,6 +128,12 @@ function _update_surface_albedo_arrays!(
     return updated_albedo
 end
 
+"""
+    update_surface_albedo!(domain, idx)
+
+Update the surface albedo of column `idx` in `domain` and return the new
+albedo.
+"""
 function update_surface_albedo!(domain::AbstractSnowpackDomain, idx::Int)
     return _update_surface_albedo_arrays!(
         domain.N,

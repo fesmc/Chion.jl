@@ -4,6 +4,12 @@ Energy-flux temperature solver for array-backed snowpack states.
 
 @inline _safe_positive(x) = x > EPS_TINY ? x : oftype(x, EPS_TINY)
 
+"""
+    _clamp_to_melt!(temperature_profile, idx, melting_temperature, n)
+
+Clamp the first `n` layer temperatures of column `idx` to `melting_temperature`
+from above. Mutates `temperature_profile` in-place and returns it.
+"""
 @inline function _clamp_to_melt!(
     temperature_profile,
     idx::Int,
@@ -18,6 +24,12 @@ Energy-flux temperature solver for array-backed snowpack states.
     return temperature_profile
 end
 
+"""
+    _snow_thermal_conductivity(ρ, Kᵢ, diffusion_model)
+
+Evaluate one of the supported snow thermal-conductivity parameterizations for
+density `ρ`.
+"""
 function _snow_thermal_conductivity(ρ, Kᵢ, diffusion_model::Int)
     if diffusion_model == 1
         return Kᵢ * (ρ / oftype(ρ, 1000.0))^oftype(ρ, 1.88)
@@ -35,6 +47,11 @@ end
 @inline _snow_thermal_conductivity_model1(ρ, Kᵢ) =
     Kᵢ * (ρ * oftype(ρ, 1.0e-3))^oftype(ρ, 1.88)
 
+"""
+    _snow_thermal_conductivity_model2(ρ)
+
+Evaluate the Sturm-style piecewise thermal-conductivity parameterization.
+"""
 @inline function _snow_thermal_conductivity_model2(ρ)
     if ρ > oftype(ρ, 156.0)
         return oftype(ρ, 0.138) - oftype(ρ, 1.01e-3) * ρ + oftype(ρ, 3.233e-6) * ρ^2
@@ -45,6 +62,11 @@ end
 @inline _snow_thermal_conductivity_model3(ρ) =
     oftype(ρ, 2.1e-2) + oftype(ρ, 4.2e-4) * ρ + oftype(ρ, 2.2e-9) * ρ^3
 
+"""
+    shortwave_absorbed(shortwave_down; surface_albedo)
+
+Return the absorbed shortwave flux after applying `surface_albedo`.
+"""
 @inline function shortwave_absorbed(
     shortwave_down;
     surface_albedo,
@@ -55,6 +77,12 @@ end
 @inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
     (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
 
+"""
+    _solve_tridiagonal_thomas_prefix!(lower_diagonal, main_diagonal, upper_diagonal, right_hand_side, idx, n)
+
+Solve an in-place tridiagonal system for column `idx` using the Thomas
+algorithm on the first `n` rows. The solution overwrites `right_hand_side`.
+"""
 function _solve_tridiagonal_thomas_prefix!(
     lower_diagonal,
     main_diagonal,
@@ -102,6 +130,12 @@ function _solve_tridiagonal_thomas_prefix!(
     return right_hand_side
 end
 
+"""
+    _energy_flux_result(; ...)
+
+Package the key diagnostics returned by the energy-flux solver into a named
+tuple.
+"""
 @inline function _energy_flux_result(
     ;
     needs_melt,
@@ -125,6 +159,12 @@ end
     )
 end
 
+"""
+    _residual_melt_energy(surface_flux_constant, surface_flux_linear, surface_temperature, energy_to_melting, dt_seconds; needs_melt)
+
+Return melt energy that remains after bringing the surface to the melting
+point.
+"""
 @inline function _residual_melt_energy(
     surface_flux_constant,
     surface_flux_linear,
@@ -140,6 +180,12 @@ end
     )
 end
 
+"""
+    _diagnose_latent_heat_flux_coefficients(has_surface_snow, c, air_temperature, snowfall_rate, rainfall_rate)
+
+Return effective linear and constant latent-heat terms induced by snowfall or
+rainfall forcing.
+"""
 @inline function _diagnose_latent_heat_flux_coefficients(
     has_surface_snow::Bool,
     c::SnowpackPhysicalConstants,
@@ -156,10 +202,23 @@ end
     end
 end
 
+"""
+    _surface_has_snow(N_storage, mass, idx)
+
+Return `true` when column `idx` has a nonempty surface snow layer.
+"""
 @inline function _surface_has_snow(N_storage, mass, idx::Int)
     return _n_active(N_storage, idx) > 0 && _get_layer(mass, 1, idx) > EPS_EMPTY_LAYER
 end
 
+"""
+    _go_energy_flux_resolved!(..., scratch, air_temperature, shortwave_down, latent_heat_linear_coefficient_eff, latent_heat_constant_term_eff, dt_seconds, resolved_diffusion_model, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+
+Advance the temperature profile of column `idx` over one time step by solving
+the surface energy balance and vertical heat diffusion problem. Mutates
+temperature and surface-temperature state in-place and returns a named tuple of
+energy diagnostics, including melt availability.
+"""
 function _go_energy_flux_resolved!(
     N_storage,
     mass,
@@ -392,6 +451,13 @@ function _go_energy_flux_resolved!(
     )
 end
 
+"""
+    go_energy_flux!(domain, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch=EnergyWorkspace(domain), diffusion_model=2, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
+
+Public wrapper for the column energy-flux solve on `domain`. Reuses `scratch`
+for temporary arrays and returns the same diagnostic named tuple as
+`_go_energy_flux_resolved!`.
+"""
 function go_energy_flux!(
     domain::AbstractSnowpackDomain,
     idx::Int,

@@ -2,13 +2,29 @@
 Layer-structure updates and basal depletion for array-backed snowpack states.
 """
 
+"""
+    _safe_nonnegative(x)
+
+Clamp `x` to zero from below.
+"""
 @inline _safe_nonnegative(x) = x > zero(x) ? x : zero(x)
 
+"""
+    _mass_weighted_mean(m1, x1, m2, x2)
+
+Return the mass-weighted mean of two values, guarding against zero total mass.
+"""
 @inline function _mass_weighted_mean(m1, x1, m2, x2)
     total_mass = m1 + m2
     return total_mass > zero(total_mass) ? (m1 * x1 + m2 * x2) / total_mass : zero(x1 + x2)
 end
 
+"""
+    _reset_layer_at_index!(mass, mass_w, density, temperature, idx, layer_index, c)
+
+Reset one layer of column `idx` to an empty state. Mutates all supplied layer
+arrays in-place.
+"""
 function _reset_layer_at_index!(
     mass,
     mass_w,
@@ -25,6 +41,13 @@ function _reset_layer_at_index!(
     return nothing
 end
 
+"""
+    _split_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, Ntot, mass_max, mass_split)
+
+Split the surface layer of column `idx` into two layers when it exceeds the
+configured mass threshold. Mutates layer arrays and active-layer count
+in-place.
+"""
 function _split_surface_layer!(
     N_storage,
     mass,
@@ -67,6 +90,12 @@ function _split_surface_layer!(
     return nothing
 end
 
+"""
+    _merge_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, Ntot, mass_split, mass_min, c)
+
+Merge or rebalance the top two layers of column `idx` when the surface layer
+falls below the minimum target mass.
+"""
 function _merge_surface_layer!(
     N_storage,
     mass,
@@ -142,6 +171,12 @@ function _merge_surface_layer!(
     return nothing
 end
 
+"""
+    _merge_bottom_layer!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c)
+
+Merge the two deepest active layers of column `idx`, exporting any density
+excess beyond pure ice into basal mass and SMB diagnostics.
+"""
 function _merge_bottom_layer!(
     N_storage,
     mass,
@@ -196,6 +231,12 @@ function _merge_bottom_layer!(
     return nothing
 end
 
+"""
+    _remove_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, c)
+
+Remove the top active layer from column `idx` and shift the remaining layers
+upward.
+"""
 function _remove_surface_layer!(
     N_storage,
     mass,
@@ -225,6 +266,12 @@ function _remove_surface_layer!(
     return nothing
 end
 
+"""
+    _remove_depleted_surface_and_route_water!(N_storage, mass, mass_w, density, temperature, runoff, idx, c)
+
+Remove an empty surface layer and route any residual liquid water either into
+the next layer or directly to runoff.
+"""
 @inline function _remove_depleted_surface_and_route_water!(
     N_storage,
     mass,
@@ -246,6 +293,12 @@ end
     return nothing
 end
 
+"""
+    _continuous_bottom_deplete!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, d_m_in, c)
+
+Continuously remove `d_m_in` of solid mass from the bottom of column `idx`,
+routing associated liquid water to runoff and updating basal mass diagnostics.
+"""
 function _continuous_bottom_deplete!(
     N_storage,
     mass,
@@ -312,6 +365,12 @@ function _continuous_bottom_deplete!(
     return (ice_to_base=ice_to_base, runoff=runoff_total)
 end
 
+"""
+    _free_slot_for_surface_split!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_max, c)
+
+Create room for a new surface-layer split by removing or depleting the deepest
+layer when the column is already at its maximum layer count.
+"""
 function _free_slot_for_surface_split!(
     N_storage,
     mass,
@@ -374,6 +433,12 @@ function _free_slot_for_surface_split!(
     return nothing
 end
 
+"""
+    _enforce_mass_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, f_base_max, dt_seconds, c)
+
+Apply the column mass-cap rule after accumulation, removing excess basal mass
+according to the configured relaxation.
+"""
 function _enforce_mass_cap!(
     N_storage,
     mass,
@@ -443,6 +508,13 @@ function _enforce_mass_cap!(
     return nothing
 end
 
+"""
+    continuous_bottom_deplete!(domain, idx, d_m_in)
+
+Public wrapper for basal depletion of column `idx` in `domain`. Mutates the
+domain state in-place and returns a named tuple with transferred ice and
+runoff.
+"""
 function continuous_bottom_deplete!(
     domain::AbstractSnowpackDomain,
     idx::Int,

@@ -2,6 +2,13 @@
 Snowfall and rainfall accumulation for array-backed snowpack states.
 """
 
+"""
+    _fresh_snow_density(c, air_temperature, wind_speed)
+
+Diagnose the density of newly fallen snow from the configured scheme in `c`.
+The result is clamped to a physically plausible range between fresh snow and
+ice density.
+"""
 @inline function _fresh_snow_density(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -18,6 +25,14 @@ Snowfall and rainfall accumulation for array-backed snowpack states.
     return clamp(fresh_snow_density, oftype(fresh_snow_density, 50), c.rho_i)
 end
 
+"""
+    _apply_accumulation!(..., snowfall_rate, rainfall_rate, dt_seconds; air_temperature=nothing, T_air=nothing, wind_speed=...)
+
+Apply snowfall and rainfall to column `idx`, update the surface layer, and
+maintain layer-structure constraints such as split and merge thresholds.
+Mutates the supplied state arrays in-place and may also update albedo, runoff,
+and basal-mass diagnostics.
+"""
 function _apply_accumulation!(
     N_storage,
     mass,
