@@ -2,6 +2,13 @@
 Domain-wide summary helpers.
 """
 
+"""
+    _summarize_domain_state_kernel!(...)
+
+KernelAbstractions kernel that summarizes each column into thickness, wet
+mass, bulk density, basal mass, ice SMB, liquid water, and runoff arrays. All
+output arrays are mutated in-place.
+"""
 @kernel function _summarize_domain_state_kernel!(
     thickness,
     wet_mass,
@@ -46,6 +53,13 @@ Domain-wide summary helpers.
     end
 end
 
+"""
+    _summarize_cycle_state_kernel!(...)
+
+KernelAbstractions kernel that summarizes the subset of column diagnostics
+needed for equilibrium-cycle tracking. Mutates the supplied output arrays
+in-place.
+"""
 @kernel function _summarize_cycle_state_kernel!(
     thickness,
     wet_mass,
@@ -80,6 +94,14 @@ end
     end
 end
 
+"""
+    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, domain; backend=:threads)
+
+Fill preallocated summary arrays with one-column diagnostics from `domain`.
+Outputs are column-wise totals or aggregates in SI-like model units, and the
+chosen backend controls whether the work runs on Julia threads or a
+KernelAbstractions kernel.
+"""
 function summarize_domain_state!(
     thickness::AbstractVector,
     wet_mass::AbstractVector,
@@ -143,6 +165,12 @@ function summarize_domain_state!(
     error("Unsupported summary backend `$backend`.")
 end
 
+"""
+    summarize_domain_state(domain; backend=:threads)
+
+Allocate and return a named tuple of per-column summary arrays for `domain`.
+This is a convenience wrapper around `summarize_domain_state!`.
+"""
 function summarize_domain_state(domain::AbstractSnowpackDomain; backend::Symbol=:threads)
     ncol = column_count(domain)
     NF = eltype(domain)
@@ -176,6 +204,12 @@ function summarize_domain_state(domain::AbstractSnowpackDomain; backend::Symbol=
     )
 end
 
+"""
+    summarize_cycle_state!(thickness, wet_mass, bulk_density, base_mass, domain; backend=:threads)
+
+Fill preallocated arrays with the smaller summary set used to compare
+equilibrium cycles. Mutates the output arrays and returns `nothing`.
+"""
 function summarize_cycle_state!(
     thickness::AbstractVector,
     wet_mass::AbstractVector,
@@ -226,6 +260,12 @@ function summarize_cycle_state!(
     error("Unsupported summary backend `$backend`.")
 end
 
+"""
+    summarize_cycle_state(domain; backend=:threads)
+
+Allocate and return a named tuple of cycle-level summary arrays for `domain`.
+This is the allocating counterpart to `summarize_cycle_state!`.
+"""
 function summarize_cycle_state(domain::AbstractSnowpackDomain; backend::Symbol=:threads)
     ncol = column_count(domain)
     NF = eltype(domain)

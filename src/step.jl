@@ -2,6 +2,14 @@
 Core stepping flow and public single-column entrypoints.
 """
 
+"""
+    _step_state_resolved!(..., forcing, workspace, update_snow_cover=true; timings=nothing)
+
+Advance one snowpack column by one forcing step using already-resolved arrays,
+constants, and scratch storage. This mutates the supplied state arrays
+in-place, may update runoff and SMB diagnostics, and optionally records stage
+timings.
+"""
 function _step_state_resolved!(
     N_storage,
     mass,
@@ -278,6 +286,13 @@ function _step_state_resolved!(
     return nothing
 end
 
+"""
+    step!(domain, idx, forcing, workspace=StepWorkspace(domain); timings=nothing, update_snow_cover=true)
+
+Advance column `idx` of `domain` by one step using a prebuilt
+`SnowpackStepForcing`. Mutates `domain` in-place and reuses `workspace` for
+temporary storage.
+"""
 function step!(
     domain::AbstractSnowpackDomain,
     idx::Int,
@@ -312,6 +327,13 @@ function step!(
     )
 end
 
+"""
+    step!(domain, idx, air_temperature, precipitation_rate, dt_days; workspace=StepWorkspace(domain), timings=nothing, kwargs...)
+
+Advance column `idx` of `domain` by one step from scalar meteorological input.
+Keyword arguments are normalized into a `SnowpackStepForcing` before the core
+step routine is called.
+"""
 function step!(
     domain::AbstractSnowpackDomain,
     idx::Int,

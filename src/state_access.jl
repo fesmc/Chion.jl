@@ -2,6 +2,13 @@
 State accessors and formatted state output.
 """
 
+"""
+    _state_dict(N_storage, mass, mass_w, density, temperature, smb_ice, albedo_dynamic, idx, c)
+
+Build a dictionary snapshot for column `idx`. The result includes active-layer
+profiles, bulk totals, and surface diagnostics, and allocates new Julia arrays
+for the returned profile data.
+"""
 function _state_dict(
     N_storage,
     mass,
@@ -65,6 +72,13 @@ function _state_dict(
     )
 end
 
+"""
+    get_state(domain, idx=1)
+
+Return a dictionary snapshot for column `idx` of `domain`. Values are copied
+into plain Julia containers so callers can inspect state without mutating the
+domain.
+"""
 function get_state(domain::AbstractSnowpackDomain, idx::Int=1)
     return _state_dict(
         domain.N,
@@ -79,6 +93,12 @@ function get_state(domain::AbstractSnowpackDomain, idx::Int=1)
     )
 end
 
+"""
+    print_state(domain, idx=1)
+
+Print a short formatted summary of column `idx` to standard output. This is a
+diagnostic convenience wrapper around `get_state`.
+"""
 function print_state(domain::AbstractSnowpackDomain, idx::Int=1)
     state = get_state(domain, idx)
     println("=" ^ 60)
@@ -93,12 +113,24 @@ function print_state(domain::AbstractSnowpackDomain, idx::Int=1)
     println()
 end
 
+"""
+    compute_auxiliary!(domain, idx)
+
+Recompute derived diagnostics for column `idx` in-place. Currently this
+updates snow-cover fraction and surface albedo.
+"""
 function compute_auxiliary!(domain::AbstractSnowpackDomain, idx::Int)
     update_snow_cover!(domain, idx)
     update_surface_albedo!(domain, idx)
     return nothing
 end
 
+"""
+    compute_auxiliary!(domain)
+
+Recompute derived diagnostics for every column in `domain`. Mutates the
+domain’s auxiliary fields in-place and returns `nothing`.
+"""
 function compute_auxiliary!(domain::AbstractSnowpackDomain)
     for idx in 1:column_count(domain)
         compute_auxiliary!(domain, idx)

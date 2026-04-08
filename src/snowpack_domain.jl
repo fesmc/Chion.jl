@@ -67,15 +67,39 @@ end
 
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 Base.eltype(::AbstractSnowpackDomain{NF}) where {NF} = NF
+
+"""
+    number_type(c)
+
+Return the floating-point element type used by the physical constants set `c`.
+"""
 @inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
+
+"""
+    column_count(domain)
+
+Return the number of snow columns stored in `domain`.
+"""
 @inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
 
+"""
+    _normalize_low_density_densification(scheme)
+
+Normalize a densification-scheme symbol into the internal UInt8 flag used by
+`SnowpackPhysicalConstants`.
+"""
 @inline function _normalize_low_density_densification(scheme::Symbol)
     scheme in (:bessi, :htessel) ||
         error("Unsupported low-density densification scheme '$scheme'. Use :bessi or :htessel.")
     return scheme == :htessel ? LOW_DENSIFICATION_HTESSEL : LOW_DENSIFICATION_BESSI
 end
 
+"""
+    _normalize_fresh_snow_density_scheme(scheme)
+
+Normalize a fresh-snow density scheme symbol into the internal UInt8 flag,
+including support for legacy aliases.
+"""
 @inline function _normalize_fresh_snow_density_scheme(scheme::Symbol)
     normalized_scheme = if scheme == :bessi
         :constant
@@ -92,6 +116,12 @@ end
     return normalized_scheme == :constant ? FRESH_SNOW_DENSITY_CONSTANT : FRESH_SNOW_DENSITY_PARAMETERIZED
 end
 
+"""
+    _normalize_albedo_scheme(scheme)
+
+Normalize an albedo scheme symbol into the internal UInt8 flag, including
+legacy aliases.
+"""
 @inline function _normalize_albedo_scheme(scheme::Symbol)
     normalized_scheme = if scheme in (:bessi, :legacy)
         :constant
@@ -115,6 +145,12 @@ end
 @inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
     c.low_density_densification == LOW_DENSIFICATION_HTESSEL
 
+"""
+    SnowpackPhysicalConstants(::Type{NF}; kwargs...)
+
+Construct a self-consistent set of physical constants and scheme flags using
+floating-point type `NF`.
+"""
 function SnowpackPhysicalConstants(::Type{NF};
     rho_s::Real=315.0,
     rho_i::Real=917.0,
@@ -173,8 +209,19 @@ function SnowpackPhysicalConstants(::Type{NF};
     )
 end
 
+"""
+    SnowpackPhysicalConstants(; kwargs...)
+
+Convenience constructor for `SnowpackPhysicalConstants{Float64}`.
+"""
 SnowpackPhysicalConstants(; kwargs...) = SnowpackPhysicalConstants(Float64; kwargs...)
 
+"""
+    _validate_mass_partition(mass_max, mass_split, mass_min)
+
+Check that the layer split thresholds are ordered consistently for the layer
+management routines.
+"""
 @inline function _validate_mass_partition(mass_max, mass_split, mass_min)
     mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
     mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
@@ -182,11 +229,23 @@ SnowpackPhysicalConstants(; kwargs...) = SnowpackPhysicalConstants(Float64; kwar
     return nothing
 end
 
+"""
+    _validate_domain_vector(name, values, ncol)
+
+Validate that a vector-valued state field has one entry per column.
+"""
 @inline function _validate_domain_vector(name::AbstractString, values, ncol::Int)
     length(values) == ncol || error("`$name` must match `N`.")
     return nothing
 end
 
+"""
+    SnowpackDomain(; c=SnowpackPhysicalConstants(), Ntot=DEFAULT_NTOT, ncol=1, ...)
+
+Allocate a new array-backed snowpack domain with `ncol` columns and `Ntot`
+maximum layers per column. State arrays are initialized to simple defaults and
+mutated in-place by the model.
+"""
 function SnowpackDomain(;
     c::SnowpackPhysicalConstants=SnowpackPhysicalConstants(),
     Ntot::Int=DEFAULT_NTOT,
@@ -226,6 +285,12 @@ function SnowpackDomain(;
     )
 end
 
+"""
+    SnowpackDomain(N, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, snow_cover, albedo_dynamic; c=..., ...)
+
+Wrap existing state arrays as a `SnowpackDomain`. Array shapes and per-column
+vector lengths are validated but the input arrays are not copied.
+"""
 function SnowpackDomain(
     N::AbstractVector{<:Integer},
     mass::AbstractMatrix{NF},
@@ -281,13 +346,30 @@ function SnowpackDomain(
     )
 end
 
+"""
+    cpu_domain(domain)
+
+Return a copy of `domain` adapted to CPU `Array` storage.
+"""
 cpu_domain(domain::SnowpackDomain) = adapt(Array, domain)
 
+"""
+    gpu_domain(domain)
+
+Return a copy of `domain` adapted to `CUDA.CuArray` storage. Throws if CUDA is
+not functional in the current session.
+"""
 function gpu_domain(domain::SnowpackDomain)
     cuda_available() || error("CUDA is not functional in the current environment.")
     return adapt(CUDA.CuArray, domain)
 end
 
+"""
+    variables(domain)
+
+Return metadata describing the published prognostic and auxiliary fields of a
+snowpack domain.
+"""
 variables(::AbstractSnowpackDomain) = (
     PrognosticVariable{:mass}("Solid snow and firn mass per layer."),
     PrognosticVariable{:mass_w}("Liquid water mass per layer."),

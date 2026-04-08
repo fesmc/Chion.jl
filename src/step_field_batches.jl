@@ -2,6 +2,12 @@
 Batch stepping over forcing fields on CPU and GPU.
 """
 
+"""
+    _step_columns_kernel!(...)
+
+KernelAbstractions kernel that extracts one time slice of `SnowpackStepFields`
+and advances each column independently in-place.
+"""
 @kernel function _step_columns_kernel!(
     N_storage,
     mass,
@@ -78,6 +84,12 @@ Batch stepping over forcing fields on CPU and GPU.
     end
 end
 
+"""
+    _launch_step_columns_kernel!(domain, forcing, time_index, workspace, update_snow_cover)
+
+Launch the backend-specific batch stepping kernel for one forcing time step and
+return the KernelAbstractions event.
+"""
 @inline function _launch_step_columns_kernel!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackStepFields,
@@ -123,6 +135,12 @@ end
     )
 end
 
+"""
+    step!(domain, forcing, time_index, workspaces; update_snow_cover=true)
+
+Advance all columns for one time step on the CPU using Julia threads. Each
+thread reuses one entry from `workspaces`.
+"""
 function step!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackStepFields,
@@ -142,6 +160,12 @@ function step!(
     return nothing
 end
 
+"""
+    step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace; update_snow_cover=true)
+
+Advance all columns for one time step using the backend associated with
+`domain.mass`, typically a GPU kernel for device arrays.
+"""
 function step!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackStepFields,
@@ -153,6 +177,13 @@ function step!(
     return nothing
 end
 
+"""
+    step!(domain, forcing, workspace; update_snow_cover=true)
+
+Advance all columns through the full forcing sequence in `forcing`. The outer
+time loop runs in Julia, while per-time-step execution dispatches to the CPU
+or GPU batch method based on `workspace`.
+"""
 function step!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackStepFields,

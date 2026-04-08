@@ -7,14 +7,33 @@ mutable struct StepTimingStats
     counts::Dict{Symbol, Int}
 end
 
+"""
+    StepTimingStats()
+
+Create an empty accumulator for `step!` stage timings. The returned object is
+mutated in-place by `add_timing!`, `_time_block!`, and `_time_call!`.
+"""
 StepTimingStats() = StepTimingStats(Dict{Symbol, Float64}(), Dict{Symbol, Int}())
 
+"""
+    add_timing!(stats, key, dt_sec, count=1)
+
+Accumulate `dt_sec` seconds under `key` inside `stats` and increment the call
+count by `count`. Mutates `stats` and returns `dt_sec`.
+"""
 function add_timing!(stats::StepTimingStats, key::Symbol, dt_sec::Float64, count::Int=1)
     stats.totals[key] = get(stats.totals, key, 0.0) + dt_sec
     stats.counts[key] = get(stats.counts, key, 0) + count
     return dt_sec
 end
 
+"""
+    _time_block!(stats, key, f)
+
+Execute the zero-argument function `f` and optionally record its wall-clock
+runtime under `key`. When `stats === nothing`, the call is forwarded without
+measurement.
+"""
 @inline function _time_block!(
     stats::Nothing,
     key::Symbol,
@@ -34,9 +53,22 @@ end
     return value
 end
 
+"""
+    _time_block!(f, stats, key)
+
+Compatibility argument order for `_time_block!`. Executes `f` and records
+timing information when `stats` is a `StepTimingStats`.
+"""
 @inline _time_block!(f::F, stats, key::Symbol) where {F<:Function} =
     _time_block!(stats, key, f)
 
+"""
+    _time_call!(stats, key, f, args...)
+
+Call `f(args...)` and optionally accumulate its runtime under `key`. The
+function returns the value produced by `f` and never allocates timing state on
+its own.
+"""
 @inline function _time_call!(
     stats::Nothing,
     key::Symbol,
@@ -58,6 +90,13 @@ end
     return value
 end
 
+"""
+    timing_rows(stats)
+
+Return `(rows, total)` summary data for a `StepTimingStats`. Each row contains
+the total time, invocation count, mean time, and percentage share for one
+timed stage.
+"""
 function timing_rows(stats::StepTimingStats)
     rows = NamedTuple[]
     total = sum(values(stats.totals))
@@ -76,6 +115,12 @@ function timing_rows(stats::StepTimingStats)
     return rows, total
 end
 
+"""
+    print_timing_summary(io, stats)
+
+Write a human-readable table of accumulated `step!` stage timings to `io`.
+This is purely diagnostic and does not modify model state.
+"""
 function print_timing_summary(io::IO, stats::StepTimingStats)
     rows, total = timing_rows(stats)
     println(io, "Step timing summary")

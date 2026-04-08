@@ -51,11 +51,24 @@ struct SnowpackStepFields{
     has_q_lh::HQLHT
 end
 
+"""
+    _assert_step_field_shape(name, field, field_shape)
+
+Validate that `field` matches the `(ncol, ntime)` shape of the reference
+forcing arrays. Throws an error with `name` when the shape is inconsistent.
+"""
 @inline function _assert_step_field_shape(name::AbstractString, field, field_shape)
     size(field) == field_shape || error("`$name` must match `air_temperature`.")
     return nothing
 end
 
+"""
+    SnowpackStepFields(; ...)
+
+Construct a batch forcing container from per-column, per-time-step arrays.
+All matrix inputs must share the same shape as `air_temperature`, and
+`dt_days` must either be scalar or provide one value per time step.
+"""
 function SnowpackStepFields(;
     dt_days,
     air_temperature,
@@ -105,6 +118,12 @@ function SnowpackStepFields(;
     )
 end
 
+"""
+    SnowpackStepFields(forcing)
+
+Convert an equilibrium or script-level forcing container with matching field
+names into a `SnowpackStepFields` instance.
+"""
 function SnowpackStepFields(forcing)
     return SnowpackStepFields(
         dt_days=forcing.dt_days,
@@ -122,11 +141,30 @@ function SnowpackStepFields(forcing)
     )
 end
 
+"""
+    _step_time_count(fields)
+
+Return the number of forcing time steps stored in `fields`.
+"""
 @inline _step_time_count(fields::SnowpackStepFields) = size(fields.air_temperature, 2)
+
+"""
+    _step_dt(dt_days, time_index)
+
+Resolve the step duration in days for `time_index`, supporting both scalar and
+vector-valued `dt_days` storage.
+"""
 @inline _step_dt(dt_days::Number, ::Int) = dt_days
 @inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
 @inline _step_dt(dt_days::CUDA.CuArray, time_index::Int) = CUDA.@allowscalar dt_days[time_index]
 
+"""
+    _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh)
+
+Build a single-column `SnowpackStepForcing` from already-indexed forcing
+values. The returned forcing disables optional fluxes that are not present and
+sets precipitation rate to snowfall plus rainfall.
+"""
 @inline function _step_forcing_from_fields(
     air_temperature,
     snowfall_rate,
@@ -163,6 +201,12 @@ end
     )
 end
 
+"""
+    _step_forcing_from_fields(fields, idx, time_index)
+
+Extract forcing values for column `idx` and time step `time_index` from
+`fields` and package them as a `SnowpackStepForcing`.
+"""
 @inline function _step_forcing_from_fields(
     fields::SnowpackStepFields,
     idx::Int,
@@ -184,6 +228,13 @@ end
     )
 end
 
+"""
+    SnowpackStepForcing(c, air_temperature, precipitation_rate, dt_days; ...)
+
+Construct a single-step forcing bundle using physical constants `c` to choose
+the model number type and default values. Optional turbulent and radiative
+fluxes are tracked with explicit presence flags.
+"""
 function SnowpackStepForcing(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -227,12 +278,31 @@ end
 @adapt_structure SnowpackStepForcing
 @adapt_structure SnowpackStepFields
 
+"""
+    _default_snow_fraction(c, air_temperature)
+
+Return the default snow fraction used when precipitation partitioning is not
+provided explicitly. The current rule is a simple freezing-point threshold.
+"""
 @inline _default_snow_fraction(c::SnowpackPhysicalConstants, air_temperature) =
     air_temperature > c.T0 ? zero(air_temperature) : one(air_temperature)
 
+"""
+    _diagnosed_shortwave_down(shortwave_down)
+
+Return a nonnegative incoming shortwave flux, falling back to a default clear
+sky value when no forcing was supplied.
+"""
 @inline _diagnosed_shortwave_down(shortwave_down) =
     isnothing(shortwave_down) ? 400.0 : max(shortwave_down, zero(shortwave_down))
 
+"""
+    _resolve_step_partition(c, air_temperature, precipitation_rate; ...)
+
+Resolve snowfall and rainfall rates from either explicit phase-specific inputs
+or a snow fraction. Returns a named tuple containing snowfall rate, rainfall
+rate, and resolved shortwave forcing.
+"""
 function _resolve_step_partition(
     c::SnowpackPhysicalConstants,
     air_temperature,
@@ -270,6 +340,13 @@ function _resolve_step_partition(
     )
 end
 
+"""
+    _resolved_step_forcing(c, air_temperature, precipitation_rate, dt_days; ...)
+
+Normalize scalar user inputs and legacy aliases into a fully specified
+`SnowpackStepForcing`. This is the main constructor used by scalar `step!`
+entry points.
+"""
 function _resolved_step_forcing(
     c::SnowpackPhysicalConstants,
     air_temperature,

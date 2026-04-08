@@ -2,7 +2,19 @@
 Scratch storage for stepping and energy-flux solves.
 """
 
+"""
+    _workspace_array(::Type{NF}, dims...)
+
+Allocate a CPU scratch array of element type `NF` and shape `dims...`.
+"""
 @inline _workspace_array(::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} = zeros(NF, dims...)
+
+"""
+    _workspace_array(storage, ::Type{NF}, dims...)
+
+Allocate scratch storage compatible with `storage`, preserving the active
+backend while changing element type and shape.
+"""
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
@@ -17,16 +29,34 @@ struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
     thermal_conductivity::KT
 end
 
+"""
+    EnergyWorkspace(::Type{NF}, dims...)
+
+Allocate a full set of scratch arrays for the tridiagonal energy solve using
+CPU storage of type `NF`.
+"""
 function EnergyWorkspace(::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(NF, dims...)
     return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
+"""
+    EnergyWorkspace(storage, ::Type{NF}, dims...)
+
+Allocate energy-solver scratch arrays on the same backend as `storage`.
+Returns an `EnergyWorkspace` whose fields are mutated by the energy-flux
+solver.
+"""
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(storage, NF, dims...)
     return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
+"""
+    EnergyWorkspace(domain)
+
+Allocate energy-flux scratch storage sized for `domain`.
+"""
 EnergyWorkspace(domain::AbstractSnowpackDomain) =
     EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
 
@@ -35,6 +65,11 @@ struct StepWorkspace{LWT,ET}
     energy::ET
 end
 
+"""
+    StepWorkspace(::Type{NF}, Ntot)
+
+Allocate per-column scratch arrays for one `step!` call on CPU storage.
+"""
 function StepWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
     return StepWorkspace(
         _workspace_array(NF, Ntot),
@@ -42,6 +77,12 @@ function StepWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
     )
 end
 
+"""
+    StepWorkspace(domain)
+
+Allocate per-column stepping scratch compatible with `domain`'s storage
+backend.
+"""
 function StepWorkspace(domain::AbstractSnowpackDomain)
     NF = number_type(domain.c)
     return StepWorkspace(
@@ -50,6 +91,12 @@ function StepWorkspace(domain::AbstractSnowpackDomain)
     )
 end
 
+"""
+    threaded_workspaces(domain)
+
+Allocate one `StepWorkspace` per Julia thread for threaded batch stepping.
+Each workspace is intended to be reused in-place by a single thread.
+"""
 threaded_workspaces(domain::AbstractSnowpackDomain) = [StepWorkspace(domain) for _ in 1:Threads.maxthreadid()]
 
 struct ColumnarStepWorkspace{LWT,ET}
@@ -57,6 +104,12 @@ struct ColumnarStepWorkspace{LWT,ET}
     energy::ET
 end
 
+"""
+    ColumnarStepWorkspace(::Type{NF}, Ntot, ncol)
+
+Allocate column-major scratch arrays that hold per-layer temporary state for
+every column in a batch.
+"""
 function ColumnarStepWorkspace(::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
     return ColumnarStepWorkspace(
         _workspace_array(NF, Ntot, ncol),
@@ -64,6 +117,12 @@ function ColumnarStepWorkspace(::Type{NF}, Ntot::Int, ncol::Int) where {NF <: Ab
     )
 end
 
+"""
+    ColumnarStepWorkspace(domain)
+
+Allocate batch stepping scratch compatible with `domain`'s backend and sized
+for all columns.
+"""
 function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
     NF = number_type(domain.c)
     return ColumnarStepWorkspace(

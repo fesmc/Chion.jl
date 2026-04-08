@@ -2,6 +2,13 @@
 State access helpers shared across column, domain, and array-backed kernels.
 """
 
+"""
+    _resolve_keyword_alias(preferred_value, legacy_value, preferred_name, legacy_name)
+
+Resolve a preferred keyword value against a legacy alias. Returns the preferred
+value when present, the legacy value otherwise, and throws if both are
+provided with different values.
+"""
 @inline function _resolve_keyword_alias(
     preferred_value,
     legacy_value,
@@ -36,6 +43,12 @@ end
 @inline _set_layer!(x::AbstractVector, layer_index::Int, ::Int, value) = (@inbounds x[layer_index] = value)
 @inline _set_layer!(x::AbstractMatrix, layer_index::Int, idx::Int, value) = (@inbounds x[layer_index, idx] = value)
 
+"""
+    _bulk_snow_density(N_storage, mass, density, idx)
+
+Compute the bulk density of active snow in column `idx` from solid mass and
+layer thickness. Returns zero when the column has no valid snow mass.
+"""
 @inline function _bulk_snow_density(
     N_storage,
     mass,
@@ -64,6 +77,12 @@ end
     return total_mass / total_thickness
 end
 
+"""
+    _total_snow_water_mass(N_storage, mass, mass_w, idx)
+
+Return the total wet mass in column `idx`, including solid snow and liquid
+water. Negative layer masses are clipped to zero in the accumulation.
+"""
 @inline function _total_snow_water_mass(
     N_storage,
     mass,
@@ -83,6 +102,12 @@ end
     return total_wet_mass
 end
 
+"""
+    _snow_cover_fraction(N_storage, mass, mass_w, density, idx)
+
+Diagnose snow-cover fraction for column `idx` from total wet mass and bulk
+snow density. Returns a value in `[0, 1]`.
+"""
 @inline function _snow_cover_fraction(
     N_storage,
     mass,
@@ -116,6 +141,12 @@ end
     return min(one(bulk_density), (total_wet_mass / bulk_density) / oftype(bulk_density, 0.1))
 end
 
+"""
+    _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
+
+Recompute and store the snow-cover fraction for column `idx`. Mutates
+`snow_cover[idx]` and returns the updated fraction.
+"""
 @inline function _update_snow_cover_arrays!(
     N_storage,
     mass,
@@ -129,6 +160,12 @@ end
     return fraction
 end
 
+"""
+    update_snow_cover!(domain, idx)
+
+Update the diagnosed snow-cover fraction for column `idx` of `domain`
+in-place and return the new value.
+"""
 function update_snow_cover!(domain::AbstractSnowpackDomain, idx::Int)
     return _update_snow_cover_arrays!(
         domain.N,
@@ -140,6 +177,12 @@ function update_snow_cover!(domain::AbstractSnowpackDomain, idx::Int)
     )
 end
 
+"""
+    _column_has_liquid_water(N_storage, mass_w, idx)
+
+Return `true` when any active layer in column `idx` contains liquid water
+above the empty-layer tolerance.
+"""
 @inline function _column_has_liquid_water(
     N_storage,
     mass_w,
