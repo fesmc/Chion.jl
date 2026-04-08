@@ -142,37 +142,3 @@ function _apply_accumulation!(
 
     return nothing
 end
-
-function apply_accumulation!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
-    snowfall_rate,
-    rainfall_rate,
-    dt_seconds;
-    kwargs...,
-)
-    return _apply_accumulation!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        idx,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        domain.f_base_max,
-        snowfall_rate,
-        rainfall_rate,
-        dt_seconds;
-        kwargs...,
-    )
-end

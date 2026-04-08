@@ -2,28 +2,6 @@
 Surface melt for array-backed snowpack states.
 """
 
-function apply_melt!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
-    melt_mass,
-)
-    return _apply_melt!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.runoff,
-        domain.Tsrf,
-        domain.albedo_dynamic,
-        idx,
-        domain.mass_split,
-        domain.mass_min,
-        melt_mass,
-        domain.c,
-    )
-end
-
 function _apply_melt!(
     N_storage,
     mass,

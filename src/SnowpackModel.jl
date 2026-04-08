@@ -40,7 +40,6 @@ export summarize_domain_state
 export summarize_domain_state!
 export variables
 export compute_auxiliary!
-export compute_tendencies!
 
 include("abstractions.jl")
 include("backend_utils.jl")

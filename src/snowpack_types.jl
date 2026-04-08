@@ -66,7 +66,7 @@ mutable struct SnowpackDomain{
 end
 
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
-Base.eltype(::AbstractSnowpackState{NF}) where {NF} = NF
+Base.eltype(::AbstractSnowpackDomain{NF}) where {NF} = NF
 @inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 @inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
 
