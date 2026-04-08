@@ -1,5 +1,5 @@
 """
-Core model-step state transition and single-column stepping entrypoints.
+Core stepping flow and public single-column entrypoints.
 """
 
 function _step_state_resolved!(
@@ -29,34 +29,33 @@ function _step_state_resolved!(
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
 
-    _time_call!(
-        timings,
-        :accumulation,
-        _apply_accumulation_resolved!,
-        N_storage,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        mass_base,
-        smb_ice,
-        runoff,
-        Tsrf,
-        snow_cover,
-        albedo_dynamic,
-        idx,
-        c,
-        Ntot,
-        mass_max,
-        mass_split,
-        mass_min,
-        f_base_max,
-        forcing.snowfall_rate,
-        forcing.rainfall_rate,
-        dt_seconds,
-        forcing.air_temperature,
-        forcing.wind_speed,
-    )
+    _time_block!(timings, :accumulation) do
+        _apply_accumulation!(
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            temperature,
+            mass_base,
+            smb_ice,
+            runoff,
+            Tsrf,
+            snow_cover,
+            albedo_dynamic,
+            idx,
+            c,
+            Ntot,
+            mass_max,
+            mass_split,
+            mass_min,
+            f_base_max,
+            forcing.snowfall_rate,
+            forcing.rainfall_rate,
+            dt_seconds;
+            air_temperature=forcing.air_temperature,
+            wind_speed=forcing.wind_speed,
+        )
+    end
 
     if forcing.snowfall_rate > zero(dt_seconds) &&
        started_without_surface_snow &&
@@ -67,14 +66,47 @@ function _step_state_resolved!(
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
         _time_call!(timings, :surface_albedo, _set_scalar!, albedo_dynamic, idx, c.alpha_ice)
-        bare_ice_ablation = _time_call!(
-            timings,
-            :bare_ice_ablation,
-            _bare_ice_ablation_mass_from_forcing,
-            c,
-            forcing,
-            dt_seconds,
-        )
+        bare_ice_ablation = if forcing.diurnal_shortwave
+            _time_call!(
+                timings,
+                :bare_ice_ablation,
+                _bare_ice_ablation_mass_diurnal_resolved,
+                c,
+                forcing.air_temperature,
+                forcing.rainfall_rate,
+                dt_seconds,
+                forcing.shortwave_down,
+                forcing.has_q_sw_net,
+                forcing.q_sw_net,
+                forcing.has_q_lw_down,
+                forcing.q_lw_down,
+                forcing.has_q_sh,
+                forcing.q_sh,
+                forcing.has_q_lh,
+                forcing.q_lh,
+                forcing.latitude,
+                forcing.day_of_year,
+            )
+        else
+            _time_call!(
+                timings,
+                :bare_ice_ablation,
+                _bare_ice_ablation_mass_resolved,
+                c,
+                forcing.air_temperature,
+                forcing.rainfall_rate,
+                dt_seconds,
+                forcing.shortwave_down,
+                forcing.has_q_sw_net,
+                forcing.q_sw_net,
+                forcing.has_q_lw_down,
+                forcing.q_lw_down,
+                forcing.has_q_sh,
+                forcing.q_sh,
+                forcing.has_q_lh,
+                forcing.q_lh,
+            )
+        end
         if update_snow_cover
             _time_call!(timings, :snow_cover, _update_snow_cover_arrays!, N_storage, mass, mass_w, density, snow_cover, idx)
         end
@@ -96,29 +128,34 @@ function _step_state_resolved!(
         c,
     )
 
-    n_liquid_water_before_energy = if _uses_htessel_densification(c)
-        _copy_liquid_water_before_energy!(workspace.liquid_water_before_energy, N_storage, mass_w, idx)
-    else
-        0
+    n_liquid_water_before_energy = 0
+    if _uses_htessel_densification(c)
+        n_liquid_water_before_energy = _n_active(N_storage, idx)
+        @inbounds for layer_index in 1:n_liquid_water_before_energy
+            _set_layer!(
+                workspace.liquid_water_before_energy,
+                layer_index,
+                idx,
+                _get_layer(mass_w, layer_index, idx),
+            )
+        end
     end
 
     accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) +
                         (has_surface_snow ? forcing.rainfall_rate : zero(dt_seconds))
-    if has_surface_snow
-        _time_call!(
-            timings,
-            :densification,
-            _go_densification!,
-            N_storage,
-            mass,
-            density,
-            temperature,
-            idx,
-            c,
-            accumulation_rate,
-            dt_seconds,
-        )
-    end
+    _time_call!(
+        timings,
+        :densification,
+        _go_densification!,
+        N_storage,
+        mass,
+        density,
+        temperature,
+        idx,
+        c,
+        accumulation_rate,
+        dt_seconds,
+    )
 
     latent_heat_linear, latent_heat_constant = _diagnose_latent_heat_flux_coefficients(
         has_surface_snow,
@@ -218,20 +255,58 @@ function _step_state_resolved!(
         end
     end
 
-    _run_liquid_water_processes!(
-        N_storage,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        runoff,
-        idx,
-        c,
-        workspace.liquid_water_before_energy,
-        n_liquid_water_before_energy,
-        dt_seconds;
-        timings=timings,
-    )
+    has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
+    if has_liquid_water
+        routed_runoff = _time_call!(
+            timings,
+            :percolation,
+            _go_percolation!,
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            idx,
+            c.rho_i,
+            c.rho_w,
+        )
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + routed_runoff)
+        has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
+    end
+
+    if _uses_htessel_densification(c) &&
+       n_liquid_water_before_energy > 0 &&
+       has_liquid_water
+        _time_call!(
+            timings,
+            :liquid_water_compaction,
+            _apply_htessel_liquid_water_compaction!,
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            idx,
+            workspace.liquid_water_before_energy,
+            c.rho_i,
+        )
+    end
+
+    if has_liquid_water
+        _time_call!(
+            timings,
+            :refreezing,
+            _go_refreezing!,
+            N_storage,
+            mass_w,
+            mass,
+            density,
+            temperature,
+            idx,
+            c.T0,
+            c.ci,
+            c.Lm,
+            c.rho_i,
+        )
+    end
 
     if update_snow_cover
         _time_call!(timings, :snow_cover, _update_snow_cover_arrays!, N_storage, mass, mass_w, density, snow_cover, idx)
@@ -243,11 +318,11 @@ function _step_state_resolved!(
     return nothing
 end
 
-@inline function _step_domain_resolved!(
+function step!(
     domain::AbstractSnowpackDomain,
     idx::Int,
     forcing::SnowpackStepForcing,
-    workspace::StepWorkspace;
+    workspace=StepWorkspace(domain);
     timings=nothing,
     update_snow_cover::Bool=true,
 )
@@ -280,42 +355,23 @@ end
 function step!(
     domain::AbstractSnowpackDomain,
     idx::Int,
-    forcing::SnowpackStepForcing,
-    workspace::StepWorkspace=StepWorkspace(domain);
-    timings=nothing,
-    update_snow_cover::Bool=true,
-)
-    return _step_domain_resolved!(
-        domain,
-        idx,
-        forcing,
-        workspace;
-        timings=timings,
-        update_snow_cover=update_snow_cover,
-    )
-end
-
-function step!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
     air_temperature,
     precipitation_rate,
     dt_days;
-    workspace::StepWorkspace=StepWorkspace(domain),
+    workspace=StepWorkspace(domain),
     timings=nothing,
     kwargs...,
 )
-    forcing = _resolved_step_forcing(
-        domain.c,
-        air_temperature,
-        precipitation_rate,
-        dt_days;
-        kwargs...,
-    )
     return step!(
         domain,
         idx,
-        forcing,
+        _resolved_step_forcing(
+            domain.c,
+            air_temperature,
+            precipitation_rate,
+            dt_days;
+            kwargs...,
+        ),
         workspace;
         timings=timings,
     )

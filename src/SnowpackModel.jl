@@ -19,7 +19,6 @@ export SnowpackDomain
 export StepWorkspace
 export threaded_workspaces
 export ColumnarStepWorkspace
-export column_workspace
 export step!
 export go_percolation!
 export go_refreezing!
@@ -58,7 +57,6 @@ include("refreezing.jl")
 include("diurnal_shortwave.jl")
 include("batch.jl")
 include("timing.jl")
-include("step_forcing_resolution.jl")
 include("step_process_helpers.jl")
 include("step.jl")
 include("step_batch.jl")

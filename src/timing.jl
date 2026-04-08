@@ -37,6 +37,27 @@ end
 @inline _time_block!(f::F, stats, key::Symbol) where {F<:Function} =
     _time_block!(stats, key, f)
 
+@inline function _time_call!(
+    stats::Nothing,
+    key::Symbol,
+    f,
+    args...,
+)
+    return f(args...)
+end
+
+@inline function _time_call!(
+    stats::StepTimingStats,
+    key::Symbol,
+    f,
+    args...,
+)
+    t0 = time_ns()
+    value = f(args...)
+    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
+    return value
+end
+
 function timing_rows(stats::StepTimingStats)
     rows = NamedTuple[]
     total = sum(values(stats.totals))
