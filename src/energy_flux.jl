@@ -5,13 +5,14 @@ Energy-flux temperature solver for array-backed snowpack states.
 @inline _safe_positive(x) = x > EPS_TINY ? x : oftype(x, EPS_TINY)
 
 @inline function _clamp_to_melt!(
-    temperature_profile::AbstractVector,
+    temperature_profile,
+    idx::Int,
     melting_temperature,
-    n::Int=length(temperature_profile),
+    n::Int,
 )
     @inbounds for layer_index in 1:n
-        if temperature_profile[layer_index] > melting_temperature
-            temperature_profile[layer_index] = melting_temperature
+        if _get_layer(temperature_profile, layer_index, idx) > melting_temperature
+            _set_layer!(temperature_profile, layer_index, idx, melting_temperature)
         end
     end
     return temperature_profile
@@ -31,6 +32,19 @@ function _snow_thermal_conductivity(ρ, Kᵢ, diffusion_model::Int)
     end
 end
 
+@inline _snow_thermal_conductivity_model1(ρ, Kᵢ) =
+    Kᵢ * (ρ * oftype(ρ, 1.0e-3))^oftype(ρ, 1.88)
+
+@inline function _snow_thermal_conductivity_model2(ρ)
+    if ρ > oftype(ρ, 156.0)
+        return oftype(ρ, 0.138) - oftype(ρ, 1.01e-3) * ρ + oftype(ρ, 3.233e-6) * ρ^2
+    end
+    return oftype(ρ, 0.023) + oftype(ρ, 0.234e-3) * ρ
+end
+
+@inline _snow_thermal_conductivity_model3(ρ) =
+    oftype(ρ, 2.1e-2) + oftype(ρ, 4.2e-4) * ρ + oftype(ρ, 2.2e-9) * ρ^3
+
 @inline function shortwave_absorbed(
     shortwave_down;
     surface_albedo,
@@ -42,29 +56,47 @@ end
     (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
 
 function _solve_tridiagonal_thomas_prefix!(
-    lower_diagonal::AbstractVector,
-    main_diagonal::AbstractVector,
-    upper_diagonal::AbstractVector,
-    right_hand_side::AbstractVector,
+    lower_diagonal,
+    main_diagonal,
+    upper_diagonal,
+    right_hand_side,
+    idx::Int,
     n::Int,
 )
     @assert n >= 1
-    @assert length(main_diagonal) >= n
-    @assert length(right_hand_side) >= n
-    @assert length(lower_diagonal) >= n - 1
-    @assert length(upper_diagonal) >= n - 1
 
     @inbounds for row_index in 2:n
-        elimination_factor = lower_diagonal[row_index - 1] / main_diagonal[row_index - 1]
-        main_diagonal[row_index] -= elimination_factor * upper_diagonal[row_index - 1]
-        right_hand_side[row_index] -= elimination_factor * right_hand_side[row_index - 1]
+        elimination_factor = _get_layer(lower_diagonal, row_index - 1, idx) / _get_layer(main_diagonal, row_index - 1, idx)
+        _set_layer!(
+            main_diagonal,
+            row_index,
+            idx,
+            _get_layer(main_diagonal, row_index, idx) - elimination_factor * _get_layer(upper_diagonal, row_index - 1, idx),
+        )
+        _set_layer!(
+            right_hand_side,
+            row_index,
+            idx,
+            _get_layer(right_hand_side, row_index, idx) - elimination_factor * _get_layer(right_hand_side, row_index - 1, idx),
+        )
     end
 
-    right_hand_side[n] /= main_diagonal[n]
+    _set_layer!(
+        right_hand_side,
+        n,
+        idx,
+        _get_layer(right_hand_side, n, idx) / _get_layer(main_diagonal, n, idx),
+    )
     @inbounds for row_index in (n - 1):-1:1
-        right_hand_side[row_index] = (
-            right_hand_side[row_index] - upper_diagonal[row_index] * right_hand_side[row_index + 1]
-        ) / main_diagonal[row_index]
+        _set_layer!(
+            right_hand_side,
+            row_index,
+            idx,
+            (
+                _get_layer(right_hand_side, row_index, idx) -
+                _get_layer(upper_diagonal, row_index, idx) * _get_layer(right_hand_side, row_index + 1, idx)
+            ) / _get_layer(main_diagonal, row_index, idx),
+        )
     end
 
     return right_hand_side
@@ -177,30 +209,52 @@ function _go_energy_flux_resolved!(
     layer_thickness = scratch.layer_thickness
     thermal_conductivity = scratch.thermal_conductivity
 
-    @inbounds for layer_index in 1:n_layers
-        layer_density = _get_layer(density, layer_index, idx)
-        layer_mass = _get_layer(mass, layer_index, idx)
-        previous_temperature[layer_index] = _get_layer(temperature, layer_index, idx)
-        rhs[layer_index] = previous_temperature[layer_index]
-        layer_thickness[layer_index] = layer_mass / _safe_positive(layer_density)
-        thermal_conductivity[layer_index] = _snow_thermal_conductivity(
-            layer_density,
-            c.Ki,
-            resolved_diffusion_model,
-        )
+    if resolved_diffusion_model == 1
+        @inbounds for layer_index in 1:n_layers
+            layer_density = _get_layer(density, layer_index, idx)
+            layer_mass = _get_layer(mass, layer_index, idx)
+            layer_temperature = _get_layer(temperature, layer_index, idx)
+            _set_layer!(previous_temperature, layer_index, idx, layer_temperature)
+            _set_layer!(rhs, layer_index, idx, layer_temperature)
+            _set_layer!(layer_thickness, layer_index, idx, layer_mass / _safe_positive(layer_density))
+            _set_layer!(thermal_conductivity, layer_index, idx, _snow_thermal_conductivity_model1(layer_density, c.Ki))
+        end
+    elseif resolved_diffusion_model == 2
+        @inbounds for layer_index in 1:n_layers
+            layer_density = _get_layer(density, layer_index, idx)
+            layer_mass = _get_layer(mass, layer_index, idx)
+            layer_temperature = _get_layer(temperature, layer_index, idx)
+            _set_layer!(previous_temperature, layer_index, idx, layer_temperature)
+            _set_layer!(rhs, layer_index, idx, layer_temperature)
+            _set_layer!(layer_thickness, layer_index, idx, layer_mass / _safe_positive(layer_density))
+            _set_layer!(thermal_conductivity, layer_index, idx, _snow_thermal_conductivity_model2(layer_density))
+        end
+    else
+        @inbounds for layer_index in 1:n_layers
+            layer_density = _get_layer(density, layer_index, idx)
+            layer_mass = _get_layer(mass, layer_index, idx)
+            layer_temperature = _get_layer(temperature, layer_index, idx)
+            _set_layer!(previous_temperature, layer_index, idx, layer_temperature)
+            _set_layer!(rhs, layer_index, idx, layer_temperature)
+            _set_layer!(layer_thickness, layer_index, idx, layer_mass / _safe_positive(layer_density))
+            _set_layer!(thermal_conductivity, layer_index, idx, _snow_thermal_conductivity_model3(layer_density))
+        end
     end
 
     surface_mass = _safe_positive(_get_layer(mass, 1, idx))
-    previous_surface_temperature = previous_temperature[1]
+    previous_surface_temperature = _get_layer(previous_temperature, 1, idx)
     surface_temperature_scale = dt_seconds / c.ci / surface_mass
+    surface_temperature_sq = previous_surface_temperature * previous_surface_temperature
+    surface_temperature_cube = surface_temperature_sq * previous_surface_temperature
+    surface_temperature_fourth = surface_temperature_sq * surface_temperature_sq
 
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
         shortwave_absorbed(shortwave_down; surface_albedo=_get_scalar(albedo_dynamic, idx))
     longwave_flux_constant = use_q_lw_down ?
-        (q_lw_down_value + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * previous_surface_temperature^4) :
-        (c.σ * (c.ϵ_air * air_temperature^4 + c.ϵ_snow * oftype(air_temperature, 3.0) * previous_surface_temperature^4))
-    longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * previous_surface_temperature^3
+        (q_lw_down_value + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth) :
+        (c.σ * (c.ϵ_air * air_temperature^4 + c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth))
+    longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * surface_temperature_cube
     sensible_heat_flux_constant = use_q_sh ? q_sh_value : air_temperature * c.D_sh
     sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : c.D_sh
     latent_heat_flux_constant = use_q_lh ? q_lh_value : latent_heat_constant_term_eff
@@ -250,63 +304,71 @@ function _go_energy_flux_resolved!(
     end
 
     @inbounds for layer_index in 1:(n_layers - 1)
-        interface_terms[layer_index] = interface_conductance(
-            thermal_conductivity[layer_index],
-            layer_thickness[layer_index],
-            thermal_conductivity[layer_index + 1],
-            layer_thickness[layer_index + 1],
+        interface_term = interface_conductance(
+            _get_layer(thermal_conductivity, layer_index, idx),
+            _get_layer(layer_thickness, layer_index, idx),
+            _get_layer(thermal_conductivity, layer_index + 1, idx),
+            _get_layer(layer_thickness, layer_index + 1, idx),
         )
+        _set_layer!(interface_terms, layer_index, idx, interface_term)
     end
 
     function assemble_system!(surface_diag, use_melt_rhs::Bool)
         β_scale = -oftype(dt_seconds, 2.0) * dt_seconds / c.ci
 
         β1 = β_scale / _safe_positive(_get_layer(mass, 1, idx))
-        upper[1] = β1 * interface_terms[1]
-        diag[1] = one(dt_seconds) - upper[1] + surface_diag
+        _set_layer!(upper, 1, idx, β1 * _get_layer(interface_terms, 1, idx))
+        _set_layer!(diag, 1, idx, one(dt_seconds) - _get_layer(upper, 1, idx) + surface_diag)
 
         βn = β_scale / _safe_positive(_get_layer(mass, n_layers, idx))
-        lower[n_layers - 1] = βn * interface_terms[n_layers - 1]
-        diag[n_layers] = one(dt_seconds) - lower[n_layers - 1]
+        _set_layer!(lower, n_layers - 1, idx, βn * _get_layer(interface_terms, n_layers - 1, idx))
+        _set_layer!(diag, n_layers, idx, one(dt_seconds) - _get_layer(lower, n_layers - 1, idx))
 
         for layer_index in 2:(n_layers - 1)
             βi = β_scale / _safe_positive(_get_layer(mass, layer_index, idx))
-            lower[layer_index - 1] = βi * interface_terms[layer_index - 1]
-            upper[layer_index] = βi * interface_terms[layer_index]
-            diag[layer_index] = one(dt_seconds) - lower[layer_index - 1] - upper[layer_index]
+            _set_layer!(lower, layer_index - 1, idx, βi * _get_layer(interface_terms, layer_index - 1, idx))
+            _set_layer!(upper, layer_index, idx, βi * _get_layer(interface_terms, layer_index, idx))
+            _set_layer!(
+                diag,
+                layer_index,
+                idx,
+                one(dt_seconds) - _get_layer(lower, layer_index - 1, idx) - _get_layer(upper, layer_index, idx),
+            )
         end
 
         if use_melt_rhs
-            _copy_prefix!(rhs, previous_temperature, n_layers)
-            rhs[1] = c.T0
+            @inbounds for layer_index in 1:n_layers
+                _set_layer!(rhs, layer_index, idx, _get_layer(previous_temperature, layer_index, idx))
+            end
+            _set_layer!(rhs, 1, idx, c.T0)
         else
-            rhs[1] = previous_surface_temperature + surface_rhs_term
+            _set_layer!(rhs, 1, idx, previous_surface_temperature + surface_rhs_term)
         end
         return nothing
     end
 
     assemble_system!(surface_diag_term, false)
-    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, n_layers)
+    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, idx, n_layers)
 
-    if resolved_temperature[1] > c.T0
+    if _get_layer(resolved_temperature, 1, idx) > c.T0
         needs_melt = true
         energy_to_melting = (c.T0 - previous_surface_temperature) * c.ci * surface_mass
 
         assemble_system!(zero(surface_diag_term), true)
-        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, n_layers)
-        energy_to_melting += (c.T0 - resolved_temperature[1]) * c.ci * surface_mass
-        resolved_temperature[1] = c.T0
-        _clamp_to_melt!(resolved_temperature, c.T0, n_layers)
+        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, idx, n_layers)
+        energy_to_melting += (c.T0 - _get_layer(resolved_temperature, 1, idx)) * c.ci * surface_mass
+        _set_layer!(resolved_temperature, 1, idx, c.T0)
+        _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
         heating = energy_to_melting
     else
-        _clamp_to_melt!(resolved_temperature, c.T0, n_layers)
-        heating = dt_seconds * (surface_flux_constant - surface_flux_linear * resolved_temperature[1])
+        _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
+        heating = dt_seconds * (surface_flux_constant - surface_flux_linear * _get_layer(resolved_temperature, 1, idx))
     end
 
     @inbounds for layer_index in 1:n_layers
-        _set_layer!(temperature, layer_index, idx, resolved_temperature[layer_index])
+        _set_layer!(temperature, layer_index, idx, _get_layer(resolved_temperature, layer_index, idx))
     end
-    resolved_surface_temperature = resolved_temperature[1]
+    resolved_surface_temperature = _get_layer(resolved_temperature, 1, idx)
     _set_scalar!(Tsrf, idx, resolved_surface_temperature)
 
     melt_energy_available = _residual_melt_energy(

@@ -13,6 +13,7 @@ include("model_constants.jl")
 
 export SnowpackPhysicalConstants
 export SnowpackStepForcing
+export SnowpackStepFields
 export AbstractSnowpackDomain
 export SnowpackDomain
 export StepWorkspace
@@ -20,8 +21,6 @@ export threaded_workspaces
 export ColumnarStepWorkspace
 export column_workspace
 export step!
-export step_columns!
-export step_cycle_columns!
 export go_percolation!
 export go_refreezing!
 export continuous_bottom_deplete!
@@ -47,6 +46,8 @@ export compute_tendencies!
 include("abstractions.jl")
 include("backend_utils.jl")
 include("snowpack_types.jl")
+include("step_forcing_types.jl")
+include("step_workspaces.jl")
 include("column_helpers.jl")
 include("albedo.jl")
 include("mass_balance.jl")
@@ -57,7 +58,10 @@ include("refreezing.jl")
 include("diurnal_shortwave.jl")
 include("batch.jl")
 include("timing.jl")
+include("step_forcing_resolution.jl")
+include("step_process_helpers.jl")
 include("step.jl")
+include("step_batch.jl")
 include("state_io.jl")
 
 end # module

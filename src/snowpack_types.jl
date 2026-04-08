@@ -1,5 +1,5 @@
 """
-Core snowpack types, Terrarium-style state containers, and reusable step workspaces.
+Core snowpack constants and domain state containers.
 """
 
 const FRESH_SNOW_DENSITY_CONSTANT = UInt8(1)
@@ -10,7 +10,6 @@ const LOW_DENSIFICATION_BESSI = UInt8(1)
 const LOW_DENSIFICATION_HTESSEL = UInt8(2)
 
 struct SnowpackPhysicalConstants{NF <: AbstractFloat}
-    # Densities (kg/m^3)
     rho_s::NF
     rho_i::NF
     rho_w::NF
@@ -18,26 +17,18 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     rho_s_b::NF
     rho_s_c::NF
     fresh_snow_density_scheme::UInt8
-
-    # Thermal properties
     Ki::NF
     ci::NF
     cw::NF
     Lm::NF
-
-    # Heat flux and albedo parameters
     D_sh::NF
     alpha_dry::NF
     alpha_wet::NF
     alpha_ice::NF
     max_lwc_albedo::NF
     albedo_scheme::UInt8
-
-    # Emissivity
     ϵ_air::NF
     ϵ_snow::NF
-
-    # Universal constants
     σ::NF
     R::NF
     T0::NF
@@ -47,8 +38,37 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     low_density_densification::UInt8
 end
 
+mutable struct SnowpackDomain{
+        NF <: AbstractFloat,
+        NI <: AbstractVector{<:Integer},
+        MT <: AbstractMatrix{NF},
+        VT <: AbstractVector{NF},
+    } <: AbstractSnowpackDomain{NF}
+    c::SnowpackPhysicalConstants{NF}
+    Ntot::Int
+    ncol::Int
+    mass_max::NF
+    mass_split::NF
+    mass_min::NF
+    rho_max::NF
+    f_base_max::NF
+    N::NI
+    mass::MT
+    mass_w::MT
+    density::MT
+    temperature::MT
+    mass_base::VT
+    smb_ice::VT
+    runoff::VT
+    Tsrf::VT
+    snow_cover::VT
+    albedo_dynamic::VT
+end
+
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
+Base.eltype(::AbstractSnowpackState{NF}) where {NF} = NF
 @inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
+@inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
 
 @inline function _normalize_low_density_densification(scheme::Symbol)
     scheme in (:bessi, :htessel) ||
@@ -73,9 +93,7 @@ end
 end
 
 @inline function _normalize_albedo_scheme(scheme::Symbol)
-    normalized_scheme = if scheme == :bessi
-        :constant
-    elseif scheme == :legacy
+    normalized_scheme = if scheme in (:bessi, :legacy)
         :constant
     else
         scheme
@@ -157,55 +175,17 @@ end
 
 SnowpackPhysicalConstants(; kwargs...) = SnowpackPhysicalConstants(Float64; kwargs...)
 
-mutable struct SnowpackDomain{
-        NF <: AbstractFloat,
-        NI <: AbstractVector{<:Integer},
-        MT <: AbstractMatrix{NF},
-        VT <: AbstractVector{NF},
-    } <: AbstractSnowpackDomain{NF}
-    c::SnowpackPhysicalConstants{NF}
-    Ntot::Int
-    ncol::Int
-    mass_max::NF
-    mass_split::NF
-    mass_min::NF
-    rho_max::NF
-    f_base_max::NF
-    N::NI
-    mass::MT
-    mass_w::MT
-    density::MT
-    temperature::MT
-    mass_base::VT
-    smb_ice::VT
-    runoff::VT
-    Tsrf::VT
-    snow_cover::VT
-    albedo_dynamic::VT
+@inline function _validate_mass_partition(mass_max, mass_split, mass_min)
+    mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
+    mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
+    mass_split / mass_max >= 0.5 || error("`mass_split / mass_max` must be at least 0.5.")
+    return nothing
 end
 
-struct SnowpackStepForcing{NF <: AbstractFloat}
-    air_temperature::NF
-    precipitation_rate::NF
-    dt_days::NF
-    snowfall_rate::NF
-    rainfall_rate::NF
-    shortwave_down::NF
-    wind_speed::NF
-    q_sw_net::NF
-    q_lw_down::NF
-    q_sh::NF
-    q_lh::NF
-    has_q_sw_net::Bool
-    has_q_lw_down::Bool
-    has_q_sh::Bool
-    has_q_lh::Bool
-    diurnal_shortwave::Bool
-    latitude::NF
-    day_of_year::NF
+@inline function _validate_domain_vector(name::AbstractString, values, ncol::Int)
+    length(values) == ncol || error("`$name` must match `N`.")
+    return nothing
 end
-
-Base.eltype(::AbstractSnowpackState{NF}) where {NF} = NF
 
 function SnowpackDomain(;
     c::SnowpackPhysicalConstants=SnowpackPhysicalConstants(),
@@ -220,22 +200,9 @@ function SnowpackDomain(;
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
 )
     ncol > 0 || error("`ncol` must be positive.")
-    mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
-    mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
-    mass_split / mass_max >= 0.5 || error("`mass_split / mass_max` must be at least 0.5.")
+    _validate_mass_partition(mass_max, mass_split, mass_min)
 
     NF = number_type(c)
-    N = zeros(Int, ncol)
-    mass = zeros(NF, Ntot, ncol)
-    mass_w = zeros(NF, Ntot, ncol)
-    density = fill(convert(NF, density_init), Ntot, ncol)
-    temperature = fill(convert(NF, temperature_init), Ntot, ncol)
-    mass_base = zeros(NF, ncol)
-    smb_ice = zeros(NF, ncol)
-    runoff = zeros(NF, ncol)
-    Tsrf = fill(c.T0, ncol)
-    snow_cover = zeros(NF, ncol)
-    albedo_dynamic = fill(c.alpha_dry, ncol)
     return SnowpackDomain(
         c,
         Ntot,
@@ -245,17 +212,17 @@ function SnowpackDomain(;
         convert(NF, mass_min),
         convert(NF, rho_max),
         convert(NF, f_base_max),
-        N,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        mass_base,
-        smb_ice,
-        runoff,
-        Tsrf,
-        snow_cover,
-        albedo_dynamic,
+        zeros(Int, ncol),
+        zeros(NF, Ntot, ncol),
+        zeros(NF, Ntot, ncol),
+        fill(convert(NF, density_init), Ntot, ncol),
+        fill(convert(NF, temperature_init), Ntot, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        fill(c.T0, ncol),
+        zeros(NF, ncol),
+        fill(c.alpha_dry, ncol),
     )
 end
 
@@ -283,15 +250,13 @@ function SnowpackDomain(
     size(mass_w) == size(mass) || error("`mass_w` must match `mass`.")
     size(density) == size(mass) || error("`density` must match `mass`.")
     size(temperature) == size(mass) || error("`temperature` must match `mass`.")
-    length(mass_base) == ncol || error("`mass_base` must match `N`.")
-    length(smb_ice) == ncol || error("`smb_ice` must match `N`.")
-    length(runoff) == ncol || error("`runoff` must match `N`.")
-    length(Tsrf) == ncol || error("`Tsrf` must match `N`.")
-    length(snow_cover) == ncol || error("`snow_cover` must match `N`.")
-    length(albedo_dynamic) == ncol || error("`albedo_dynamic` must match `N`.")
-    mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
-    mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
-    mass_split / mass_max >= 0.5 || error("`mass_split / mass_max` must be at least 0.5.")
+    _validate_domain_vector("mass_base", mass_base, ncol)
+    _validate_domain_vector("smb_ice", smb_ice, ncol)
+    _validate_domain_vector("runoff", runoff, ncol)
+    _validate_domain_vector("Tsrf", Tsrf, ncol)
+    _validate_domain_vector("snow_cover", snow_cover, ncol)
+    _validate_domain_vector("albedo_dynamic", albedo_dynamic, ncol)
+    _validate_mass_partition(mass_max, mass_split, mass_min)
 
     return SnowpackDomain(
         c,
@@ -316,254 +281,7 @@ function SnowpackDomain(
     )
 end
 
-@inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
-
-struct EnergyWorkspace{NF <: AbstractFloat, VT <: AbstractVector{NF}}
-    lower::VT
-    diag::VT
-    upper::VT
-    rhs::VT
-    interface_conductance::VT
-    previous_temperature::VT
-    layer_thickness::VT
-    thermal_conductivity::VT
-end
-
-function EnergyWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
-    allocate() = zeros(NF, Ntot)
-    return EnergyWorkspace(
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-    )
-end
-
-EnergyWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat} =
-    EnergyWorkspace(NF, domain.Ntot)
-
-struct StepWorkspace{NF <: AbstractFloat, VT <: AbstractVector{NF}, ET}
-    liquid_water_before_energy::VT
-    energy::ET
-end
-
-struct ColumnBuffer{T, MT <: AbstractMatrix{T}} <: AbstractVector{T}
-    parent::MT
-    column::Int
-    len::Int
-end
-
-Base.IndexStyle(::Type{<:ColumnBuffer}) = IndexLinear()
-Base.eltype(::Type{ColumnBuffer{T, MT}}) where {T, MT <: AbstractMatrix{T}} = T
-Base.size(buffer::ColumnBuffer) = (buffer.len,)
-Base.length(buffer::ColumnBuffer) = buffer.len
-@inline Base.getindex(buffer::ColumnBuffer, i::Int) = @inbounds buffer.parent[i, buffer.column]
-@inline Base.setindex!(buffer::ColumnBuffer, value, i::Int) = (@inbounds buffer.parent[i, buffer.column] = value)
-
-struct ColumnarEnergyWorkspace{NF <: AbstractFloat, MT <: AbstractMatrix{NF}}
-    lower::MT
-    diag::MT
-    upper::MT
-    rhs::MT
-    interface_conductance::MT
-    previous_temperature::MT
-    layer_thickness::MT
-    thermal_conductivity::MT
-end
-
-struct ColumnarStepWorkspace{NF <: AbstractFloat, MT <: AbstractMatrix{NF}, ET}
-    liquid_water_before_energy::MT
-    energy::ET
-end
-
-function StepWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
-    return StepWorkspace(zeros(NF, Ntot), EnergyWorkspace(NF, Ntot))
-end
-
-StepWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat} =
-    StepWorkspace(NF, domain.Ntot)
-
-function threaded_workspaces(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
-    return [StepWorkspace(NF, domain.Ntot) for _ in 1:Threads.maxthreadid()]
-end
-
-function ColumnarEnergyWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
-    allocate() = similar(domain.mass, NF, domain.Ntot, domain.ncol)
-    return ColumnarEnergyWorkspace(
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-        allocate(),
-    )
-end
-
-function ColumnarStepWorkspace(domain::AbstractSnowpackDomain{NF}) where {NF <: AbstractFloat}
-    return ColumnarStepWorkspace(
-        similar(domain.mass, NF, domain.Ntot, domain.ncol),
-        ColumnarEnergyWorkspace(domain),
-    )
-end
-
-@inline function _column_buffer(parent::AbstractMatrix{T}, column::Int) where {T}
-    return ColumnBuffer(parent, column, size(parent, 1))
-end
-
-@inline function column_workspace(workspace::ColumnarStepWorkspace{NF}, idx::Int) where {NF <: AbstractFloat}
-    energy_workspace = EnergyWorkspace(
-        _column_buffer(workspace.energy.lower, idx),
-        _column_buffer(workspace.energy.diag, idx),
-        _column_buffer(workspace.energy.upper, idx),
-        _column_buffer(workspace.energy.rhs, idx),
-        _column_buffer(workspace.energy.interface_conductance, idx),
-        _column_buffer(workspace.energy.previous_temperature, idx),
-        _column_buffer(workspace.energy.layer_thickness, idx),
-        _column_buffer(workspace.energy.thermal_conductivity, idx),
-    )
-    return StepWorkspace(
-        _column_buffer(workspace.liquid_water_before_energy, idx),
-        energy_workspace,
-    )
-end
-
-@inline function _launch_step_columns_kernel!(
-    kernel!,
-    domain::AbstractSnowpackDomain,
-    workspace::ColumnarStepWorkspace,
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_lw_down,
-    has_q_lw_down,
-    q_sh,
-    has_q_sh,
-    q_lh,
-    has_q_lh,
-    trailing_args...,
-)
-    return kernel!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        domain.f_base_max,
-        workspace,
-        air_temperature,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        q_lw_down,
-        has_q_lw_down,
-        q_sh,
-        has_q_sh,
-        q_lh,
-        has_q_lh,
-        trailing_args...;
-        ndrange=column_count(domain),
-    )
-end
-
-@inline function _step_forcing_from_fields(
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    dt_days,
-    shortwave_down,
-    wind_speed,
-    q_lw_down,
-    has_q_lw_down::Bool,
-    q_sh,
-    has_q_sh::Bool,
-    q_lh,
-    has_q_lh::Bool,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        snowfall_rate + rainfall_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        zero(air_temperature),
-        q_lw_down,
-        q_sh,
-        q_lh,
-        false,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        false,
-        zero(air_temperature),
-        zero(air_temperature),
-    )
-end
-
-function SnowpackStepForcing(
-    c::SnowpackPhysicalConstants,
-    air_temperature,
-    precipitation_rate,
-    dt_days;
-    snowfall_rate=zero(air_temperature),
-    rainfall_rate=zero(air_temperature),
-    shortwave_down=oftype(air_temperature, 400.0),
-    wind_speed=oftype(air_temperature, 10.0),
-    q_sw_net=nothing,
-    q_lw_down=nothing,
-    q_sh=nothing,
-    q_lh=nothing,
-    diurnal_shortwave::Bool=false,
-    latitude=zero(air_temperature),
-    day_of_year=zero(air_temperature),
-)
-    NF = number_type(c)
-    return SnowpackStepForcing(
-        convert(NF, air_temperature),
-        convert(NF, precipitation_rate),
-        convert(NF, dt_days),
-        convert(NF, snowfall_rate),
-        convert(NF, rainfall_rate),
-        convert(NF, shortwave_down),
-        convert(NF, wind_speed),
-        convert(NF, isnothing(q_sw_net) ? zero(NF) : q_sw_net),
-        convert(NF, isnothing(q_lw_down) ? zero(NF) : q_lw_down),
-        convert(NF, isnothing(q_sh) ? zero(NF) : q_sh),
-        convert(NF, isnothing(q_lh) ? zero(NF) : q_lh),
-        !isnothing(q_sw_net),
-        !isnothing(q_lw_down),
-        !isnothing(q_sh),
-        !isnothing(q_lh),
-        diurnal_shortwave,
-        convert(NF, latitude),
-        convert(NF, day_of_year),
-    )
-end
-
-function cpu_domain(domain::SnowpackDomain)
-    return adapt(Array, domain)
-end
+cpu_domain(domain::SnowpackDomain) = adapt(Array, domain)
 
 function gpu_domain(domain::SnowpackDomain)
     cuda_available() || error("CUDA is not functional in the current environment.")
@@ -581,8 +299,3 @@ variables(::AbstractSnowpackDomain) = (
 
 @adapt_structure SnowpackPhysicalConstants
 @adapt_structure SnowpackDomain
-@adapt_structure SnowpackStepForcing
-@adapt_structure EnergyWorkspace
-@adapt_structure StepWorkspace
-@adapt_structure ColumnarEnergyWorkspace
-@adapt_structure ColumnarStepWorkspace

@@ -43,7 +43,7 @@ function _apply_htessel_liquid_water_compaction!(
     mass_w,
     density,
     idx::Int,
-    liquid_water_before_energy::AbstractVector,
+    liquid_water_before_energy,
     ice_density,
 )
     n = _n_active(N_storage, idx)
@@ -55,8 +55,7 @@ function _apply_htessel_liquid_water_compaction!(
         layer_density = _get_layer(density, layer_index, idx)
         layer_solid_mass = _get_layer(mass, layer_index, idx)
         if layer_density < oftype(layer_density, 550) && layer_solid_mass > EPS_TINY
-            previous_liquid_water_mass = layer_index <= length(liquid_water_before_energy) ?
-                liquid_water_before_energy[layer_index] : zero(layer_density)
+            previous_liquid_water_mass = _get_layer(liquid_water_before_energy, layer_index, idx)
             retained_liquid_water_gain = max(_get_layer(mass_w, layer_index, idx) - previous_liquid_water_mass, zero(layer_density))
             if retained_liquid_water_gain > zero(retained_liquid_water_gain)
                 updated_density = min(
