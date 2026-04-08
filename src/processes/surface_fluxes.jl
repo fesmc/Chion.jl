@@ -133,6 +133,48 @@ function _bare_ice_ablation_mass_diurnal_resolved(
     return max(partition.melt_window_daily_flux, zero(dt_seconds)) * dt_seconds / c.Lm
 end
 
+function _bare_ice_ablation_mass(
+    c::SnowpackPhysicalConstants,
+    forcing::SnowpackStepForcing,
+    dt_seconds,
+)
+    return if forcing.diurnal_shortwave
+        _bare_ice_ablation_mass_diurnal_resolved(
+            c,
+            forcing.air_temperature,
+            forcing.rainfall_rate,
+            dt_seconds,
+            forcing.shortwave_down,
+            forcing.has_q_sw_net,
+            forcing.q_sw_net,
+            forcing.has_q_lw_down,
+            forcing.q_lw_down,
+            forcing.has_q_sh,
+            forcing.q_sh,
+            forcing.has_q_lh,
+            forcing.q_lh,
+            forcing.latitude,
+            forcing.day_of_year,
+        )
+    else
+        _bare_ice_ablation_mass_resolved(
+            c,
+            forcing.air_temperature,
+            forcing.rainfall_rate,
+            dt_seconds,
+            forcing.shortwave_down,
+            forcing.has_q_sw_net,
+            forcing.q_sw_net,
+            forcing.has_q_lw_down,
+            forcing.q_lw_down,
+            forcing.has_q_sh,
+            forcing.q_sh,
+            forcing.has_q_lh,
+            forcing.q_lh,
+        )
+    end
+end
+
 function _diagnose_debm_diurnal_adjustment_resolved(
     c::SnowpackPhysicalConstants,
     air_temperature,
