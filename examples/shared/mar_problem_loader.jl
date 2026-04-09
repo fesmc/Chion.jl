@@ -16,7 +16,7 @@ export valid_or, mmwe_day_to_kgm2s
 export read_mar_times, choose_time_index, infer_dt_days
 export extract_mar_layers, populate_domain_column_from_mar!
 export read_full_timeseries_3d, read_first_available_timeseries_3d
-export load_gris_equilibrium_problem
+export load_gris_mar_problem
 
 function default_gris_nc_path()
     for candidate in (
@@ -333,28 +333,26 @@ function read_first_available_timeseries_3d(
     return nothing
 end
 
-function load_gris_equilibrium_problem(
+function load_gris_mar_problem(
     nc_path::AbstractString;
     mask_threshold::Float64=50.0,
     turbulent_flux_sign::Float64=1.0,
     ntot::Integer=20,
-    physics::SM.SnowpackPhysicalConstants{Float64}=SM.SnowpackPhysicalConstants(),
+    physics::SM.SnowpackPhysicalConstants{Float64}=Chion.physics(),
 )
-    data = Chion.load_forcing(
-        Chion.mar_forcing(
-            nc_path;
-            mask_threshold=mask_threshold,
-            turbulent_flux_sign=turbulent_flux_sign,
-        );
+    definition = Chion.mar_case(
+        nc_path;
+        mask_threshold=mask_threshold,
+        turbulent_flux_sign=turbulent_flux_sign,
         physics=physics,
         ntot=ntot,
     )
     return (
-        domain=data.domain,
-        forcing=data.forcing,
-        layout=data.layout,
-        wind_forcing_message=isempty(data.notes) ? "" : data.notes[1],
-        nvalid=hasproperty(data.metadata, :ncol) ? data.metadata.ncol : SM.column_count(data.domain),
+        domain=definition.domain,
+        forcing=definition.forcing,
+        layout=definition.layout,
+        wind_forcing_message=isempty(definition.notes) ? "" : definition.notes[1],
+        nvalid=hasproperty(definition.metadata, :ncol) ? definition.metadata.ncol : SM.column_count(definition.domain),
         mask_threshold=mask_threshold,
         nc_path=String(nc_path),
     )

@@ -3,20 +3,20 @@
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-include("gris_equilibrium_backend.jl")
+include("gris_mar_case_backend.jl")
 
 function print_compare_help()
     println("Usage:")
-    println("  julia --project=. examples/scripts/compare_gris_equilibrium_api.jl [options]")
+    println("  julia --project=. examples/scripts/compare_gris_mar_case.jl [options]")
     println()
     println("This compares the existing examples/scripts/run_gris_equilibrium.jl runner")
-    println("against the new API-backed examples/scripts/run_gris_equilibrium_api.jl runner")
+    println("against the new API-backed examples/scripts/run_gris_mar_case.jl runner")
     println("in an old-compatible configuration.")
     println()
     println("Options:")
     println("  --nc=PATH                    MAR NetCDF/HDF5 file")
     println("  --backend=threads|cpu|gpu    Backend to compare (default: threads)")
-    println("  --max-cycles=N               Max cycles for both runners (default: 1)")
+    println("  --cycles=N                   Number of cycles for both runners (default: 1)")
     println("  --mask-threshold=VALUE       Mask threshold passed to both runners (default: 50)")
     println("  --write-output               Enable summary/plot/CSV outputs in both runners")
     println("  --write-nc                   Enable NetCDF output in both runners")
@@ -72,13 +72,13 @@ function build_runner_args(args::Vector{String})
     write_netcdf = has_flag(args, "write-nc")
     !write_output && write_netcdf && error("The old runner does not support NetCDF-only mode. Use --write-output together with --write-nc, or omit --write-nc.")
 
-    nc_path = arg_value(args, "nc", DEFAULT_GRIS_API_NC_PATH)
-    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_GRIS_API_NC_PATH).")
+    nc_path = arg_value(args, "nc", DEFAULT_GRIS_MAR_NC_PATH)
+    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_GRIS_MAR_NC_PATH).")
 
     old_args = String[
         "--nc=$(nc_path)",
         "--backend=$(backend == :threads ? "threads" : "gpu")",
-        "--max-cycles=$(arg_value(args, "max-cycles", "1"))",
+        "--cycles=$(arg_value(args, "cycles", "1"))",
         "--mask-threshold=$(arg_value(args, "mask-threshold", "50.0"))",
     ]
     new_args = copy(old_args)
@@ -118,12 +118,10 @@ function main(args::Vector{String})
         return
     end
 
-    ensure_tools!()
-
     old_args, new_args = build_runner_args(args)
     project_dir = joinpath(@__DIR__, "..", "..")
     old_script = joinpath(@__DIR__, "run_gris_equilibrium.jl")
-    new_script = joinpath(@__DIR__, "run_gris_equilibrium_api.jl")
+    new_script = joinpath(@__DIR__, "run_gris_mar_case.jl")
 
     old_run = capture_command(`julia --project=$(project_dir) $(old_script) $(old_args)`)
     old_run.exitcode == 0 || error("Old runner failed.\nCommand: $(old_run.command)\nSTDERR:\n$(old_run.stderr)\nSTDOUT:\n$(old_run.stdout)")

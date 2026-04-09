@@ -13,7 +13,7 @@ const NC_FLOAT = 5
 const NC_DOUBLE = 6
 const NC_INT = 4
 
-const EQUILIBRIUM_NETCDF_VARIABLE_GROUPS = Dict(
+const CASE_NETCDF_VARIABLE_GROUPS = Dict(
     :final => [
         :final_thickness,
         :final_wet_mass,
@@ -59,7 +59,7 @@ const EQUILIBRIUM_NETCDF_VARIABLE_GROUPS = Dict(
     ],
 )
 
-const EQUILIBRIUM_NETCDF_VARIABLES = unique(vcat(values(EQUILIBRIUM_NETCDF_VARIABLE_GROUPS)...))
+const CASE_NETCDF_VARIABLES = unique(vcat(values(CASE_NETCDF_VARIABLE_GROUPS)...))
 const _LIBNETCDF_CACHE = Ref{Union{Nothing, String}}(nothing)
 
 mutable struct TimingStats
@@ -69,7 +69,7 @@ end
 
 TimingStats() = TimingStats(Dict{Symbol, Float64}(), Dict{Symbol, Int}())
 
-struct EquilibriumForcing
+struct ForcingData
     time_values::Vector{DateTime}
     dt_days::Vector{Float64}
     air_temperature
@@ -85,7 +85,7 @@ struct EquilibriumForcing
     has_q_lh
 end
 
-struct EquilibriumGridLayout
+struct GridLayout
     x::Vector{Float64}
     y::Vector{Float64}
     js::Vector{Int}
@@ -113,37 +113,37 @@ struct SnowpackStateFields
     f_base_max::Float64
 end
 
-struct EquilibriumRunOptions
+struct RunConfig
     name::String
-    forcing_label::String
-    out_dir::String
-    out_nc::String
+    input_label::String
+    output_dir::String
+    netcdf_path::String
     write_outputs::Bool
     write_netcdf::Bool
     netcdf_variables::Vector{Symbol}
-    max_cycles::Int
+    cycles::Int
     backend::Symbol
-    cycle_metrics_stride::Int
+    history_stride::Int
 end
 
-struct EquilibriumNetCDFWriter
+struct CaseNetCDFWriter
     ncid::Cint
     vars::Dict{Symbol, Cint}
     max_steps::Int
-    max_cycles::Int
+    cycles::Int
 end
 
-struct EquilibriumResult
+struct RunResult
     history::Vector{NamedTuple}
     status::Symbol
     timings::TimingStats
     simulation_wall_sec::Float64
     run_wall_sec::Float64
-    nc_path::String
+    netcdf_path::String
     summary_path::String
     history_csv_path::String
     domain
-    options::EquilibriumRunOptions
+    run::RunConfig
 end
 
 function add_timing!(stats::TimingStats, key::Symbol, dt_sec::Float64, count::Int=1)
@@ -235,28 +235,28 @@ function print_timing_summary(io::IO, stats::TimingStats; total_wall_sec::Union{
     return
 end
 
-@inline function normalize_equilibrium_backend(backend)
+@inline function normalize_case_backend(backend)
     value = lowercase(strip(String(backend)))
     value == "cpu" && return :threads
     value in ("threads", "gpu") || error("Unsupported backend '$backend'. Use `threads`, `cpu`, or `gpu`.")
     return Symbol(value)
 end
 
-@inline function normalize_cycle_metrics_stride(stride::Integer)
+@inline function normalize_history_stride(stride::Integer)
     value = Int(stride)
-    value >= 0 || error("`cycle_metrics_stride` must be >= 0.")
+    value >= 0 || error("`history_stride` must be >= 0.")
     return value
 end
 
-@inline function should_record_cycle_metrics(cycle::Int, max_cycles::Int, stride::Int)
-    cycle == max_cycles && return true
+@inline function should_record_cycle_metrics(cycle::Int, cycles::Int, stride::Int)
+    cycle == cycles && return true
     stride == 0 && return false
     return mod(cycle, stride) == 0
 end
 
-@inline function completed_cycle_count(history::Vector{NamedTuple}, status::Symbol, max_cycles::Int)
+@inline function completed_cycle_count(history::Vector{NamedTuple}, status::Symbol, cycles::Int)
     isempty(history) && return 0
-    return status == :max_cycles ? max_cycles : history[end].cycle
+    return status == :cycles ? cycles : history[end].cycle
 end
 
 @inline function cycle_metrics_schedule_label(stride::Int)
@@ -265,28 +265,28 @@ end
     return "every $(stride) cycles + final"
 end
 
-function normalize_equilibrium_netcdf_variables(spec)
+function normalize_case_netcdf_variables(spec)
     if spec isa AbstractVector
         tokens = String[string(x) for x in spec]
     else
         text = lowercase(strip(String(spec)))
-        isempty(text) && return copy(EQUILIBRIUM_NETCDF_VARIABLES)
+        isempty(text) && return copy(CASE_NETCDF_VARIABLES)
         tokens = split(text, ',')
     end
 
     selected = Symbol[]
-    allowed_groups = sort!(String.(collect(keys(EQUILIBRIUM_NETCDF_VARIABLE_GROUPS))))
+    allowed_groups = sort!(String.(collect(keys(CASE_NETCDF_VARIABLE_GROUPS))))
     for token in tokens
         stripped = strip(token)
         isempty(stripped) && continue
         key = Symbol(lowercase(stripped))
         if key == :all
-            append!(selected, EQUILIBRIUM_NETCDF_VARIABLES)
+            append!(selected, CASE_NETCDF_VARIABLES)
         elseif key == :none
             continue
-        elseif haskey(EQUILIBRIUM_NETCDF_VARIABLE_GROUPS, key)
-            append!(selected, EQUILIBRIUM_NETCDF_VARIABLE_GROUPS[key])
-        elseif key in EQUILIBRIUM_NETCDF_VARIABLES
+        elseif haskey(CASE_NETCDF_VARIABLE_GROUPS, key)
+            append!(selected, CASE_NETCDF_VARIABLE_GROUPS[key])
+        elseif key in CASE_NETCDF_VARIABLES
             push!(selected, key)
         else
             error(
@@ -298,29 +298,29 @@ function normalize_equilibrium_netcdf_variables(spec)
     return unique(selected)
 end
 
-function EquilibriumRunOptions(;
-    name::AbstractString="equilibrium",
-    forcing_label::AbstractString="",
-    out_dir::AbstractString=joinpath(pwd(), "equilibrium_output"),
-    out_nc::AbstractString="",
+function RunConfig(;
+    name::AbstractString="snowpack_case",
+    input_label::AbstractString="",
+    output_dir::AbstractString="",
+    netcdf_path::AbstractString="",
     write_outputs::Bool=true,
     write_netcdf::Bool=true,
-    netcdf_variables=copy(EQUILIBRIUM_NETCDF_VARIABLES),
-    max_cycles::Integer=10,
+    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
+    cycles::Integer=10,
     backend=:threads,
-    cycle_metrics_stride::Integer=1,
+    history_stride::Integer=1,
 )
-    return EquilibriumRunOptions(
+    return RunConfig(
         String(name),
-        String(forcing_label),
-        String(out_dir),
-        String(out_nc),
+        String(input_label),
+        String(output_dir),
+        String(netcdf_path),
         write_outputs,
         write_netcdf,
-        normalize_equilibrium_netcdf_variables(netcdf_variables),
-        Int(max_cycles),
-        normalize_equilibrium_backend(backend),
-        normalize_cycle_metrics_stride(cycle_metrics_stride),
+        normalize_case_netcdf_variables(netcdf_variables),
+        Int(cycles),
+        normalize_case_backend(backend),
+        normalize_history_stride(history_stride),
     )
 end
 
@@ -340,36 +340,135 @@ function _ensure_matching_field_sizes(reference::Tuple{Int, Int}, name::Abstract
     return
 end
 
-function EquilibriumForcing(;
+function _forcing_column_count(field, ntime::Int)
+    field isa Number && return 1
+    data = collect(field)
+    ndims(data) == 1 && return 1
+    ndims(data) == 2 || error("Forcing fields must be scalars, vectors, or matrices.")
+    size(data, 2) == ntime ||
+        error("Matrix forcing fields must have $ntime columns, got $(size(data, 2)).")
+    return size(data, 1)
+end
+
+function _forcing_numeric_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
+    if field isa Number
+        return fill(Float64(field), ncol, ntime)
+    end
+    data = collect(field)
+    if ndims(data) == 1
+        length(data) == ntime || error("`$name` must have length $ntime.")
+        return repeat(reshape(Float64.(data), 1, ntime), ncol, 1)
+    elseif ndims(data) == 2
+        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
+        return Matrix{Float64}(data)
+    end
+    error("`$name` must be a scalar, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
+end
+
+function _forcing_bool_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
+    if field isa Bool
+        return fill(field, ncol, ntime)
+    end
+    data = collect(field)
+    if ndims(data) == 1
+        length(data) == ntime || error("`$name` must have length $ntime.")
+        return repeat(reshape(Bool.(data), 1, ntime), ncol, 1)
+    elseif ndims(data) == 2
+        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
+        return Bool.(data)
+    end
+    error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
+end
+
+function ForcingData(;
     dt_days,
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
+    air_temperature=nothing,
+    snowfall_rate=nothing,
+    rainfall_rate=nothing,
+    air_temperature_c=nothing,
+    snowfall_mm_day=nothing,
+    rainfall_mm_day=nothing,
     shortwave_down,
-    wind_speed=fill(5.0, size(air_temperature)),
-    q_lw_down=zeros(Float64, size(air_temperature)),
-    has_q_lw_down=fill(false, size(air_temperature)),
-    q_sh=zeros(Float64, size(air_temperature)),
-    has_q_sh=fill(false, size(air_temperature)),
-    q_lh=zeros(Float64, size(air_temperature)),
-    has_q_lh=fill(false, size(air_temperature)),
+    ncol::Union{Nothing, Integer}=nothing,
+    wind_speed=nothing,
+    q_lw_down=nothing,
+    has_q_lw_down=nothing,
+    q_sh=nothing,
+    has_q_sh=nothing,
+    q_lh=nothing,
+    has_q_lh=nothing,
     time_values=nothing,
 )
-    air_temperature_m = Matrix{Float64}(air_temperature)
-    snowfall_rate_m = Matrix{Float64}(snowfall_rate)
-    rainfall_rate_m = Matrix{Float64}(rainfall_rate)
-    shortwave_down_m = Matrix{Float64}(shortwave_down)
-    wind_speed_m = Matrix{Float64}(wind_speed)
-    q_lw_down_m = Matrix{Float64}(q_lw_down)
-    has_q_lw_down_m = Matrix{Bool}(has_q_lw_down)
-    q_sh_m = Matrix{Float64}(q_sh)
-    has_q_sh_m = Matrix{Bool}(has_q_sh)
-    q_lh_m = Matrix{Float64}(q_lh)
-    has_q_lh_m = Matrix{Bool}(has_q_lh)
-    dims = size(air_temperature_m)
+    has_native_inputs = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
+    has_user_inputs = !isnothing(air_temperature_c) || !isnothing(snowfall_mm_day) || !isnothing(rainfall_mm_day)
+    has_native_inputs && has_user_inputs &&
+        error("Pass either model-native forcing fields or user-facing forcing fields, not both.")
+
+    dt_days_v = Float64.(collect(dt_days))
+    isempty(dt_days_v) && error("`dt_days` must not be empty.")
+    ntime = length(dt_days_v)
+    all(>(0.0), dt_days_v) || error("All `dt_days` entries must be positive.")
+
+    column_count = 1
+    if isnothing(ncol)
+        for candidate in (
+            air_temperature,
+            snowfall_rate,
+            rainfall_rate,
+            air_temperature_c,
+            snowfall_mm_day,
+            rainfall_mm_day,
+            shortwave_down,
+            wind_speed,
+            q_lw_down,
+            q_sh,
+            q_lh,
+        )
+            if !isnothing(candidate)
+                column_count = _forcing_column_count(candidate, ntime)
+                break
+            end
+        end
+    else
+        column_count = Int(ncol)
+    end
+    column_count > 0 || error("`ncol` must be positive.")
+
+    if has_user_inputs
+        isnothing(air_temperature_c) && error("`air_temperature_c` is required.")
+        isnothing(snowfall_mm_day) && error("`snowfall_mm_day` is required.")
+        isnothing(rainfall_mm_day) && error("`rainfall_mm_day` is required.")
+        air_temperature = _forcing_numeric_matrix(air_temperature_c, column_count, ntime, "air_temperature_c") .+ 273.15
+        snowfall_rate = _forcing_numeric_matrix(snowfall_mm_day, column_count, ntime, "snowfall_mm_day") ./ 86_400.0
+        rainfall_rate = _forcing_numeric_matrix(rainfall_mm_day, column_count, ntime, "rainfall_mm_day") ./ 86_400.0
+    else
+        isnothing(air_temperature) && error("`air_temperature` or `air_temperature_c` is required.")
+        isnothing(snowfall_rate) && error("`snowfall_rate` or `snowfall_mm_day` is required.")
+        isnothing(rainfall_rate) && error("`rainfall_rate` or `rainfall_mm_day` is required.")
+        air_temperature = _forcing_numeric_matrix(air_temperature, column_count, ntime, "air_temperature")
+        snowfall_rate = _forcing_numeric_matrix(snowfall_rate, column_count, ntime, "snowfall_rate")
+        rainfall_rate = _forcing_numeric_matrix(rainfall_rate, column_count, ntime, "rainfall_rate")
+    end
+
+    shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
+    dims = size(air_temperature)
+    wind_speed_m = isnothing(wind_speed) ? fill(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
+    q_lw_down_m = isnothing(q_lw_down) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
+    has_q_lw_down_m = isnothing(q_lw_down) ?
+        fill(false, dims) :
+        (isnothing(has_q_lw_down) ? fill(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down"))
+    q_sh_m = isnothing(q_sh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
+    has_q_sh_m = isnothing(q_sh) ?
+        fill(false, dims) :
+        (isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh"))
+    q_lh_m = isnothing(q_lh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
+    has_q_lh_m = isnothing(q_lh) ?
+        fill(false, dims) :
+        (isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh"))
+
     for (name, field) in (
-        ("snowfall_rate", snowfall_rate_m),
-        ("rainfall_rate", rainfall_rate_m),
+        ("snowfall_rate", snowfall_rate),
+        ("rainfall_rate", rainfall_rate),
         ("shortwave_down", shortwave_down_m),
         ("wind_speed", wind_speed_m),
         ("q_lw_down", q_lw_down_m),
@@ -381,20 +480,18 @@ function EquilibriumForcing(;
     )
         _ensure_matching_field_sizes(dims, name, field)
     end
-    dt_days_v = Float64.(dt_days)
-    length(dt_days_v) == dims[2] || error("`dt_days` must have one entry per forcing timestep.")
     time_values_v = if isnothing(time_values)
         _synthesized_time_values(dt_days_v)
     else
         DateTime.(collect(time_values))
     end
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
-    return EquilibriumForcing(
+    return ForcingData(
         time_values_v,
         dt_days_v,
-        air_temperature_m,
-        snowfall_rate_m,
-        rainfall_rate_m,
+        air_temperature,
+        snowfall_rate,
+        rainfall_rate,
         shortwave_down_m,
         wind_speed_m,
         q_lw_down_m,
@@ -406,7 +503,7 @@ function EquilibriumForcing(;
     )
 end
 
-function EquilibriumGridLayout(
+function GridLayout(
     x::AbstractVector,
     y::AbstractVector,
     js::AbstractVector{<:Integer},
@@ -421,7 +518,7 @@ function EquilibriumGridLayout(
     length(js_v) == length(is_v) || error("`js` and `is` must have the same length.")
     size(mask_m, 1) == length(y_v) || error("`mask` y dimension must match `y`.")
     size(mask_m, 2) == length(x_v) || error("`mask` x dimension must match `x`.")
-    return EquilibriumGridLayout(x_v, y_v, js_v, is_v, mask_m)
+    return GridLayout(x_v, y_v, js_v, is_v, mask_m)
 end
 
 function SnowpackStateFields(
@@ -496,14 +593,14 @@ function SM.SnowpackDomain(state::SnowpackStateFields)
     )
 end
 
-@inline equilibrium_output_enabled(options::EquilibriumRunOptions) = options.write_outputs || options.write_netcdf
+@inline case_output_enabled(options::RunConfig) = options.write_outputs || options.write_netcdf
 
-@inline function equilibrium_selected(options::EquilibriumRunOptions, group::Symbol)
-    group_vars = Set(EQUILIBRIUM_NETCDF_VARIABLE_GROUPS[group])
+@inline function case_selected(options::RunConfig, group::Symbol)
+    group_vars = Set(CASE_NETCDF_VARIABLE_GROUPS[group])
     return any(var -> var in group_vars, options.netcdf_variables)
 end
 
-@inline function _grid_shape(layout::EquilibriumGridLayout)
+@inline function _grid_shape(layout::GridLayout)
     return size(layout.mask)
 end
 
@@ -1080,7 +1177,7 @@ function cycle_log_line(record)
     )
 end
 
-function write_equilibrium_history_csv(out_path::AbstractString, history::Vector{NamedTuple})
+function write_case_history_csv(out_path::AbstractString, history::Vector{NamedTuple})
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, "cycle,mean_thickness_m,mean_wet_mass_mmwe,mean_bulk_density_kgm3,mean_base_mass_mmwe,mean_signed_delta_thickness_m,mean_abs_delta_thickness_m,max_abs_delta_thickness_m,mean_signed_delta_wet_mass_mmwe,mean_abs_delta_wet_mass_mmwe,max_abs_delta_wet_mass_mmwe,mean_signed_delta_base_mass_mmwe,mean_abs_delta_base_mass_mmwe,max_abs_delta_base_mass_mmwe")
@@ -1108,9 +1205,9 @@ function write_equilibrium_history_csv(out_path::AbstractString, history::Vector
     return
 end
 
-function write_equilibrium_summary(
+function write_case_summary(
     out_path::AbstractString,
-    options::EquilibriumRunOptions,
+    options::RunConfig,
     time_values::Vector{DateTime},
     ncol::Int,
     history::Vector{NamedTuple},
@@ -1118,11 +1215,11 @@ function write_equilibrium_summary(
     timings::TimingStats,
 )
     last_record = history[end]
-    cycles_completed = completed_cycle_count(history, status, options.max_cycles)
+    cycles_completed = completed_cycle_count(history, status, options.cycles)
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, options.name)
-        println(io, "Forcing label      : ", isempty(options.forcing_label) ? "(not provided)" : options.forcing_label)
+        println(io, "Input label        : ", isempty(options.input_label) ? "(not provided)" : options.input_label)
         println(io, "Forcing start      : ", first(time_values))
         println(io, "Forcing end        : ", last(time_values))
         println(io, "Forcing steps      : ", length(time_values))
@@ -1131,7 +1228,7 @@ function write_equilibrium_summary(
         println(io, "Threads            : ", nthreads())
         println(io, "File output        : ", options.write_outputs ? "enabled" : "disabled (--no-output)")
         println(io, "NetCDF output      : ", options.write_netcdf ? "enabled" : "disabled (--no-nc)")
-        println(io, "Cycle metrics      : ", cycle_metrics_schedule_label(options.cycle_metrics_stride))
+        println(io, "Cycle metrics      : ", cycle_metrics_schedule_label(options.history_stride))
         println(io, "Status             : ", string(status))
         println(io, "Cycles completed   : ", cycles_completed)
         println(io)
@@ -1151,7 +1248,7 @@ function write_equilibrium_summary(
         println(io, @sprintf("Mean signed dBase (mmWE)   : %.6f", last_record.mean_signed_delta_base_mass))
         println(io, @sprintf("Mean abs dBase (mmWE)      : %.6f", last_record.mean_abs_delta_base_mass))
         println(io, @sprintf("Max abs dBase (mmWE)       : %.6f", last_record.max_abs_delta_base_mass))
-        if status == :max_cycles
+        if status == :cycles
             println(io)
             println(io, "Interpretation     : Requested cycles completed.")
         else
@@ -1237,12 +1334,12 @@ function maybe_define_nc_int_variable!(
     return
 end
 
-function init_equilibrium_netcdf(
-    out_nc::AbstractString,
-    options::EquilibriumRunOptions,
+function init_case_netcdf(
+    netcdf_path::AbstractString,
+    options::RunConfig,
     time_values::Vector{DateTime},
     nlayer::Int,
-    layout::EquilibriumGridLayout,
+    layout::GridLayout,
     initial_thickness::Matrix{Float64},
     month_cycle::Vector{Int32},
     month_of_year::Vector{Int32},
@@ -1250,16 +1347,16 @@ function init_equilibrium_netcdf(
     annual_output_source_indices::Vector{Int32},
     annual_output_source_codes::Vector{Int32},
 )
-    mkpath(dirname(out_nc))
-    isfile(out_nc) && rm(out_nc, force=true)
+    mkpath(dirname(netcdf_path))
+    isfile(netcdf_path) && rm(netcdf_path, force=true)
     ny, nx = _grid_shape(layout)
-    max_steps = options.max_cycles * length(annual_output_source_indices)
+    max_steps = options.cycles * length(annual_output_source_indices)
     selected = Set(options.netcdf_variables)
     step_cycle = Vector{Int32}(undef, max_steps)
     step_source_index = Vector{Int32}(undef, max_steps)
     step_source_code = Vector{Int32}(undef, max_steps)
     step_counter = 0
-    for cyc in 1:options.max_cycles
+    for cyc in 1:options.cycles
         for annual_idx in eachindex(annual_output_source_indices)
             step_counter += 1
             step_cycle[step_counter] = Int32(cyc)
@@ -1268,11 +1365,11 @@ function init_equilibrium_netcdf(
         end
     end
 
-    ncid = nc_create(out_nc)
+    ncid = nc_create(netcdf_path)
     dim_y = nc_def_dim(ncid, "y", ny)
     dim_x = nc_def_dim(ncid, "x", nx)
     dim_layer = nc_def_dim(ncid, "layer", max(nlayer, 1))
-    dim_cycle = nc_def_dim(ncid, "cycle", options.max_cycles)
+    dim_cycle = nc_def_dim(ncid, "cycle", options.cycles)
     dim_month = nc_def_dim(ncid, "month", length(month_cycle))
     dim_point = nc_def_dim(ncid, "point", length(layout.js))
     dim_step = nc_def_dim(ncid, "step", max_steps)
@@ -1366,7 +1463,7 @@ function init_equilibrium_netcdf(
 
     nc_put_att_text(ncid, NC_GLOBAL, "title", options.name)
     nc_put_att_text(ncid, NC_GLOBAL, "source_model", "Chion")
-    nc_put_att_text(ncid, NC_GLOBAL, "forcing_label", isempty(options.forcing_label) ? "not provided" : options.forcing_label)
+    nc_put_att_text(ncid, NC_GLOBAL, "input_label", isempty(options.input_label) ? "not provided" : options.input_label)
     nc_put_att_text(ncid, NC_GLOBAL, "forcing_start", string(first(time_values)))
     nc_put_att_text(ncid, NC_GLOBAL, "forcing_end", string(last(time_values)))
     nc_put_att_text(ncid, NC_GLOBAL, "cycles_completed", "pending")
@@ -1377,7 +1474,7 @@ function init_equilibrium_netcdf(
     nc_put_var_double(ncid, var_x, layout.x)
     nc_put_var_double(ncid, var_y, layout.y)
     nc_put_var_int(ncid, var_layer, Int32.(collect(1:max(nlayer, 1))))
-    nc_put_var_int(ncid, var_cycle, Int32.(collect(1:options.max_cycles)))
+    nc_put_var_int(ncid, var_cycle, Int32.(collect(1:options.cycles)))
     nc_put_var_int(ncid, var_month, Int32.(collect(1:length(month_cycle))))
     nc_put_var_int(ncid, var_month_cycle, month_cycle)
     nc_put_var_int(ncid, var_month_of_year, month_of_year)
@@ -1393,25 +1490,25 @@ function init_equilibrium_netcdf(
     nc_put_var_int(ncid, var_step_source_code, step_source_code)
     nc_put_var_float_2d(ncid, var_mask, layout.mask)
     nc_put_var_float_2d(ncid, var_init_th, initial_thickness)
-    return EquilibriumNetCDFWriter(ncid, vars, max_steps, options.max_cycles)
+    return CaseNetCDFWriter(ncid, vars, max_steps, options.cycles)
 end
 
-function maybe_write_step_output!(writer::EquilibriumNetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real})
+function maybe_write_step_output!(writer::CaseNetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real})
     if haskey(writer.vars, key)
         nc_put_vara_float_3d_step_yx(writer.ncid, writer.vars[key], step_index, data)
     end
     return
 end
 
-function maybe_write_output!(writer::EquilibriumNetCDFWriter, key::Symbol, data, writer_fn)
+function maybe_write_output!(writer::CaseNetCDFWriter, key::Symbol, data, writer_fn)
     if haskey(writer.vars, key)
         writer_fn(writer.ncid, writer.vars[key], data)
     end
     return
 end
 
-function finalize_equilibrium_netcdf!(
-    writer::EquilibriumNetCDFWriter,
+function finalize_case_netcdf!(
+    writer::CaseNetCDFWriter,
     final_thickness::Matrix{Float64},
     final_wet_mass::Matrix{Float64},
     final_bulk_density::Matrix{Float64},
@@ -1436,13 +1533,13 @@ function finalize_equilibrium_netcdf!(
     cycles_completed::Int,
     steps_written::Int,
 )
-    hist_th = fill(NaN, writer.max_cycles)
-    hist_wet = fill(NaN, writer.max_cycles)
-    hist_rho = fill(NaN, writer.max_cycles)
-    hist_base = fill(NaN, writer.max_cycles)
-    hist_dth = fill(NaN, writer.max_cycles)
-    hist_dswe = fill(NaN, writer.max_cycles)
-    hist_dbase = fill(NaN, writer.max_cycles)
+    hist_th = fill(NaN, writer.cycles)
+    hist_wet = fill(NaN, writer.cycles)
+    hist_rho = fill(NaN, writer.cycles)
+    hist_base = fill(NaN, writer.cycles)
+    hist_dth = fill(NaN, writer.cycles)
+    hist_dswe = fill(NaN, writer.cycles)
+    hist_dbase = fill(NaN, writer.cycles)
     for rec in history
         idx = getfield(rec, :cycle)
         hist_th[idx] = getfield(rec, :mean_thickness)
@@ -1498,9 +1595,9 @@ function finalize_equilibrium_netcdf!(
     return
 end
 
-function run_equilibrium_cycles_threads_no_netcdf!(
+function run_case_cycles_threads_no_netcdf!(
     timings::TimingStats,
-    options::EquilibriumRunOptions,
+    options::RunConfig,
     domain::SM.SnowpackDomain,
     workspaces::AbstractVector{<:SM.StepWorkspace},
     step_fields::SM.SnowpackStepFields,
@@ -1515,19 +1612,19 @@ function run_equilibrium_cycles_threads_no_netcdf!(
         summarize_cycle_columns!(prev, domain; backend=:threads)
     end
     history = NamedTuple[]
-    status = :max_cycles
+    status = :cycles
     last_delta_thickness_vec = fill(NaN, ncol)
     last_delta_wet_mass_vec = fill(NaN, ncol)
     last_delta_base_mass_vec = fill(NaN, ncol)
     simulation_wall_t0 = time_ns()
-    for cycle in 1:options.max_cycles
+    for cycle in 1:options.cycles
         time_counted_block!(timings, :model_step_wall, ncol * ntime) do
             SM.step!(domain, step_fields, workspaces)
         end
         time_block!(timings, :summarize_columns_cycle) do
             summarize_cycle_columns!(final, domain; backend=:threads)
         end
-        if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
+        if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
             record = time_block!(timings, :cycle_metrics) do
                 make_cycle_record_and_deltas!(
                     cycle,
@@ -1554,9 +1651,9 @@ function run_equilibrium_cycles_threads_no_netcdf!(
     return (history=history, status=status, simulation_wall_sec=simulation_wall_sec)
 end
 
-function run_equilibrium_cycles_gpu_no_netcdf!(
+function run_case_cycles_gpu_no_netcdf!(
     timings::TimingStats,
-    options::EquilibriumRunOptions,
+    options::RunConfig,
     domain::SM.SnowpackDomain,
     workspace::SM.ColumnarStepWorkspace,
     step_fields::SM.SnowpackStepFields,
@@ -1578,13 +1675,13 @@ function run_equilibrium_cycles_gpu_no_netcdf!(
         )
     end
     history = NamedTuple[]
-    status = :max_cycles
+    status = :cycles
     last_delta_thickness_vec = similar(domain.mass, Float64, ncol)
     last_delta_wet_mass_vec = similar(domain.mass, Float64, ncol)
     last_delta_base_mass_vec = similar(domain.mass, Float64, ncol)
     cycle_metrics_workspace = CycleMetricsWorkspace(domain)
     simulation_wall_t0 = time_ns()
-    for cycle in 1:options.max_cycles
+    for cycle in 1:options.cycles
         time_counted_block!(timings, :model_step_wall, ncol * ntime; synchronize=CUDA.synchronize) do
             SM.step!(domain, step_fields, workspace; update_snow_cover=false)
         end
@@ -1598,7 +1695,7 @@ function run_equilibrium_cycles_gpu_no_netcdf!(
                 backend=:kernelabstractions,
             )
         end
-        if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
+        if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
             record = time_block!(timings, :cycle_metrics; synchronize=CUDA.synchronize) do
                 make_cycle_record_and_deltas!(
                     cycle_metrics_workspace,
@@ -1641,7 +1738,7 @@ end
 
 function _print_run_report(
     io::IO,
-    options::EquilibriumRunOptions,
+    options::RunConfig,
     time_values::Vector{DateTime},
     history::Vector{NamedTuple},
     status::Symbol,
@@ -1652,15 +1749,15 @@ function _print_run_report(
     summary_path::AbstractString="",
     history_csv_path::AbstractString="",
 )
-    cycles_completed = completed_cycle_count(history, status, options.max_cycles)
+    cycles_completed = completed_cycle_count(history, status, options.cycles)
     println(io, "$(options.name) complete.")
-    println(io, "Forcing label   : ", isempty(options.forcing_label) ? "(not provided)" : options.forcing_label)
+    println(io, "Input label     : ", isempty(options.input_label) ? "(not provided)" : options.input_label)
     println(io, "Forcing start   : $(first(time_values))")
     println(io, "Forcing end     : $(last(time_values))")
     println(io, "Backend         : $(String(options.backend))")
     println(io, "Cycles          : $(cycles_completed)")
     println(io, "Status          : $(string(status))")
-    println(io, "Cycle metrics   : $(cycle_metrics_schedule_label(options.cycle_metrics_stride))")
+    println(io, "Cycle metrics   : $(cycle_metrics_schedule_label(options.history_stride))")
     println(io, @sprintf("Simulation wall : %.3f s", simulation_wall_sec))
     println(io, @sprintf("Run wall total  : %.3f s", run_wall_sec))
     if haskey(timings.totals, :model_step_wall)
@@ -1681,11 +1778,11 @@ function _print_run_report(
     return
 end
 
-function run_equilibrium!(
+function execute_case!(
     domain::SM.SnowpackDomain,
-    forcing::EquilibriumForcing;
-    layout::Union{Nothing, EquilibriumGridLayout}=nothing,
-    options::EquilibriumRunOptions=EquilibriumRunOptions(),
+    forcing::ForcingData;
+    layout::Union{Nothing, GridLayout}=nothing,
+    options::RunConfig=RunConfig(),
     io::IO=stdout,
     timings::TimingStats=TimingStats(),
     run_wall_t0::Integer=time_ns(),
@@ -1697,9 +1794,9 @@ function run_equilibrium!(
 
     write_final_fields = options.write_netcdf && !isnothing(layout)
     selected = Set(options.netcdf_variables)
-    need_step_outputs = options.write_netcdf && equilibrium_selected(options, :step)
-    need_monthly_outputs = options.write_netcdf && equilibrium_selected(options, :monthly)
-    need_layer_outputs = options.write_netcdf && equilibrium_selected(options, :layers)
+    need_step_outputs = options.write_netcdf && case_selected(options, :step)
+    need_monthly_outputs = options.write_netcdf && case_selected(options, :monthly)
+    need_layer_outputs = options.write_netcdf && case_selected(options, :layers)
     need_last_cycle_smb_delta = options.write_netcdf && :last_cycle_delta_ice_sheet_smb in selected
     need_netcdf_step_diagnostics = need_step_outputs || need_monthly_outputs
 
@@ -1715,12 +1812,12 @@ function run_equilibrium!(
             end
             step_month_local = options.write_netcdf ? [month_lookup[(year(t), month(t))] for t in forcing.time_values] : Int[]
             nmonth_per_cycle_local = options.write_netcdf ? length(unique_month_keys_local) : 0
-            nmonth_total_local = options.write_netcdf ? options.max_cycles * nmonth_per_cycle_local : 0
+            nmonth_total_local = options.write_netcdf ? options.cycles * nmonth_per_cycle_local : 0
             month_cycle_local = Int32[]
             month_of_year_local = Int32[]
             source_month_code_local = Int32[]
             if options.write_netcdf
-                for cyc in 1:options.max_cycles, key in unique_month_keys_local
+                for cyc in 1:options.cycles, key in unique_month_keys_local
                     push!(month_cycle_local, Int32(cyc))
                     push!(month_of_year_local, Int32(key[2]))
                     push!(source_month_code_local, Int32(key[1] * 100 + key[2]))
@@ -1754,11 +1851,11 @@ function run_equilibrium!(
             threaded_workspaces(domain)
         end
         sim = redirect_stdout(io) do
-            run_equilibrium_cycles_threads_no_netcdf!(timings, options, domain, workspaces, step_fields)
+            run_case_cycles_threads_no_netcdf!(timings, options, domain, workspaces, step_fields)
         end
         run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
         _print_run_report(io, options, forcing.time_values, sim.history, sim.status, sim.simulation_wall_sec, run_wall_sec, timings)
-        return EquilibriumResult(sim.history, sim.status, timings, sim.simulation_wall_sec, run_wall_sec, "", "", "", domain, options)
+        return RunResult(sim.history, sim.status, timings, sim.simulation_wall_sec, run_wall_sec, "", "", "", domain, options)
     end
 
     step_fields = SM.SnowpackStepFields(forcing)
@@ -1775,7 +1872,7 @@ function run_equilibrium!(
         end
         if !options.write_outputs && !options.write_netcdf
             sim = redirect_stdout(io) do
-                run_equilibrium_cycles_gpu_no_netcdf!(
+                run_case_cycles_gpu_no_netcdf!(
                     timings,
                     options,
                     domain,
@@ -1785,7 +1882,7 @@ function run_equilibrium!(
             end
             run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
             _print_run_report(io, options, forcing.time_values, sim.history, sim.status, sim.simulation_wall_sec, run_wall_sec, timings)
-            return EquilibriumResult(sim.history, sim.status, timings, sim.simulation_wall_sec, run_wall_sec, "", "", "", domain, options)
+            return RunResult(sim.history, sim.status, timings, sim.simulation_wall_sec, run_wall_sec, "", "", "", domain, options)
         end
     else
         workspaces = time_block!(timings, :create_workspaces) do
@@ -1862,9 +1959,9 @@ function run_equilibrium!(
     initial_thickness = write_final_fields ? time_block!(timings, :prepare_initial_output_fields_grid) do
         scatter_to_grid(initial_thickness_vec, layout.js, layout.is, _grid_shape(layout))
     end : Matrix{Float64}(undef, 0, 0)
-    nc_path = isempty(options.out_nc) ? joinpath(options.out_dir, "$(options.name)_final_state.nc") : options.out_nc
+    nc_path = isempty(options.netcdf_path) ? joinpath(options.output_dir, "$(options.name)_final_state.nc") : options.netcdf_path
     writer = options.write_netcdf ? time_block!(timings, :init_netcdf) do
-        init_equilibrium_netcdf(
+        init_case_netcdf(
             nc_path,
             options,
             forcing.time_values,
@@ -1901,7 +1998,7 @@ function run_equilibrium!(
                 Float64[]
             end
             history_local = NamedTuple[]
-            status_local = :max_cycles
+            status_local = :cycles
             monthly_sum_thickness_local = if gpu_netcdf_diagnostics && need_monthly_outputs
                 CUDA.zeros(Float64, nmonth_total, ncol)
             elseif need_monthly_outputs
@@ -1981,7 +2078,7 @@ function run_equilibrium!(
 
     simulation_wall_t0 = time_ns()
     ntime = length(forcing.time_values)
-    for cycle in 1:options.max_cycles
+    for cycle in 1:options.cycles
         for t in 1:ntime
             month_idx = need_monthly_outputs ? (cycle - 1) * nmonth_per_cycle + step_month[t] : 0
             if options.backend == :gpu
@@ -2127,7 +2224,7 @@ function run_equilibrium!(
                 summarize_cycle_columns!(final, domain; backend=:threads)
             end
         end
-        if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
+        if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
             record = if options.backend == :gpu
                 time_block!(timings, :cycle_metrics; synchronize=gpu_stage_sync) do
                     record_local = make_cycle_record_and_deltas!(
@@ -2202,8 +2299,8 @@ function run_equilibrium!(
         prev, final = final, prev
     end
     simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
-    final_state = if status == :max_cycles
-        history[end].cycle == options.max_cycles ? final : prev
+    final_state = if status == :cycles
+        history[end].cycle == options.cycles ? final : prev
     else
         final
     end
@@ -2342,19 +2439,19 @@ function run_equilibrium!(
     summary_path = ""
     history_csv_path = ""
     if options.write_outputs
-        mkpath(options.out_dir)
-        summary_path = joinpath(options.out_dir, "$(options.name)_summary.txt")
-        history_csv_path = joinpath(options.out_dir, "$(options.name)_history.csv")
+        mkpath(options.output_dir)
+        summary_path = joinpath(options.output_dir, "$(options.name)_summary.txt")
+        history_csv_path = joinpath(options.output_dir, "$(options.name)_history.csv")
         time_block!(timings, :write_summary_text) do
-            write_equilibrium_summary(summary_path, options, forcing.time_values, ncol, history, status, timings)
+            write_case_summary(summary_path, options, forcing.time_values, ncol, history, status, timings)
         end
         time_block!(timings, :write_history_csv) do
-            write_equilibrium_history_csv(history_csv_path, history)
+            write_case_history_csv(history_csv_path, history)
         end
     end
     if options.write_netcdf
         time_block!(timings, :write_netcdf) do
-            finalize_equilibrium_netcdf!(
+            finalize_case_netcdf!(
                 writer,
                 final_thickness,
                 final_wet_mass,
@@ -2397,5 +2494,5 @@ function run_equilibrium!(
         summary_path=summary_path,
         history_csv_path=history_csv_path,
     )
-    return EquilibriumResult(history, status, timings, simulation_wall_sec, run_wall_sec, options.write_netcdf ? nc_path : "", summary_path, history_csv_path, domain, options)
+    return RunResult(history, status, timings, simulation_wall_sec, run_wall_sec, options.write_netcdf ? nc_path : "", summary_path, history_csv_path, domain, options)
 end

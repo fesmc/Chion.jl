@@ -132,9 +132,6 @@ function print_spinup_help()
     println("  --mask-threshold=VALUE       Minimum MSK value for GrIS cells (default: 50)")
     println("  --ntot=N                     Chion maximum active layers (default: 80)")
     println("  --max-cycles=N               Maximum forcing-cycle repeats (default: 10)")
-    println("  --tol-thickness=VALUE        Mean abs cycle delta-thickness tolerance in m (default: 1e-3)")
-    println("  --tol-swe=VALUE              Mean abs cycle delta-SWE tolerance in mmWE (default: 0.1)")
-    println("  --drift-window=N             Stop early when last N cycles show persistent drift (default: 3)")
     println("  --backend=threads|gpu        Execution backend (default: threads)")
     println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 before forcing Chion")
     println("  --help                       Show this message")
@@ -161,9 +158,6 @@ function parse_spinup_config(args::Vector{String})
         mask_threshold = parse(Float64, arg_value(args, "mask-threshold", "50.0")),
         ntot = parse(Int, arg_value(args, "ntot", "20")),
         max_cycles = parse(Int, arg_value(args, "max-cycles", "10")),
-        tol_thickness = parse(Float64, arg_value(args, "tol-thickness", "1.0e-3")),
-        tol_swe = parse(Float64, arg_value(args, "tol-swe", "0.1")),
-        drift_window = parse(Int, arg_value(args, "drift-window", "3")),
         backend = normalize_backend(arg_value(args, "backend", "threads")),
         turbulent_flux_sign = has_flag(args, "flip-turbulent-fluxes") ? -1.0 : 1.0,
     )
@@ -561,23 +555,6 @@ function domain_max_abs_vector(v::Vector{Float64})
     return hasval ? vmax : NaN
 end
 
-function persistent_drift(history::Vector{NamedTuple}, window::Int, tol_thickness::Float64, tol_swe::Float64)
-    length(history) >= window || return false
-    recent = history[(end - window + 1):end]
-    dth = [rec.mean_signed_delta_thickness for rec in recent]
-    dswe = [rec.mean_signed_delta_wet_mass for rec in recent]
-
-    same_sign(values) = all(v -> v > 0.0, values) || all(v -> v < 0.0, values)
-    nearly_constant(values) = abs(values[end]) >= 0.8 * abs(values[1])
-
-    return same_sign(dth) &&
-           same_sign(dswe) &&
-           minimum(abs.(dth)) > tol_thickness &&
-           minimum(abs.(dswe)) > tol_swe &&
-           nearly_constant(dth) &&
-           nearly_constant(dswe)
-end
-
 function make_cycle_record(
     cycle::Int,
     thickness,
@@ -691,21 +668,6 @@ function run_spinup_cycles_threads_no_netcdf!(
             println(cycle_log_line(record))
         end
 
-        stop_status = time_block!(timings, :cycle_convergence_check) do
-            if record.mean_abs_delta_thickness <= config.tol_thickness &&
-               record.mean_abs_delta_wet_mass <= config.tol_swe
-                :converged
-            elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
-                :drifting
-            else
-                :continue
-            end
-        end
-        if stop_status !== :continue
-            status = stop_status
-            break
-        end
-
         prev, final = final, prev
     end
 
@@ -781,8 +743,6 @@ function write_spinup_summary(
         println(io, "NetCDF output      : ", config.write_netcdf ? "enabled" : "disabled (--no-nc)")
         println(io, "Status             : ", string(status))
         println(io, "Cycles completed   : ", length(history))
-        println(io, @sprintf("Tol thickness (m)  : %.6g", config.tol_thickness))
-        println(io, @sprintf("Tol SWE (mmWE)     : %.6g", config.tol_swe))
         println(io)
         println(io, "Final domain means over valid GrIS cells")
         println(io, @sprintf("Thickness (m)              : %.6f", last_record.mean_thickness))
@@ -800,15 +760,12 @@ function write_spinup_summary(
         println(io, @sprintf("Mean signed dBase (mmWE)   : %.6f", last_record.mean_signed_delta_base_mass))
         println(io, @sprintf("Mean abs dBase (mmWE)      : %.6f", last_record.mean_abs_delta_base_mass))
         println(io, @sprintf("Max abs dBase (mmWE)       : %.6f", last_record.max_abs_delta_base_mass))
-        if status == :drifting
+        if status == :max_cycles
             println(io)
-            println(io, "Interpretation     : Forcing cycle shows persistent drift, so a snow equilibrium was not reached.")
-        elseif status == :max_cycles
-            println(io)
-            println(io, "Interpretation     : Max cycles reached before convergence.")
+            println(io, "Interpretation     : Requested cycles completed.")
         else
             println(io)
-            println(io, "Interpretation     : Convergence thresholds were met.")
+            println(io, "Interpretation     : Run completed.")
         end
         println(io)
         print_timing_summary(io, timings)
@@ -829,12 +786,10 @@ function render_spinup_history_plot(out_path::AbstractString, history::Vector{Na
     p2 = P.plot(cycles, mean_wet_mass; lw=3, marker=:circle, color=:forestgreen, xlabel="Cycle", ylabel="mmWE", title="Mean snow wet mass", framestyle=:box)
     p3 = P.plot(cycles, mean_base_mass; lw=3, marker=:circle, color=:purple, xlabel="Cycle", ylabel="mmWE", title="Mean firn-to-ice mass", framestyle=:box)
     p4 = P.plot(cycles, mean_abs_dth; lw=3, marker=:circle, color=:firebrick, xlabel="Cycle", ylabel="m", title="Mean abs cycle dThickness", framestyle=:box)
-    P.hline!(p4, [config.tol_thickness]; color=:black, linestyle=:dash, label="tolerance")
     p5 = P.plot(cycles, mean_abs_dswe; lw=3, marker=:circle, color=:darkorange, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dSWE", framestyle=:box)
-    P.hline!(p5, [config.tol_swe]; color=:black, linestyle=:dash, label="tolerance")
     p6 = P.plot(cycles, mean_abs_dbase; lw=3, marker=:circle, color=:indigo, xlabel="Cycle", ylabel="mmWE", title="Mean abs cycle dBase", framestyle=:box)
 
-    fig = P.plot(p1, p2, p3, p4, p5, p6; layout=(2, 3), size=(1700, 950), plot_title="Chion GrIS spin-up convergence history")
+    fig = P.plot(p1, p2, p3, p4, p5, p6; layout=(2, 3), size=(1700, 950), plot_title="Chion GrIS spin-up cycle history")
     mkpath(dirname(out_path))
     P.savefig(fig, out_path)
 end
@@ -1927,21 +1882,6 @@ function main(args::Vector{String})
 
         time_block!(timings, :cycle_logging) do
             println(cycle_log_line(record))
-        end
-
-        stop_status = time_block!(timings, :cycle_convergence_check) do
-            if record.mean_abs_delta_thickness <= config.tol_thickness &&
-               record.mean_abs_delta_wet_mass <= config.tol_swe
-                :converged
-            elseif persistent_drift(history, config.drift_window, config.tol_thickness, config.tol_swe)
-                :drifting
-            else
-                :continue
-            end
-        end
-        if stop_status !== :continue
-            status = stop_status
-            break
         end
 
         prev, final = final, prev

@@ -3,37 +3,37 @@ using HDF5
 using Base.Threads: @threads
 
 """
-    AbstractForcingSource
+    AbstractCaseSource
 
-Extension point for case/forcing loaders used by [`load_forcing`](@ref) and
+Extension point for case/forcing loaders used by [`load_case`](@ref) and
 [`build_case`](@ref). Add a new forcing format by defining a subtype and a
-matching `load_forcing(::YourSource; physics, ntot)` method that returns a
-[`SnowpackCaseData`](@ref).
+matching `load_case(::YourSource; physics, ntot)` method that returns a
+[`CaseDefinition`](@ref).
 """
-abstract type AbstractForcingSource end
+abstract type AbstractCaseSource end
 
 """
-    SnowpackCaseData
+    CaseDefinition
 
-Reusable, execution-independent case inputs: an initial domain, equilibrium
+Reusable, execution-independent case inputs: an initial domain, case
 forcing, an optional grid layout, and small metadata/notes for user-facing
-workflows. Build this once with [`load_forcing`](@ref), then create CPU and GPU
+workflows. Build this once with [`load_case`](@ref), then create CPU and GPU
 cases from the same data with [`build_case`](@ref).
 """
-struct SnowpackCaseData
+struct CaseDefinition
     domain::SM.SnowpackDomain
-    forcing::EquilibriumForcing
-    layout::Union{Nothing, EquilibriumGridLayout}
-    forcing_label::String
+    forcing::ForcingData
+    layout::Union{Nothing, GridLayout}
+    input_label::String
     notes::Vector{String}
     metadata::NamedTuple
 end
 
-function SnowpackCaseData(
+function CaseDefinition(
     domain::SM.SnowpackDomain,
-    forcing::EquilibriumForcing;
-    layout::Union{Nothing, EquilibriumGridLayout}=nothing,
-    forcing_label::AbstractString="",
+    forcing::ForcingData;
+    layout::Union{Nothing, GridLayout}=nothing,
+    input_label::AbstractString="",
     notes::AbstractVector{<:AbstractString}=String[],
     metadata::NamedTuple=(;),
 )
@@ -42,11 +42,11 @@ function SnowpackCaseData(
         error("Forcing column count ($(size(forcing.air_temperature, 1))) must match the domain column count ($ncol).")
     !isnothing(layout) && length(layout.js) != ncol &&
         error("Grid-layout point count ($(length(layout.js))) must match the domain column count ($ncol).")
-    return SnowpackCaseData(
+    return CaseDefinition(
         domain,
         forcing,
         layout,
-        String(forcing_label),
+        String(input_label),
         String[String(note) for note in notes],
         metadata,
     )
@@ -56,33 +56,32 @@ end
     SnowpackCase
 
 High-level runnable case configuration. It keeps parsed inputs separate from run
-options so the same case data can be reused across CPU and GPU runs.
+configuration so the same case definition can be reused across CPU and GPU runs.
 """
 struct SnowpackCase
     name::String
-    data::SnowpackCaseData
-    options::EquilibriumRunOptions
-    requested_backend::Symbol
+    definition::CaseDefinition
+    run::RunConfig
 end
 
-function Base.show(io::IO, data::SnowpackCaseData)
+function Base.show(io::IO, data::CaseDefinition)
     ncol = SM.column_count(data.domain)
     ntime = length(data.forcing.time_values)
     layout_state = isnothing(data.layout) ? "none" : "grid"
-    print(io, "SnowpackCaseData(ncol=$(ncol), ntime=$(ntime), layout=$(layout_state))")
+    print(io, "CaseDefinition(ncol=$(ncol), ntime=$(ntime), layout=$(layout_state))")
 end
 
 function Base.show(io::IO, case::SnowpackCase)
-    ncol = SM.column_count(case.data.domain)
-    ntime = length(case.data.forcing.time_values)
-    layout_state = isnothing(case.data.layout) ? "none" : "grid"
+    ncol = SM.column_count(case.definition.domain)
+    ntime = length(case.definition.forcing.time_values)
+    layout_state = isnothing(case.definition.layout) ? "none" : "grid"
     print(
         io,
-        "SnowpackCase(name=$(repr(case.name)), backend=$(case.requested_backend), ncol=$(ncol), ntime=$(ntime), layout=$(layout_state))",
+        "SnowpackCase(name=$(repr(case.name)), backend=$(case.run.backend), ncol=$(ncol), ntime=$(ntime), layout=$(layout_state))",
     )
 end
 
-struct SyntheticForcingSource <: AbstractForcingSource
+struct SyntheticCaseSource <: AbstractCaseSource
     variant::Symbol
     ntime::Int
     nx::Int
@@ -90,13 +89,13 @@ struct SyntheticForcingSource <: AbstractForcingSource
 end
 
 """
-    synthetic_forcing(; variant=:multi_column, ntime=12, nx, ny)
+    SyntheticCaseSource(; variant=:multi_column, ntime=12, nx, ny)
 
 Create a small synthetic forcing source for examples, smoke tests, and notebook
 workflows. `variant` currently supports `:single_column` and `:multi_column`.
 For multi-column cases, `nx` and `ny` control the grid size.
 """
-function synthetic_forcing(;
+function SyntheticCaseSource(;
     variant::Symbol=:multi_column,
     ntime::Integer=12,
     nx::Union{Nothing, Integer}=nothing,
@@ -112,28 +111,28 @@ function synthetic_forcing(;
     if variant == :single_column && (resolved_nx != 1 || resolved_ny != 1)
         error("`variant=:single_column` requires `nx=1` and `ny=1`.")
     end
-    return SyntheticForcingSource(variant, Int(ntime), resolved_nx, resolved_ny)
+    return SyntheticCaseSource(variant, Int(ntime), resolved_nx, resolved_ny)
 end
 
-struct MARForcingSource <: AbstractForcingSource
+struct MARCaseSource <: AbstractCaseSource
     path::String
     mask_threshold::Float64
     turbulent_flux_sign::Float64
 end
 
 """
-    mar_forcing(path; mask_threshold=50.0, turbulent_flux_sign=1.0)
+    MARCaseSource(path; mask_threshold=50.0, turbulent_flux_sign=1.0)
 
 Create a forcing-source descriptor for MAR NetCDF/HDF5 forcing. Use it with
-[`load_forcing`](@ref) or pass it directly to [`build_case`](@ref).
+[`load_case`](@ref) or pass it directly to [`build_case`](@ref).
 """
-function mar_forcing(
+function MARCaseSource(
     path::AbstractString;
     mask_threshold::Real=50.0,
     turbulent_flux_sign::Real=1.0,
 )
     isempty(strip(path)) && error("`path` must point to a MAR NetCDF/HDF5 file.")
-    return MARForcingSource(
+    return MARCaseSource(
         abspath(String(path)),
         Float64(mask_threshold),
         Float64(turbulent_flux_sign),
@@ -143,26 +142,19 @@ end
 @inline _case_symbol(value::Symbol) = value
 @inline _case_symbol(value) = Symbol(lowercase(strip(String(value))))
 
-function _build_case_physics(
-    physics::Union{Nothing, SM.SnowpackPhysicalConstants{Float64}};
-    albedo_scheme=:dynamic,
+function physics(;
+    albedo=:dynamic,
     densification=:bessi,
     fresh_snow_density=:constant,
+    kwargs...,
 )
-    !isnothing(physics) && return physics
     return SM.SnowpackPhysicalConstants(
         Float64;
-        albedo_scheme=_case_symbol(albedo_scheme),
+        albedo_scheme=_case_symbol(albedo),
         low_density_densification=_case_symbol(densification),
         fresh_snow_density_scheme=_case_symbol(fresh_snow_density),
+        kwargs...,
     )
-end
-
-function _normalize_requested_backend(backend)
-    value = _case_symbol(backend)
-    value in (:cpu, :threads, :gpu) ||
-        error("Unsupported backend '$backend'. Use `:cpu`, `:threads`, or `:gpu`.")
-    return value
 end
 
 function _case_slug(name::AbstractString)
@@ -171,7 +163,66 @@ function _case_slug(name::AbstractString)
     return isempty(slug) ? "snowpack_case" : slug
 end
 
-_default_case_out_dir(name::AbstractString) = joinpath(pwd(), "equilibrium_output", _case_slug(name))
+_default_case_output_dir(name::AbstractString) = joinpath(pwd(), "case_output", _case_slug(name))
+
+function _regular_grid_layout(nx::Integer, ny::Integer)
+    Int(nx) > 0 || error("`nx` must be positive.")
+    Int(ny) > 0 || error("`ny` must be positive.")
+    x = Float64[i - 1 for i in 1:Int(nx)]
+    y = Float64[j - 1 for j in 1:Int(ny)]
+    ncol = Int(nx) * Int(ny)
+    js = Vector{Int}(undef, ncol)
+    is = Vector{Int}(undef, ncol)
+    idx = 1
+    @inbounds for j in 1:Int(ny), i in 1:Int(nx)
+        js[idx] = j
+        is[idx] = i
+        idx += 1
+    end
+    return GridLayout(x, y, js, is, ones(Float64, Int(ny), Int(nx)))
+end
+
+function _expand_column_vector(values, ncol::Int, name::AbstractString)
+    if values isa Number
+        return fill(Float64(values), ncol)
+    end
+    data = collect(values)
+    if ndims(data) == 1
+        length(data) == ncol || error("`$name` must be a scalar or a vector with length $ncol.")
+        return Float64.(data)
+    end
+    error("`$name` must be a scalar or a vector with length $ncol.")
+end
+
+function _expand_numeric_timeseries(field, ncol::Int, ntime::Int, name::AbstractString)
+    if field isa Number
+        return fill(Float64(field), ncol, ntime)
+    end
+    data = collect(field)
+    if ndims(data) == 1
+        length(data) == ntime || error("`$name` must have length $ntime.")
+        return repeat(reshape(Float64.(data), 1, ntime), ncol, 1)
+    elseif ndims(data) == 2
+        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
+        return Matrix{Float64}(data)
+    end
+    error("`$name` must be a scalar, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
+end
+
+function _expand_bool_timeseries(field, ncol::Int, ntime::Int, name::AbstractString)
+    if field isa Bool
+        return fill(field, ncol, ntime)
+    end
+    data = collect(field)
+    if ndims(data) == 1
+        length(data) == ntime || error("`$name` must have length $ntime.")
+        return repeat(reshape(Bool.(data), 1, ntime), ncol, 1)
+    elseif ndims(data) == 2
+        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
+        return Bool.(data)
+    end
+    error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
+end
 
 function _synthetic_layout(variant::Symbol, nx::Int, ny::Int)
     if variant == :single_column
@@ -232,14 +283,14 @@ function _synthetic_layout(variant::Symbol, nx::Int, ny::Int)
 end
 
 """
-    load_forcing(source::AbstractForcingSource; physics=SnowpackPhysicalConstants(), ntot=20)
+    load_case(source::AbstractCaseSource; physics=SnowpackPhysicalConstants(), ntot=20)
 
-Parse or synthesize forcing inputs and return reusable [`SnowpackCaseData`](@ref).
+Parse or synthesize forcing inputs and return reusable [`CaseDefinition`](@ref).
 This step is intentionally separate from [`run_case`](@ref) so users can inspect
 or reuse the parsed inputs before execution.
 """
-function load_forcing(
-    source::SyntheticForcingSource;
+function load_case(
+    source::SyntheticCaseSource;
     physics::SM.SnowpackPhysicalConstants{Float64}=SM.SnowpackPhysicalConstants(),
     ntot::Integer=5,
 )
@@ -311,7 +362,7 @@ function load_forcing(
         wind_speed[col, t] = max(2.0, 4.5 + 1.0 * xfrac - 0.7 * yfrac + 0.6 * wave)
     end
 
-    forcing = EquilibriumForcing(
+    forcing = ForcingData(
         time_values=time_values,
         dt_days=dt_days,
         air_temperature=air_temperature,
@@ -326,7 +377,7 @@ function load_forcing(
         q_lh=q_lh,
         has_q_lh=has_q_lh,
     )
-    layout = EquilibriumGridLayout(
+    layout = GridLayout(
         layout_data.x,
         layout_data.y,
         layout_data.js,
@@ -344,16 +395,16 @@ function load_forcing(
         ntime=ntime,
         ntot=Int(ntot),
     )
-    return SnowpackCaseData(
+    return CaseDefinition(
         SnowpackDomain(state),
         forcing;
         layout=layout,
-        forcing_label=layout_data.label,
+        input_label=layout_data.label,
         metadata=metadata,
     )
 end
 
-function load_forcing(
+function load_case(
     path::AbstractString;
     format=:mar,
     physics::SM.SnowpackPhysicalConstants{Float64}=SM.SnowpackPhysicalConstants(),
@@ -362,98 +413,234 @@ function load_forcing(
 )
     format_symbol = _case_symbol(format)
     if format_symbol == :mar
-        return load_forcing(mar_forcing(path; kwargs...); physics=physics, ntot=ntot)
+        return load_case(MARCaseSource(path; kwargs...); physics=physics, ntot=ntot)
     end
     error(
         "Unsupported forcing format '$format'. " *
         "Available formats: `:mar`. " *
-        "Add new formats by defining `load_forcing(::YourSource; physics, ntot)`.",
+        "Add new formats by defining `load_case(::YourSource; physics, ntot)`.",
     )
 end
 
-load_forcing(data::SnowpackCaseData; kwargs...) = data
+load_case(data::CaseDefinition; kwargs...) = data
 
 """
-    build_case(data::SnowpackCaseData; ...)
-    build_case(; name, forcing, ...)
+    prescribed_case(; ...)
 
-Create a user-facing runnable case. Pass either preloaded case data from
-[`load_forcing`](@ref) or a forcing source/file directly. Use
-`run_forcing_once=true` as a convenience shortcut for a single pass through the
-provided forcing vectors.
+Create a case definition directly from user-supplied forcing arrays and simple
+initial-condition keywords. High-level forcing inputs use Celsius and
+mmWE/day.
+"""
+function prescribed_case(;
+    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    ntot::Integer=5,
+    nx::Integer=1,
+    ny::Integer=1,
+    dt_days,
+    air_temperature_c,
+    snowfall_mm_day,
+    rainfall_mm_day,
+    shortwave_down,
+    wind_speed=5.0,
+    q_lw_down=nothing,
+    has_q_lw_down=nothing,
+    q_sh=nothing,
+    has_q_sh=nothing,
+    q_lh=nothing,
+    has_q_lh=nothing,
+    time_values=nothing,
+    initial_surface_mass=250.0,
+    initial_density=320.0,
+    initial_temperature_c=-12.0,
+    initial_albedo=physics.alpha_dry,
+    input_label::AbstractString="prescribed_forcing",
+)
+    Int(ntot) > 0 || error("`ntot` must be positive.")
+    dt_days_v = Float64.(collect(dt_days))
+    isempty(dt_days_v) && error("`dt_days` must not be empty.")
+    all(>(0.0), dt_days_v) || error("All `dt_days` entries must be positive.")
+    ntime = length(dt_days_v)
+    layout = _regular_grid_layout(nx, ny)
+    ncol = length(layout.js)
+
+    forcing = ForcingData(
+        dt_days=dt_days_v,
+        air_temperature_c=_expand_numeric_timeseries(air_temperature_c, ncol, ntime, "air_temperature_c"),
+        snowfall_mm_day=_expand_numeric_timeseries(snowfall_mm_day, ncol, ntime, "snowfall_mm_day"),
+        rainfall_mm_day=_expand_numeric_timeseries(rainfall_mm_day, ncol, ntime, "rainfall_mm_day"),
+        shortwave_down=_expand_numeric_timeseries(shortwave_down, ncol, ntime, "shortwave_down"),
+        wind_speed=_expand_numeric_timeseries(wind_speed, ncol, ntime, "wind_speed"),
+        q_lw_down=isnothing(q_lw_down) ? nothing : _expand_numeric_timeseries(q_lw_down, ncol, ntime, "q_lw_down"),
+        has_q_lw_down=isnothing(has_q_lw_down) ? nothing : _expand_bool_timeseries(has_q_lw_down, ncol, ntime, "has_q_lw_down"),
+        q_sh=isnothing(q_sh) ? nothing : _expand_numeric_timeseries(q_sh, ncol, ntime, "q_sh"),
+        has_q_sh=isnothing(has_q_sh) ? nothing : _expand_bool_timeseries(has_q_sh, ncol, ntime, "has_q_sh"),
+        q_lh=isnothing(q_lh) ? nothing : _expand_numeric_timeseries(q_lh, ncol, ntime, "q_lh"),
+        has_q_lh=isnothing(has_q_lh) ? nothing : _expand_bool_timeseries(has_q_lh, ncol, ntime, "has_q_lh"),
+        time_values=time_values,
+    )
+
+    surface_mass = _expand_column_vector(initial_surface_mass, ncol, "initial_surface_mass")
+    surface_density = _expand_column_vector(initial_density, ncol, "initial_density")
+    surface_temperature_c = _expand_column_vector(initial_temperature_c, ncol, "initial_temperature_c")
+    surface_albedo = _expand_column_vector(initial_albedo, ncol, "initial_albedo")
+
+    N = Int[m > 0.0 ? 1 : 0 for m in surface_mass]
+    mass = zeros(Float64, Int(ntot), ncol)
+    mass_w = zeros(Float64, Int(ntot), ncol)
+    density = zeros(Float64, Int(ntot), ncol)
+    temperature = fill(physics.T0, Int(ntot), ncol)
+    Tsrf = physics.T0 .+ surface_temperature_c
+    snow_cover = Float64.(N .> 0)
+
+    @inbounds for col in 1:ncol
+        if N[col] > 0
+            mass[1, col] = surface_mass[col]
+            density[1, col] = surface_density[col]
+            temperature[1, col] = physics.T0 + surface_temperature_c[col]
+        end
+    end
+
+    state = SnowpackStateFields(
+        N,
+        mass,
+        mass_w,
+        density,
+        temperature;
+        Tsrf=Tsrf,
+        snow_cover=snow_cover,
+        albedo_dynamic=surface_albedo,
+        physics=physics,
+    )
+    metadata = (
+        format=:prescribed,
+        nx=Int(nx),
+        ny=Int(ny),
+        grid_shape=(Int(ny), Int(nx)),
+        ncol=ncol,
+        ntime=ntime,
+        ntot=Int(ntot),
+    )
+    return CaseDefinition(
+        SnowpackDomain(state),
+        forcing;
+        layout=layout,
+        input_label=String(input_label),
+        metadata=metadata,
+    )
+end
+
+synthetic_case(;
+    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    ntot::Integer=5,
+    kwargs...,
+) = load_case(SyntheticCaseSource(; kwargs...); physics=physics, ntot=ntot)
+
+mar_case(
+    path::AbstractString;
+    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    ntot::Integer=20,
+    kwargs...,
+) = load_case(MARCaseSource(path; kwargs...); physics=physics, ntot=ntot)
+
+function _resolve_build_case_value(provided, fallback)
+    return isnothing(provided) ? fallback : provided
+end
+
+function _resolve_run_config(
+    definition::CaseDefinition;
+    name::Union{Nothing, AbstractString}=nothing,
+    run::Union{Nothing, RunConfig}=nothing,
+    backend=nothing,
+    input_label::Union{Nothing, AbstractString}=nothing,
+    output_dir::Union{Nothing, AbstractString}=nothing,
+    netcdf_path::Union{Nothing, AbstractString}=nothing,
+    write_outputs::Union{Nothing, Bool}=nothing,
+    write_netcdf::Union{Nothing, Bool}=nothing,
+    netcdf_variables=nothing,
+    cycles::Union{Nothing, Integer}=nothing,
+    history_stride::Union{Nothing, Integer}=nothing,
+)
+    base = isnothing(run) ? RunConfig() : run
+    resolved_name = String(_resolve_build_case_value(name, base.name))
+    resolved_output_dir = if !isnothing(output_dir)
+        String(output_dir)
+    elseif isempty(base.output_dir)
+        _default_case_output_dir(resolved_name)
+    else
+        base.output_dir
+    end
+    return RunConfig(
+        name=resolved_name,
+        input_label=String(_resolve_build_case_value(input_label, isempty(base.input_label) ? definition.input_label : base.input_label)),
+        output_dir=resolved_output_dir,
+        netcdf_path=String(_resolve_build_case_value(netcdf_path, base.netcdf_path)),
+        write_outputs=Bool(_resolve_build_case_value(write_outputs, base.write_outputs)),
+        write_netcdf=Bool(_resolve_build_case_value(write_netcdf, base.write_netcdf)),
+        netcdf_variables=_resolve_build_case_value(netcdf_variables, base.netcdf_variables),
+        cycles=Int(_resolve_build_case_value(cycles, base.cycles)),
+        history_stride=Int(_resolve_build_case_value(history_stride, base.history_stride)),
+        backend=_resolve_build_case_value(backend, base.backend),
+    )
+end
+
+"""
+    build_case(definition::CaseDefinition; run=RunConfig(), ...)
+
+Create a user-facing runnable case from a reusable [`CaseDefinition`](@ref).
+Pass a [`RunConfig`](@ref) with the desired backend/output settings, and use
+keyword overrides only when you need to tweak a small part of that config.
 """
 function build_case(
-    data::SnowpackCaseData;
-    name::AbstractString="snowpack_case",
-    backend=:cpu,
-    forcing_label::AbstractString=data.forcing_label,
-    out_dir::Union{Nothing, AbstractString}=nothing,
-    out_nc::AbstractString="",
-    write_outputs::Bool=true,
-    write_netcdf::Bool=false,
-    netcdf_variables="all",
-    max_cycles::Integer=10,
-    cycle_metrics_stride::Integer=1,
-    run_forcing_once::Bool=false,
+    definition::CaseDefinition;
+    name::Union{Nothing, AbstractString}=nothing,
+    run::Union{Nothing, RunConfig}=nothing,
+    backend=nothing,
+    input_label::Union{Nothing, AbstractString}=nothing,
+    output_dir::Union{Nothing, AbstractString}=nothing,
+    netcdf_path::Union{Nothing, AbstractString}=nothing,
+    write_outputs::Union{Nothing, Bool}=nothing,
+    write_netcdf::Union{Nothing, Bool}=nothing,
+    netcdf_variables=nothing,
+    cycles::Union{Nothing, Integer}=nothing,
+    history_stride::Union{Nothing, Integer}=nothing,
 )
-    requested_backend = _normalize_requested_backend(backend)
-    write_netcdf && isnothing(data.layout) &&
-        error("`write_netcdf=true` requires a grid layout, but this case data has `layout=nothing`.")
-    resolved_out_dir = isnothing(out_dir) ? _default_case_out_dir(name) : String(out_dir)
-    resolved_max_cycles = run_forcing_once ? 1 : Int(max_cycles)
-    options = EquilibriumRunOptions(
-        name=String(name),
-        forcing_label=isempty(forcing_label) ? data.forcing_label : String(forcing_label),
-        out_dir=resolved_out_dir,
-        out_nc=String(out_nc),
+    run_config = _resolve_run_config(
+        definition;
+        name=name,
+        run=run,
+        backend=backend,
+        input_label=input_label,
+        output_dir=output_dir,
+        netcdf_path=netcdf_path,
         write_outputs=write_outputs,
         write_netcdf=write_netcdf,
         netcdf_variables=netcdf_variables,
-        max_cycles=resolved_max_cycles,
-        cycle_metrics_stride=Int(cycle_metrics_stride),
-        backend=requested_backend,
+        cycles=cycles,
+        history_stride=history_stride,
     )
-    return SnowpackCase(String(name), data, options, requested_backend)
+    run_config.write_netcdf && isnothing(definition.layout) &&
+        error("`write_netcdf=true` requires a grid layout, but this case definition has `layout=nothing`.")
+    return SnowpackCase(run_config.name, definition, run_config)
 end
 
 function build_case(
     domain::SM.SnowpackDomain,
-    forcing::EquilibriumForcing;
-    layout::Union{Nothing, EquilibriumGridLayout}=nothing,
-    forcing_label::AbstractString="",
+    forcing::ForcingData;
+    layout::Union{Nothing, GridLayout}=nothing,
+    input_label::AbstractString="",
     notes::AbstractVector{<:AbstractString}=String[],
     metadata::NamedTuple=(;),
     kwargs...,
 )
-    data = SnowpackCaseData(
+    definition = CaseDefinition(
         domain,
         forcing;
         layout=layout,
-        forcing_label=forcing_label,
+        input_label=input_label,
         notes=notes,
         metadata=metadata,
     )
-    return build_case(data; kwargs...)
-end
-
-function build_case(;
-    name::AbstractString="snowpack_case",
-    forcing,
-    physics::Union{Nothing, SM.SnowpackPhysicalConstants{Float64}}=nothing,
-    ntot::Integer=20,
-    albedo_scheme=:dynamic,
-    densification=:bessi,
-    fresh_snow_density=:constant,
-    kwargs...,
-)
-    physics_object = _build_case_physics(
-        physics;
-        albedo_scheme=albedo_scheme,
-        densification=densification,
-        fresh_snow_density=fresh_snow_density,
-    )
-    data = load_forcing(forcing; physics=physics_object, ntot=ntot)
-    return build_case(data; name=name, kwargs...)
+    return build_case(definition; kwargs...)
 end
 
 """
@@ -470,15 +657,15 @@ function run_case(
     timings::TimingStats=TimingStats(),
     run_wall_t0::Integer=time_ns(),
 )
-    for note in case.data.notes
+    for note in case.definition.notes
         println(io, note)
     end
-    domain = copy_domain ? deepcopy(case.data.domain) : case.data.domain
-    return run_equilibrium!(
+    domain = copy_domain ? deepcopy(case.definition.domain) : case.definition.domain
+    return execute_case!(
         domain,
-        case.data.forcing;
-        layout=case.data.layout,
-        options=case.options,
+        case.definition.forcing;
+        layout=case.definition.layout,
+        options=case.run,
         io=io,
         timings=timings,
         run_wall_t0=run_wall_t0,
@@ -782,8 +969,8 @@ function _mar_read_first_available_timeseries_3d(
     return nothing
 end
 
-function load_forcing(
-    source::MARForcingSource;
+function load_case(
+    source::MARCaseSource;
     physics::SM.SnowpackPhysicalConstants{Float64}=SM.SnowpackPhysicalConstants(),
     ntot::Integer=20,
 )
@@ -896,7 +1083,7 @@ function load_forcing(
         end
     end
 
-    forcing = EquilibriumForcing(
+    forcing = ForcingData(
         time_values=time_values,
         dt_days=dt_days,
         air_temperature=tair_k,
@@ -911,7 +1098,7 @@ function load_forcing(
         q_lh=q_lh,
         has_q_lh=has_q_lh,
     )
-    layout = EquilibriumGridLayout(x, y, js, is, mask)
+    layout = GridLayout(x, y, js, is, mask)
     metadata = (
         format=:mar,
         path=source.path,
@@ -921,11 +1108,11 @@ function load_forcing(
         ntime=ntime,
         ntot=Int(ntot),
     )
-    return SnowpackCaseData(
+    return CaseDefinition(
         domain,
         forcing;
         layout=layout,
-        forcing_label=source.path,
+        input_label=source.path,
         notes=[wind_note],
         metadata=metadata,
     )
