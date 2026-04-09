@@ -25,6 +25,7 @@ begin
 	using CUDA
 	using Chion
 	using Statistics
+	using Plots
 	include(joinpath(PROJECT_ROOT, "examples", "shared", "notebook_helpers.jl"))
 	using .ChionNotebookHelpers
 end
@@ -38,14 +39,15 @@ This notebook shows the same Chion workflow as the CPU notebook, but with
 
 We do the following steps:
 1. activate the project
+   by adding the repo to `LOAD_PATH`
 2. define `physics`
 3. define forcing vectors
-4. build case data from those vectors
-5. `build_case(...; backend=:gpu, run_forcing_once=true)`
+4. build a `CaseDefinition` from those vectors
+5. `build_case(...; run=RunConfig(..., backend=:gpu, cycles=1))`
 6. `run_case(...)`
 7. move results back to host only when you need host-side inspection
 
-The preferred path is the high-level equilibrium API. A later section shows the lower-level device transfer steps for manual batch stepping.
+The preferred path is the high-level case API. A later section shows the lower-level device transfer steps for manual batch stepping.
 """
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82005
@@ -60,6 +62,7 @@ Make sure you have the appropiate modules installed or loaded.
   - `module load netcdf-c`
 - Request a GPU allocation before opening Pluto.
 - Only set `NETCDF_LIB` if you enable NetCDF output.
+- This notebook prepends `~/.chion-pluto/notebook-runtime/depot` to `DEPOT_PATH` automatically.
 
 """
 
@@ -87,8 +90,8 @@ Let's define the physics options, i.e., the albedo scheme, the high density dens
 """
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82010
-physics = build_physics(
-	albedo_scheme=:dynamic,
+physics = Chion.physics(
+	albedo=:dynamic,
 	densification=:bessi,
 	fresh_snow_density=:constant,
 )
@@ -135,7 +138,7 @@ Let's build the single-column case. The maximum amount of vertical layers is 5 (
 """
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82012
-single_data = build_prescribed_case_data(
+single_data = Chion.prescribed_case(
 	physics=physics,
 	ntot=5,
 	nx=1,
@@ -143,7 +146,7 @@ single_data = build_prescribed_case_data(
 	initial_surface_mass=250.0,
 	initial_density=320.0,
 	initial_temperature_c=-12.0,
-	forcing_label="single_column_vectors",
+	input_label="single_column_vectors",
 	; single_forcing_vectors...,
 )
 
@@ -161,13 +164,15 @@ We tell the computer, that we want to run on the GPU and define what forcing dat
 begin
 	single_case = Chion.build_case(
 		single_data;
-		name="gpu_single_column",
-		backend=:gpu,
-		out_dir=output_dir_for("02_gpu_single_device"),
-		write_outputs=true,
-		write_netcdf=false,
-		run_forcing_once=true,
-		cycle_metrics_stride=1,
+		run=Chion.RunConfig(
+			name="gpu_single_column",
+			backend=:gpu,
+			output_dir=output_dir_for("02_gpu_single_device"),
+			write_outputs=false,
+			write_netcdf=false,
+			cycles=1,
+			history_stride=1,
+		),
 	)
 	gpu_single_run = gpu_status.functional ? run_case_capture(single_case) : nothing
 	single_case
@@ -229,17 +234,17 @@ begin
 			wind_speed=wind_speed,
 		)
 	end
-	constant_snow = build_prescribed_case_data(
-	physics=physics,
-	ntot=5,
-	nx=1,
-	ny=1,
-	initial_surface_mass=250.0,
-	initial_density=320.0,
-	initial_temperature_c=-12.0,
-	forcing_label="single_column_vectors",
-	; single_forcing_vectors_constant_snow...,
-)
+	constant_snow = Chion.prescribed_case(
+		physics=physics,
+		ntot=5,
+		nx=1,
+		ny=1,
+		initial_surface_mass=250.0,
+		initial_density=320.0,
+		initial_temperature_c=-12.0,
+		input_label="single_column_vectors",
+		; single_forcing_vectors_constant_snow...,
+	)
 	
 end
 
@@ -252,18 +257,20 @@ As we see, the amount of snow increases and we have 5 active layers now with the
 begin
 	const_snow_case = Chion.build_case(
 		constant_snow;
-		name="gpu_single_column",
-		backend=:gpu,
-		out_dir=output_dir_for("02_gpu_single_device"),
-		write_outputs=true,
-		write_netcdf=false,
-		run_forcing_once=true,
-		cycle_metrics_stride=1,
+		run=Chion.RunConfig(
+			name="gpu_single_column",
+			backend=:gpu,
+			output_dir=output_dir_for("02_gpu_single_device"),
+			write_outputs=true,
+			write_netcdf=false,
+			cycles=1,
+			history_stride=1,
+		),
 	)
 	gpu_snow_run = gpu_status.functional ? run_case_capture(const_snow_case) : nothing
 	const_snow_case
 
-	constant_snow_plot = isnothing(gpu_snow_run) ? gpu_snow_run_summary.message :
+	constant_snow_plot = isnothing(gpu_snow_run) ? "GPU run skipped because CUDA is unavailable." :
 		plots_available() ?
 		column_profile_plot(gpu_snow_run.result, 1; title="GPU single-column") :
 		"Plots.jl is not available in this Pluto session."
@@ -277,7 +284,7 @@ Let's run a multi-column example, this is where the GPU really helps.
 First, we define a simple grid with 40 times 50 cells. 
 Then we initialise the cells with some mass, density and temperature again and build the case. 
 
-We use the same forcing as for the single column case. 
+As a sanity check, we only vary the snowfall spatially as function of the normalised coordinates snow = (x-0.5)^2 + (y-0.5)^2 here. This means, that there is the most snow at the edges and no snow in the center.
 """
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82016
@@ -286,39 +293,80 @@ multi_grid = (
 	ny=50,
 )
 
+# ╔═╡ f5d81564-8ac7-4f12-ba2e-e2ef0b390e12
+begin
+	gridfield_to_columns(A) = vec(permutedims(A, (2, 1)))
+
+	gridcube_to_columns(A) = begin
+		@assert size(A, 1) == multi_grid.ny
+		@assert size(A, 2) == multi_grid.nx
+		reshape(
+			permutedims(A, (2, 1, 3)),
+			multi_grid.nx * multi_grid.ny,
+			size(A, 3),
+		)
+	end
+end
+
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82017
 multi_data = let
-	# multi_surface_mass = [
-	# 	220.0 + 35.0 * ((i - 1) / max(multi_grid.nx - 1, 1)) + 20.0 * ((j - 1) / max(multi_grid.ny - 1, 1))
-	# 	for j in 1:multi_grid.ny for i in 1:multi_grid.nx
-	# ]
-	multi_surface_mass = [
-		220.0 
-		for j in 1:multi_grid.ny for i in 1:multi_grid.nx
-	]
-	build_prescribed_case_data(
+	nx = multi_grid.nx
+	ny = multi_grid.ny
+	ntime = length(single_forcing_vectors.dt_days)
+
+	multi_surface_mass = fill(220.0, nx * ny)
+
+	air_temperature_c_cube = Array{Float64}(undef, ny, nx, ntime)
+	snowfall_mm_day_cube = Array{Float64}(undef, ny, nx, ntime)
+	rainfall_mm_day_cube = Array{Float64}(undef, ny, nx, ntime)
+	shortwave_down_cube = Array{Float64}(undef, ny, nx, ntime)
+	wind_speed_cube = Array{Float64}(undef, ny, nx, ntime)
+
+	for t in 1:ntime, j in 1:ny, i in 1:nx
+		xfrac = nx == 1 ? 0.0 : (i - 1) / (nx - 1)
+		yfrac = ny == 1 ? 0.0 : (j - 1) / (ny - 1)
+
+		air_temperature_c_cube[j, i, t] = (xfrac-1)
+		
+		snowfall_mm_day_cube[j, i, t] = (xfrac-0.5)^2 + (yfrac-0.5)^2
+		rainfall_mm_day_cube[j, i, t] = 0
+		shortwave_down_cube[j, i, t] = 300
+		wind_speed_cube[j, i, t] = 5
+	end
+
+	Chion.prescribed_case(
 		physics=physics,
 		ntot=15,
-		nx=multi_grid.nx,
-		ny=multi_grid.ny,
+		nx=nx,
+		ny=ny,
 		initial_surface_mass=multi_surface_mass,
 		initial_density=320.0,
 		initial_temperature_c=-12.0,
-		forcing_label="multi_column_vectors",
-		; single_forcing_vectors...,
+		input_label="multi_column_spatiotemporal_forcing",
+		dt_days=single_forcing_vectors.dt_days,
+		air_temperature_c=gridcube_to_columns(air_temperature_c_cube),
+		snowfall_mm_day=gridcube_to_columns(snowfall_mm_day_cube),
+		rainfall_mm_day=gridcube_to_columns(rainfall_mm_day_cube),
+		shortwave_down=gridcube_to_columns(shortwave_down_cube),
+		wind_speed=gridcube_to_columns(wind_speed_cube),
 	)
+
 end
+
+
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82018
 multi_case = Chion.build_case(
 	multi_data;
-	name="gpu_multi_column",
-	backend=:gpu,
-	out_dir=output_dir_for("02_gpu_single_device"),
-	write_outputs=true,
-	write_netcdf=false,
-	run_forcing_once=true,
-	cycle_metrics_stride=1,
+	run=Chion.RunConfig(
+		name="gpu_multi_column",
+		backend=:gpu,
+		output_dir=output_dir_for("02_gpu_single_device"),
+		write_outputs=false,
+		write_netcdf=false,
+		cycles=10,
+		history_stride=1,
+	),
 )
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82019
@@ -357,6 +405,11 @@ gpu_multi_thickness_plot = isnothing(gpu_multi_run) ? gpu_multi_summary.message 
 	) :
 	"Plots.jl is not available in this Pluto session."
 
+# ╔═╡ a22d9552-5a97-4a33-a98c-75d8e66ef7ac
+md"""
+As expected, there is no snow in the center and the snowdepth distribution follows the snowfall since we do not have any melt etc.
+"""
+
 # ╔═╡ b8b1a062-939f-444d-9c86-9f90959bc2d8
 md"""
 ## Comparison with CPU
@@ -368,7 +421,7 @@ We can compare the runtime and results with a CPU execution instead.
 md"""
 ## What Changes Under The Hood?
 
-`run_equilibrium!(...; backend=:gpu)` handles the device transfer for you. The lower-level batch workflow makes those steps explicit:
+`run_case(...)` handles the device transfer for you. The lower-level batch workflow makes those steps explicit:
 
 1. move the domain to GPU with `gpu_domain`
 2. move forcing arrays to GPU storage with `adapt(CUDA.CuArray, ...)`
@@ -379,7 +432,7 @@ md"""
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82021
 manual_gpu_step = if gpu_status.functional
-	case_data = build_prescribed_case_data(
+	case_data = Chion.prescribed_case(
 		physics=physics,
 		ntot=5,
 		nx=4,
@@ -387,7 +440,7 @@ manual_gpu_step = if gpu_status.functional
 		initial_surface_mass=240.0,
 		initial_density=320.0,
 		initial_temperature_c=-10.0,
-		forcing_label="manual_gpu_step_vectors",
+		input_label="manual_gpu_step_vectors",
 		dt_days=fill(1.0, 8),
 		air_temperature_c=collect(range(-16.0, -6.0; length=8)),
 		snowfall_mm_day=[0.0, 0.4, 1.0, 0.8, 0.2, 0.0, 0.0, 0.0],
@@ -425,7 +478,7 @@ md"""
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82023
 [
 	(
-		mode="CPU equilibrium API",
+		mode="CPU case API",
 		backend=:cpu,
 		domain_storage="Array",
 		manual_transfer="none",
@@ -433,10 +486,10 @@ md"""
 		supported=true,
 	),
 	(
-		mode="GPU equilibrium API",
+		mode="GPU case API",
 		backend=:gpu,
 		domain_storage="CuArray after transfer",
-		manual_transfer="handled inside run_equilibrium!",
+		manual_transfer="handled inside run_case(...)",
 		workspace="ColumnarStepWorkspace(domain_gpu)",
 		supported=true,
 	),
@@ -455,7 +508,7 @@ md"""
 ## Troubleshooting
 
 - `CUDA.functional()==false`: confirm that a GPU is allocated and `cuda/13.1.0` is loaded.
-- Read-only depot or failed precompile: set `JULIA_DEPOT_PATH=/tmp/chion-pluto:\$HOME/.julia`.
+- Read-only depot or failed precompile: set `JULIA_DEPOT_PATH=\$HOME/.chion-pluto/manual-depot:\$HOME/.julia`.
 - Wrong device/module combination: reload Julia after changing CUDA modules so `CUDA.jl` sees the correct driver/runtime pair.
 - OOM on larger problems: reduce forcing length, `ncol`, or `ntot`, or clear cached allocations with `CUDA.reclaim()`.
 - Host-side inspection fails on device arrays: call `result_domain_cpu(result)` or `cpu_domain(domain_gpu)` before `get_state`.
@@ -487,14 +540,16 @@ md"""
 # ╠═026429de-3c0e-42de-b2ca-39116cf64bbd
 # ╟─c180d37e-0277-4c42-9464-7c06c8f7ad6a
 # ╠═3c726710-1c66-42c3-82bb-eaeaebeb3920
-# ╟─5d9fd6b6-0c79-11ef-86e7-174c14f82015
+# ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82015
 # ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82016
+# ╠═f5d81564-8ac7-4f12-ba2e-e2ef0b390e12
 # ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82017
 # ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82018
 # ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82019
 # ╠═76a4a56d-ff88-46ef-bf61-a4472eeb4ba5
 # ╠═5df2f2c8-6cc1-4d7a-b2f5-e77db43a9c82
 # ╠═3c6efec4-12ab-4a0d-8f3d-372477851cb6
+# ╟─a22d9552-5a97-4a33-a98c-75d8e66ef7ac
 # ╠═b8b1a062-939f-444d-9c86-9f90959bc2d8
 # ╟─5d9fd6b6-0c79-11ef-86e7-174c14f82020
 # ╠═5d9fd6b6-0c79-11ef-86e7-174c14f82021
