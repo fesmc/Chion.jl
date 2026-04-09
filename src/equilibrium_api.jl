@@ -122,9 +122,6 @@ struct EquilibriumRunOptions
     write_netcdf::Bool
     netcdf_variables::Vector{Symbol}
     max_cycles::Int
-    tol_thickness::Float64
-    tol_swe::Float64
-    drift_window::Int
     backend::Symbol
     cycle_metrics_stride::Int
 end
@@ -310,9 +307,6 @@ function EquilibriumRunOptions(;
     write_netcdf::Bool=true,
     netcdf_variables=copy(EQUILIBRIUM_NETCDF_VARIABLES),
     max_cycles::Integer=10,
-    tol_thickness::Real=1.0e-3,
-    tol_swe::Real=0.1,
-    drift_window::Integer=3,
     backend=:threads,
     cycle_metrics_stride::Integer=1,
 )
@@ -325,9 +319,6 @@ function EquilibriumRunOptions(;
         write_netcdf,
         normalize_equilibrium_netcdf_variables(netcdf_variables),
         Int(max_cycles),
-        Float64(tol_thickness),
-        Float64(tol_swe),
-        Int(drift_window),
         normalize_equilibrium_backend(backend),
         normalize_cycle_metrics_stride(cycle_metrics_stride),
     )
@@ -1076,21 +1067,6 @@ function summarize_column_state(domain::SM.AbstractSnowpackDomain, idx::Int)
     )
 end
 
-function persistent_drift(history::Vector{NamedTuple}, window::Int, tol_thickness::Float64, tol_swe::Float64)
-    length(history) >= window || return false
-    recent = history[(end - window + 1):end]
-    dth = [rec.mean_signed_delta_thickness for rec in recent]
-    dswe = [rec.mean_signed_delta_wet_mass for rec in recent]
-    same_sign(values) = all(v -> v > 0.0, values) || all(v -> v < 0.0, values)
-    nearly_constant(values) = abs(values[end]) >= 0.8 * abs(values[1])
-    return same_sign(dth) &&
-           same_sign(dswe) &&
-           minimum(abs.(dth)) > tol_thickness &&
-           minimum(abs.(dswe)) > tol_swe &&
-           nearly_constant(dth) &&
-           nearly_constant(dswe)
-end
-
 function cycle_log_line(record)
     return @sprintf(
         "cycle=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",
@@ -1158,8 +1134,6 @@ function write_equilibrium_summary(
         println(io, "Cycle metrics      : ", cycle_metrics_schedule_label(options.cycle_metrics_stride))
         println(io, "Status             : ", string(status))
         println(io, "Cycles completed   : ", cycles_completed)
-        println(io, @sprintf("Tol thickness (m)  : %.6g", options.tol_thickness))
-        println(io, @sprintf("Tol SWE (mmWE)     : %.6g", options.tol_swe))
         println(io)
         println(io, "Final domain means")
         println(io, @sprintf("Thickness (m)              : %.6f", last_record.mean_thickness))
@@ -1177,15 +1151,12 @@ function write_equilibrium_summary(
         println(io, @sprintf("Mean signed dBase (mmWE)   : %.6f", last_record.mean_signed_delta_base_mass))
         println(io, @sprintf("Mean abs dBase (mmWE)      : %.6f", last_record.mean_abs_delta_base_mass))
         println(io, @sprintf("Max abs dBase (mmWE)       : %.6f", last_record.max_abs_delta_base_mass))
-        if status == :drifting
+        if status == :max_cycles
             println(io)
-            println(io, "Interpretation     : Forcing cycle shows persistent drift, so a snow equilibrium was not reached.")
-        elseif status == :max_cycles
-            println(io)
-            println(io, "Interpretation     : Max cycles reached before convergence.")
+            println(io, "Interpretation     : Requested cycles completed.")
         else
             println(io)
-            println(io, "Interpretation     : Convergence thresholds were met.")
+            println(io, "Interpretation     : Run completed.")
         end
         println(io)
         print_timing_summary(io, timings)
@@ -1556,7 +1527,6 @@ function run_equilibrium_cycles_threads_no_netcdf!(
         time_block!(timings, :summarize_columns_cycle) do
             summarize_cycle_columns!(final, domain; backend=:threads)
         end
-        stop_status = :continue
         if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
             record = time_block!(timings, :cycle_metrics) do
                 make_cycle_record_and_deltas!(
@@ -1577,20 +1547,6 @@ function run_equilibrium_cycles_threads_no_netcdf!(
             time_block!(timings, :cycle_logging) do
                 println(cycle_log_line(record))
             end
-            stop_status = time_block!(timings, :cycle_convergence_check) do
-                if record.mean_abs_delta_thickness <= options.tol_thickness &&
-                   record.mean_abs_delta_wet_mass <= options.tol_swe
-                    :converged
-                elseif persistent_drift(history, options.drift_window, options.tol_thickness, options.tol_swe)
-                    :drifting
-                else
-                    :continue
-                end
-            end
-        end
-        if stop_status !== :continue
-            status = stop_status
-            break
         end
         prev, final = final, prev
     end
@@ -1642,7 +1598,6 @@ function run_equilibrium_cycles_gpu_no_netcdf!(
                 backend=:kernelabstractions,
             )
         end
-        stop_status = :continue
         if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
             record = time_block!(timings, :cycle_metrics; synchronize=CUDA.synchronize) do
                 make_cycle_record_and_deltas!(
@@ -1664,20 +1619,6 @@ function run_equilibrium_cycles_gpu_no_netcdf!(
             time_block!(timings, :cycle_logging) do
                 println(cycle_log_line(record))
             end
-            stop_status = time_block!(timings, :cycle_convergence_check) do
-                if record.mean_abs_delta_thickness <= options.tol_thickness &&
-                   record.mean_abs_delta_wet_mass <= options.tol_swe
-                    :converged
-                elseif persistent_drift(history, options.drift_window, options.tol_thickness, options.tol_swe)
-                    :drifting
-                else
-                    :continue
-                end
-            end
-        end
-        if stop_status !== :continue
-            status = stop_status
-            break
         end
         prev, final = final, prev
     end
@@ -2186,7 +2127,6 @@ function run_equilibrium!(
                 summarize_cycle_columns!(final, domain; backend=:threads)
             end
         end
-        stop_status = :continue
         if should_record_cycle_metrics(cycle, options.max_cycles, options.cycle_metrics_stride)
             record = if options.backend == :gpu
                 time_block!(timings, :cycle_metrics; synchronize=gpu_stage_sync) do
@@ -2237,16 +2177,6 @@ function run_equilibrium!(
             time_block!(timings, :cycle_logging) do
                 println(io, cycle_log_line(record))
             end
-            stop_status = time_block!(timings, :cycle_convergence_check) do
-                if record.mean_abs_delta_thickness <= options.tol_thickness &&
-                   record.mean_abs_delta_wet_mass <= options.tol_swe
-                    :converged
-                elseif persistent_drift(history, options.drift_window, options.tol_thickness, options.tol_swe)
-                    :drifting
-                else
-                    :continue
-                end
-            end
         elseif options.backend == :gpu
             time_block!(timings, :cycle_state_deltas; synchronize=gpu_stage_sync) do
                 last_delta_thickness_vec .= final.thickness .- prev.thickness
@@ -2268,10 +2198,6 @@ function run_equilibrium!(
                     previous_cycle_smb_ice_vec .= current_smb_ice_vec
                 end
             end
-        end
-        if stop_status !== :continue
-            status = stop_status
-            break
         end
         prev, final = final, prev
     end

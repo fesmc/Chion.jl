@@ -35,12 +35,12 @@ output arrays are mutated in-place.
         for layer_index in 1:n
             solid = mass[layer_index, idx]
             liquid = mass_w[layer_index, idx]
-            ρ = density[layer_index, idx]
+            rho = density[layer_index, idx]
             solid_mass_local += solid
             wet_mass_local += solid + liquid
             liquid_water_local += liquid
-            if solid > zero(solid) && ρ > EPS_TINY
-                thickness_local += solid / ρ
+            if solid > zero(solid) && rho > EPS_TINY
+                thickness_local += solid / rho
             end
         end
         thickness[idx] = thickness_local
@@ -80,11 +80,11 @@ in-place.
         for layer_index in 1:n
             solid = mass[layer_index, idx]
             liquid = mass_w[layer_index, idx]
-            ρ = density[layer_index, idx]
+            rho = density[layer_index, idx]
             solid_mass_local += solid
             wet_mass_local += solid + liquid
-            if solid > zero(solid) && ρ > EPS_TINY
-                thickness_local += solid / ρ
+            if solid > zero(solid) && rho > EPS_TINY
+                thickness_local += solid / rho
             end
         end
         thickness[idx] = thickness_local
@@ -123,12 +123,12 @@ function summarize_domain_state!(
             @inbounds for layer_index in 1:n
                 solid = domain.mass[layer_index, idx]
                 liquid = domain.mass_w[layer_index, idx]
-                ρ = domain.density[layer_index, idx]
+                rho = domain.density[layer_index, idx]
                 solid_mass_local += solid
                 wet_mass_local += solid + liquid
                 liquid_water_local += liquid
-                if solid > zero(solid) && ρ > EPS_TINY
-                    thickness_local += solid / ρ
+                if solid > zero(solid) && rho > EPS_TINY
+                    thickness_local += solid / rho
                 end
             end
             thickness[idx] = thickness_local
@@ -227,11 +227,11 @@ function summarize_cycle_state!(
             @inbounds for layer_index in 1:n
                 solid = domain.mass[layer_index, idx]
                 liquid = domain.mass_w[layer_index, idx]
-                ρ = domain.density[layer_index, idx]
+                rho = domain.density[layer_index, idx]
                 solid_mass_local += solid
                 wet_mass_local += solid + liquid
-                if solid > zero(solid) && ρ > EPS_TINY
-                    thickness_local += solid / ρ
+                if solid > zero(solid) && rho > EPS_TINY
+                    thickness_local += solid / rho
                 end
             end
             thickness[idx] = thickness_local

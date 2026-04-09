@@ -5,6 +5,7 @@ using Printf
 include("SnowpackModel.jl")
 using .SnowpackModel
 include("equilibrium_api.jl")
+include("case_api.jl")
 
 export step!
 export SnowpackDomain
@@ -13,8 +14,11 @@ export SnowpackStepFields
 export SnowpackPhysicalConstants
 export SnowpackStateFields
 export EquilibriumForcing, EquilibriumGridLayout, EquilibriumRunOptions, EquilibriumResult
+export AbstractForcingSource, SyntheticForcingSource, MARForcingSource
+export SnowpackCaseData, SnowpackCase
 export EQUILIBRIUM_NETCDF_VARIABLE_GROUPS, EQUILIBRIUM_NETCDF_VARIABLES
 export TimingStats, run_equilibrium!
+export synthetic_forcing, mar_forcing, load_forcing, build_case, run_case
 export StepWorkspace, threaded_workspaces
 export ColumnarStepWorkspace
 export continuous_bottom_deplete!
