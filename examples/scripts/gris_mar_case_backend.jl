@@ -9,7 +9,7 @@ const SM = Chion.SnowpackModel
 const DEFAULT_GRIS_MAR_NC_PATH = let path = ""
     for candidate in (
         "/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc",
-        "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2026.nc",
+        "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2025.nc",
     )
         if isfile(candidate)
             path = candidate
