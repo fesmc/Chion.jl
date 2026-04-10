@@ -311,6 +311,19 @@ end
     return "every $(stride) cycles + final"
 end
 
+@inline function _looks_like_directory_path(path::AbstractString)
+    isempty(path) && return false
+    return endswith(path, '/') || endswith(path, '\\')
+end
+
+@inline function resolve_case_netcdf_path(options::RunConfig)
+    default_name = "$(options.name)_final_state.nc"
+    isempty(options.netcdf_path) && return joinpath(options.output_dir, default_name)
+    return (isdir(options.netcdf_path) || _looks_like_directory_path(options.netcdf_path)) ?
+        joinpath(options.netcdf_path, default_name) :
+        options.netcdf_path
+end
+
 function normalize_case_netcdf_variables(spec)
     if spec isa AbstractVector
         tokens = String[string(x) for x in spec]
@@ -650,20 +663,56 @@ end
     return size(layout.mask)
 end
 
-function resolve_libnetcdf()
+function _netcdf_search_dirs()
+    dirs = String[]
+    for key in ("NETCDF_DIR", "NETCDF_HOME", "HOMEBREW_PREFIX")
+        root = strip(get(ENV, key, ""))
+        isempty(root) || push!(dirs, joinpath(expanduser(root), "lib"))
+    end
+    for key in ("LD_LIBRARY_PATH", "DYLD_LIBRARY_PATH", "DYLD_FALLBACK_LIBRARY_PATH")
+        value = strip(get(ENV, key, ""))
+        isempty(value) && continue
+        append!(dirs, filter(!isempty, split(value, ':')))
+    end
+    append!(dirs, Base.DL_LOAD_PATH)
+    append!(dirs, ("/opt/homebrew/lib", "/usr/local/lib", "/opt/local/lib", "/usr/lib", "/lib"))
+    return unique(filter(isdir, map(expanduser, dirs)))
+end
+
+function _netcdf_library_candidates()
+    candidates = String[]
     env_lib = strip(get(ENV, "NETCDF_LIB", ""))
     if !isempty(env_lib)
-        return env_lib
+        push!(candidates, expanduser(env_lib))
     end
-    for candidate in ("libnetcdf", "libnetcdf.so", "libnetcdf.dylib")
+    append!(candidates, ("libnetcdf", "libnetcdf.so", "libnetcdf.dylib"))
+    for dir in _netcdf_search_dirs()
+        append!(candidates, (
+            joinpath(dir, "libnetcdf"),
+            joinpath(dir, "libnetcdf.so"),
+            joinpath(dir, "libnetcdf.dylib"),
+        ))
+    end
+    return unique(candidates)
+end
+
+function resolve_libnetcdf()
+    for candidate in _netcdf_library_candidates()
         try
-            Libdl.dlopen(candidate) do _
-                return candidate
-            end
+            handle = Libdl.dlopen(candidate)
+            Libdl.dlclose(handle)
+            return candidate
         catch
         end
     end
-    error("Could not load NetCDF library. Set NETCDF_LIB to the shared library path or load a NetCDF module.")
+    searched_dirs = join(_netcdf_search_dirs(), ", ")
+    suggestion = Sys.isapple() && isfile("/opt/homebrew/lib/libnetcdf.dylib") ?
+        " Try `export NETCDF_LIB=/opt/homebrew/lib/libnetcdf.dylib`." : ""
+    error(
+        "Could not load NetCDF library. Set NETCDF_LIB to the shared library path or load a NetCDF module." *
+        (isempty(searched_dirs) ? "" : " Searched: " * searched_dirs * ".") *
+        suggestion,
+    )
 end
 
 function _libnetcdf()
@@ -682,8 +731,13 @@ end
 end
 
 function nc_create(path::AbstractString)
+    isdir(path) && error("NetCDF output path '$(abspath(path))' is a directory; pass a file path ending in `.nc`.")
     ncid = Ref{Cint}()
-    nc_check(ccall((:nc_create, _libnetcdf()), Cint, (Cstring, Cint, Ref{Cint}), path, NC_CLOBBER | NC_NETCDF4, ncid))
+    code = ccall((:nc_create, _libnetcdf()), Cint, (Cstring, Cint, Ref{Cint}), path, NC_CLOBBER | NC_NETCDF4, ncid)
+    if code != NC_NOERR
+        msg = unsafe_string(ccall((:nc_strerror, _libnetcdf()), Cstring, (Cint,), code))
+        error("NetCDF error while creating '$(abspath(path))': $msg")
+    end
     return ncid[]
 end
 
@@ -2005,7 +2059,7 @@ function execute_case!(
     initial_thickness = write_final_fields ? time_block!(timings, :prepare_initial_output_fields_grid) do
         scatter_to_grid(initial_thickness_vec, layout.js, layout.is, _grid_shape(layout))
     end : Matrix{Float64}(undef, 0, 0)
-    nc_path = isempty(options.netcdf_path) ? joinpath(options.output_dir, "$(options.name)_final_state.nc") : options.netcdf_path
+    nc_path = resolve_case_netcdf_path(options)
     writer = options.write_netcdf ? time_block!(timings, :init_netcdf) do
         init_case_netcdf(
             nc_path,
