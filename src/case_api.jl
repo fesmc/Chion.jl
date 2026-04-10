@@ -81,6 +81,12 @@ function Base.show(io::IO, case::SnowpackCase)
     )
 end
 
+"""
+    SyntheticCaseSource
+
+Descriptor for built-in synthetic forcing used by examples, smoke tests, and
+documentation workflows.
+"""
 struct SyntheticCaseSource <: AbstractCaseSource
     variant::Symbol
     ntime::Int
@@ -142,6 +148,12 @@ end
 @inline _case_symbol(value::Symbol) = value
 @inline _case_symbol(value) = Symbol(lowercase(strip(String(value))))
 
+"""
+    physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
+
+Convenience constructor for [`SnowpackPhysicalConstants`](@ref) that accepts
+the user-facing scheme keywords used by the case API.
+"""
 function physics(;
     albedo=:dynamic,
     densification=:bessi,
@@ -529,12 +541,24 @@ function prescribed_case(;
     )
 end
 
+"""
+    synthetic_case(; physics=physics(), ntot=5, kwargs...)
+
+Build a reusable synthetic [`CaseDefinition`](@ref) from
+[`SyntheticCaseSource`](@ref) without constructing the source object manually.
+"""
 synthetic_case(;
     physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=5,
     kwargs...,
 ) = load_case(SyntheticCaseSource(; kwargs...); physics=physics, ntot=ntot)
 
+"""
+    mar_case(path; physics=physics(), ntot=20, kwargs...)
+
+Load a reusable [`CaseDefinition`](@ref) from a MAR forcing file using
+[`MARCaseSource`](@ref).
+"""
 mar_case(
     path::AbstractString;
     physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
