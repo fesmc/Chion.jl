@@ -64,7 +64,6 @@ mutable struct SnowpackDomain{
     mass_split::NF
     mass_min::NF
     rho_max::NF
-    f_base_max::NF
     N::NI
     mass::MT
     mass_w::MT
@@ -267,7 +266,6 @@ function SnowpackDomain(;
     mass_split::Real=DEFAULT_MASS_SPLIT,
     mass_min::Real=DEFAULT_MASS_MIN,
     rho_max::Real=DEFAULT_RHO_MAX,
-    f_base_max::Real=DEFAULT_F_BASE_MAX,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
 )
@@ -283,7 +281,6 @@ function SnowpackDomain(;
         convert(NF, mass_split),
         convert(NF, mass_min),
         convert(NF, rho_max),
-        convert(NF, f_base_max),
         zeros(Int, ncol),
         zeros(NF, Ntot, ncol),
         zeros(NF, Ntot, ncol),
@@ -321,7 +318,6 @@ function SnowpackDomain(
     mass_split::Real=DEFAULT_MASS_SPLIT,
     mass_min::Real=DEFAULT_MASS_MIN,
     rho_max::Real=DEFAULT_RHO_MAX,
-    f_base_max::Real=DEFAULT_F_BASE_MAX,
 ) where {NF <: AbstractFloat}
     ncol = length(N)
     size(mass, 2) == ncol || error("`mass` must have one column per entry of `N`.")
@@ -344,7 +340,6 @@ function SnowpackDomain(
         convert(NF, mass_split),
         convert(NF, mass_min),
         convert(NF, rho_max),
-        convert(NF, f_base_max),
         N,
         mass,
         mass_w,

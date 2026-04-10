@@ -434,10 +434,10 @@ function _free_slot_for_surface_split!(
 end
 
 """
-    _enforce_mass_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, f_base_max, dt_seconds, c)
+    _enforce_mass_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, dt_seconds, c)
 
 Apply the column mass-cap rule after accumulation, removing excess basal mass
-according to the configured relaxation.
+when the active solid mass exceeds the configured cap.
 """
 function _enforce_mass_cap!(
     N_storage,
@@ -453,7 +453,6 @@ function _enforce_mass_cap!(
     idx::Int,
     Ntot::Int,
     mass_split,
-    f_base_max,
     dt_seconds,
     c::SnowpackPhysicalConstants,
 )
@@ -488,7 +487,6 @@ function _enforce_mass_cap!(
     reference_column_mass_cap = BESSI_REFERENCE_LAYER_COUNT * mass_split * oftype(mass_split, 1.5)
     excess_basal_mass = total_active_solid_mass - reference_column_mass_cap
     if excess_basal_mass > zero(excess_basal_mass)
-        relaxation = one(excess_basal_mass) - exp(-f_base_max * dt_seconds / c.seconds_per_day)
         _continuous_bottom_deplete!(
             N_storage,
             mass,
@@ -501,7 +499,7 @@ function _enforce_mass_cap!(
             Tsrf,
             albedo_dynamic,
             idx,
-            excess_basal_mass * relaxation,
+            excess_basal_mass,
             c,
         )
     end

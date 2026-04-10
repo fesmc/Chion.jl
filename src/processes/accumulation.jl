@@ -51,7 +51,6 @@ function _apply_accumulation!(
     mass_max,
     mass_split,
     mass_min,
-    f_base_max,
     snowfall_rate,
     rainfall_rate,
     dt_seconds;
@@ -150,7 +149,6 @@ function _apply_accumulation!(
         idx,
         Ntot,
         mass_split,
-        f_base_max,
         dt_seconds,
         c,
     )

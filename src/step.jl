@@ -28,7 +28,6 @@ function _step_state_resolved!(
     mass_max,
     mass_split,
     mass_min,
-    f_base_max,
     forcing::SnowpackStepForcing,
     workspace,
     update_snow_cover::Bool=true;
@@ -56,7 +55,6 @@ function _step_state_resolved!(
             mass_max,
             mass_split,
             mass_min,
-            f_base_max,
             forcing.snowfall_rate,
             forcing.rainfall_rate,
             dt_seconds;
@@ -319,7 +317,6 @@ function step!(
         domain.mass_max,
         domain.mass_split,
         domain.mass_min,
-        domain.f_base_max,
         forcing,
         workspace,
         update_snow_cover;

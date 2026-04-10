@@ -145,7 +145,6 @@ struct SnowpackStateFields
     mass_split::Float64
     mass_min::Float64
     rho_max::Float64
-    f_base_max::Float64
 end
 
 """
@@ -597,7 +596,6 @@ function SnowpackStateFields(
     mass_split::Real=SM.DEFAULT_MASS_SPLIT,
     mass_min::Real=SM.DEFAULT_MASS_MIN,
     rho_max::Real=SM.DEFAULT_RHO_MAX,
-    f_base_max::Real=SM.DEFAULT_F_BASE_MAX,
 )
     N_v = Int.(N)
     mass_m = Matrix{Float64}(mass)
@@ -626,7 +624,6 @@ function SnowpackStateFields(
         Float64(mass_split),
         Float64(mass_min),
         Float64(rho_max),
-        Float64(f_base_max),
     )
 end
 
@@ -648,7 +645,6 @@ function SM.SnowpackDomain(state::SnowpackStateFields)
         mass_split=state.mass_split,
         mass_min=state.mass_min,
         rho_max=state.rho_max,
-        f_base_max=state.f_base_max,
     )
 end
 
