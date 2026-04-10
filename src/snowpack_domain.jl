@@ -9,6 +9,12 @@ const ALBEDO_DYNAMIC = UInt8(2)
 const LOW_DENSIFICATION_BESSI = UInt8(1)
 const LOW_DENSIFICATION_HTESSEL = UInt8(2)
 
+"""
+    SnowpackPhysicalConstants{NF}
+
+Container for physical constants, empirical coefficients, and scheme flags
+used by the snowpack model.
+"""
 struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     rho_s::NF
     rho_i::NF
@@ -38,6 +44,13 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     low_density_densification::UInt8
 end
 
+"""
+    SnowpackDomain{NF,...}
+
+Mutable array-backed snowpack state for one or more columns. Each column stores
+layer-wise solid mass, liquid water, density, and temperature together with
+auxiliary diagnostics such as runoff, snow cover, and surface albedo.
+"""
 mutable struct SnowpackDomain{
         NF <: AbstractFloat,
         NI <: AbstractVector{<:Integer},

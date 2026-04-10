@@ -2,6 +2,13 @@
 Step-forcing container types and field-to-forcing conversion helpers.
 """
 
+"""
+    SnowpackStepForcing{NF}
+
+Per-column forcing bundle consumed by [`step!`](@ref). It stores temperatures,
+mass fluxes, optional prescribed surface-flux terms, and metadata needed by
+the optional diurnal shortwave adjustment.
+"""
 struct SnowpackStepForcing{NF <: AbstractFloat}
     air_temperature::NF
     precipitation_rate::NF
@@ -23,6 +30,12 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     day_of_year::NF
 end
 
+"""
+    SnowpackStepFields
+
+Batch forcing container that stores one forcing matrix per field for
+multi-column, multi-time-step case execution.
+"""
 struct SnowpackStepFields{
         DT,
         AT,

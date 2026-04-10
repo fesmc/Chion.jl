@@ -2,6 +2,11 @@
 Timing helpers for profiling the major stages of `step!`.
 """
 
+"""
+    StepTimingStats
+
+Accumulator for profiling the major internal stages of [`step!`](@ref).
+"""
 mutable struct StepTimingStats
     totals::Dict{Symbol, Float64}
     counts::Dict{Symbol, Int}

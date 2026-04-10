@@ -18,6 +18,12 @@ backend while changing element type and shape.
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
+"""
+    EnergyWorkspace
+
+Scratch arrays reused by the implicit temperature solver in
+[`go_energy_flux!`](@ref).
+"""
 struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
     lower::LT
     diag::DT
@@ -60,6 +66,12 @@ Allocate energy-flux scratch storage sized for `domain`.
 EnergyWorkspace(domain::AbstractSnowpackDomain) =
     EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
 
+"""
+    StepWorkspace
+
+Per-column scratch storage reused by [`step!`](@ref), including temporary
+liquid-water buffers and the energy-solver workspace.
+"""
 struct StepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
     energy::ET
@@ -99,6 +111,12 @@ Each workspace is intended to be reused in-place by a single thread.
 """
 threaded_workspaces(domain::AbstractSnowpackDomain) = [StepWorkspace(domain) for _ in 1:Threads.maxthreadid()]
 
+"""
+    ColumnarStepWorkspace
+
+Column-major scratch storage that holds temporary state for every column in a
+batch run.
+"""
 struct ColumnarStepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
     energy::ET

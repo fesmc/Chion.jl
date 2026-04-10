@@ -13,6 +13,12 @@ const NC_FLOAT = 5
 const NC_DOUBLE = 6
 const NC_INT = 4
 
+"""
+    CASE_NETCDF_VARIABLE_GROUPS
+
+Named groups of NetCDF output variables accepted by [`RunConfig`](@ref) and
+the case-running helpers.
+"""
 const CASE_NETCDF_VARIABLE_GROUPS = Dict(
     :final => [
         :final_thickness,
@@ -59,9 +65,19 @@ const CASE_NETCDF_VARIABLE_GROUPS = Dict(
     ],
 )
 
+"""
+    CASE_NETCDF_VARIABLES
+
+Flat list of all supported NetCDF output variable names.
+"""
 const CASE_NETCDF_VARIABLES = unique(vcat(values(CASE_NETCDF_VARIABLE_GROUPS)...))
 const _LIBNETCDF_CACHE = Ref{Union{Nothing, String}}(nothing)
 
+"""
+    TimingStats
+
+Run-level timing accumulator used by the high-level case runtime.
+"""
 mutable struct TimingStats
     totals::Dict{Symbol, Float64}
     counts::Dict{Symbol, Int}
@@ -69,6 +85,13 @@ end
 
 TimingStats() = TimingStats(Dict{Symbol, Float64}(), Dict{Symbol, Int}())
 
+"""
+    ForcingData
+
+Normalized forcing bundle used by case execution. All meteorological fields
+share the same `(ncol, ntime)` shape and `dt_days` stores one duration per time
+step.
+"""
 struct ForcingData
     time_values::Vector{DateTime}
     dt_days::Vector{Float64}
@@ -85,6 +108,12 @@ struct ForcingData
     has_q_lh
 end
 
+"""
+    GridLayout
+
+Mapping between column indices and a regular output grid for gridded case
+inputs and NetCDF export.
+"""
 struct GridLayout
     x::Vector{Float64}
     y::Vector{Float64}
@@ -93,6 +122,12 @@ struct GridLayout
     mask::Matrix{Float64}
 end
 
+"""
+    SnowpackStateFields
+
+Plain Julia container for initializing a [`SnowpackDomain`](@ref) from explicit
+state arrays and domain parameters.
+"""
 struct SnowpackStateFields
     N::Vector{Int}
     mass::Matrix{Float64}
@@ -113,6 +148,12 @@ struct SnowpackStateFields
     f_base_max::Float64
 end
 
+"""
+    RunConfig
+
+High-level execution settings for [`build_case`](@ref) and [`run_case`](@ref),
+including backend selection and output options.
+"""
 struct RunConfig
     name::String
     input_label::String
@@ -133,6 +174,11 @@ struct CaseNetCDFWriter
     cycles::Int
 end
 
+"""
+    RunResult
+
+Collected outputs and diagnostics returned by [`run_case`](@ref).
+"""
 struct RunResult
     history::Vector{NamedTuple}
     status::Symbol
