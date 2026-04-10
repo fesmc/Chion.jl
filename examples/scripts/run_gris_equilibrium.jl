@@ -22,23 +22,7 @@ const NC_DOUBLE = 6
 const NC_INT = 4
 const NC_UNLIMITED = 0
 
-function resolve_libnetcdf()
-    env_lib = strip(get(ENV, "NETCDF_LIB", ""))
-    if !isempty(env_lib)
-        return env_lib
-    end
-    for candidate in ("libnetcdf", "libnetcdf.so", "libnetcdf.dylib")
-        try
-            Libdl.dlopen(candidate) do _
-                return candidate
-            end
-        catch
-        end
-    end
-    error("Could not load NetCDF library. Set NETCDF_LIB to the shared library path or load a NetCDF module.")
-end
-
-const LIBNETCDF = resolve_libnetcdf()
+const LIBNETCDF = Chion.resolve_libnetcdf()
 
 mutable struct TimingStats
     totals::Dict{Symbol, Float64}
