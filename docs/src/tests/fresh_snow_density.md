@@ -1,10 +1,13 @@
-# Fresh-Snow Density Test
+# Fresh-Snow Density Validation Note
 
-This page documents the checks in `test/test_fresh_snow_density.jl`.
+This page records the fresh-snow-density formula used by the current codebase
+and the analytical spot checks that were used when documenting it. These notes
+are retained as validation material; they are not currently backed by a file in
+`test/`.
 
 ## Parameterization
 
-Fresh-snow density is prescribed as
+Fresh-snow density is
 
 ```math
 \rho_{\mathrm{fresh}} =
@@ -15,68 +18,41 @@ a + b\,(T_{\mathrm{air}} - T_0) + c\,\sqrt{V},
 \right),
 ```
 
-with default coefficients
+with implementation defaults
 
-- ``a = 109\,\mathrm{kg m^{-3}}``
-- ``b = 6\,\mathrm{kg m^{-3} K^{-1}}``
-- ``c = 26\,\mathrm{kg m^{-3} (m s^{-1})^{-1/2}}``
+- ``a = 109\,\mathrm{kg\,m^{-3}}``
+- ``b = 6\,\mathrm{kg\,m^{-3}\,K^{-1}}``
+- ``c = 26``
 
-where `V` is the absolute wind speed, `air_temperature` is air temperature, `T0` is the freezing point, and `rho_i` is ice density.
+where `V` is the wind speed and the final result is clamped to
+``[50, \rho_i]``.
 
-## What The Test Checks
+## Analytical Checks
 
-## Test 1: Default wind speed behavior
+### Default wind-speed behavior
 
-`step!` defaults to `wind_speed = 5.0` ``\mathrm{m s^{-1}}``.  
-The test confirms that calling `step!` without a wind-speed argument produces the same density as calling it explicitly with `wind_speed=5.0`.
+`step!` falls back to `wind_speed = 5.0 m s^-1` when no explicit wind speed is
+supplied. The documented formula therefore matches the behavior of a `step!`
+call that omits `wind_speed`.
 
-## Test 2: Formula match during accumulation
+### Formula check
 
-The direct formula check is performed through `apply_accumulation!`, not `step!`.  
-
-For the case
+For
 
 ```math
-T_{\mathrm{air}} = T_0 + 2\,\mathrm{ K},
-\quad
-V = 9\,\mathrm{m s}^{-1},
+T_{\mathrm{air}} = T_0 + 2\,\mathrm{K},
+\qquad
+V = 9\,\mathrm{m\,s^{-1}},
 ```
 
 the expected fresh-snow density is
 
 ```math
-\rho_{\mathrm{fresh}} = 109 + 6 \cdot 2 + 26 \cdot \sqrt{9} = 199\,\mathrm{ kg m}^{-3}.
+\rho_{\mathrm{fresh}} = 109 + 6 \cdot 2 + 26 \cdot \sqrt{9} = 199\,\mathrm{kg\,m^{-3}}.
 ```
 
-The test verifies that the newly created surface layer matches this value to machine precision.
+This is the value the current `_fresh_snow_density` implementation produces.
 
-## Test 3: Diagnostic plot generation
-
-The test also generates a plot of fresh-snow density versus wind speed for several subfreezing air temperatures and checks that the output file is created successfully.
+## Diagnostic Figure
 
 ![Fresh-snow density versus wind speed](../assets/fresh_snow_density_vs_wind.png)
-
-## Run command
-
-```bash
-julia --project=. test/test_fresh_snow_density.jl
-```
-
-## Results snapshot
-
-Recorded on **2026-03-18**:
-
-| Test block | Passed assertions |
-| --- | ---: |
-| Default wind speed behavior | 5/5 |
-| Formula match during accumulation | 2/2 |
-| Plot generation | 2/2 |
-| **Total** | **9/9** |
-
-Terminal summary:
-
-```text
-Activating project at `~/Documents/Chion.jl`
-Test Summary:                       | Pass  Total  Time
-Fresh-snow density parameterization |    9      9  1.0s
-```

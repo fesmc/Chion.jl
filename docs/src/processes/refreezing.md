@@ -4,67 +4,58 @@ CurrentModule = Chion.SnowpackModel
 
 # Refreezing
 
-`go_refreezing!` converts liquid water to ice using layer cold content and updates temperature, density, solid mass, and liquid water mass consistently.
+`go_refreezing!` converts retained liquid water into solid mass using the cold
+content of subfreezing layers.
 
 ## Model Formulation
 
-For each layer ``i`` with snow and liquid water:
+For each active layer with solid mass, liquid water, and `T < T0`, the code
+computes
 
 ```math
-Q_{cold,i} = (T_0 - T_i)\,c_i\,m_{s,i}
+Q_{\mathrm{cold}} = (T_0 - T)c_i m_s,
+\qquad
+Q_{\mathrm{lat}} = m_w L_m.
 ```
+
+### Partial Refreezing
+
+If ``Q_{\mathrm{cold}} < Q_{\mathrm{lat}}``, only part of the water freezes:
 
 ```math
-Q_{lat,i} = m_{w,i}\,L_m
+\Delta m_{\mathrm{refreeze}} = \frac{Q_{\mathrm{cold}}}{L_m}.
 ```
 
-where:
+The code then sets:
 
-- ``m_{s,i}``: snow/ice mass ``[\mathrm{kg\,m^{-2}}]``
-- ``m_{w,i}``: liquid water mass ``[\mathrm{kg\,m^{-2}}]``
-- ``T_i``: layer temperature ``[\mathrm{K}]``
-- ``T_0``: melting point ``[\mathrm{K}]``
-- ``c_i``: ice heat capacity ``[\mathrm{J\,kg^{-1}\,K^{-1}}]``
-- ``L_m``: latent heat of fusion ``[\mathrm{J\,kg^{-1}}]``
+- `T -> T0`
+- `m_s -> m_s + Δm_refreeze`
+- `m_w -> m_w - Δm_refreeze`
+- `density -> min(density * (m_s + Δm_refreeze) / m_s, rho_i)`
 
-### Case 1: Partial refreezing (``Q_{cold} < Q_{lat}``)
+### Complete Refreezing
 
-Only part of liquid water freezes:
+If ``Q_{\mathrm{cold}} \ge Q_{\mathrm{lat}}``, all liquid water freezes. Using
+the pre-update values of ``m_s``, ``m_w``, and ``T``, the code sets
 
 ```math
-\Delta m_{ice} = \frac{Q_{cold}}{L_m}
+T^{new} =
+\frac{m_w L_m / c_i + m_w T_0 + T m_s}{m_w + m_s}.
 ```
 
-Then:
+It then updates:
 
-- ``T_i \leftarrow T_0``
-- ``m_{s,i} \leftarrow m_{s,i} + \Delta m_{ice}``
-- ``m_{w,i} \leftarrow m_{w,i} - \Delta m_{ice}``
-- density is rescaled with mass gain
-
-### Case 2: Complete refreezing (``Q_{cold} \ge Q_{lat}``)
-
-All liquid freezes:
-
-- ``m_{s,i} \leftarrow m_{s,i} + m_{w,i}``
-- ``m_{w,i} \leftarrow 0``
-- layer temperature is recomputed by energy balance:
-
-```math
-T_i \leftarrow
-\frac{m_{w,i}L_m/c_i + m_{w,i}T_0 + T_i m_{s,i}}
-{m_{w,i}+m_{s,i}}
-```
-
-## Outputs
-
-The function returns:
-
-- `refrozen_mass`: total refrozen mass ``[\mathrm{kg\,m^{-2}}]``
-- `released_latent_heat`: latent heat released ``[\mathrm{J\,m^{-2}}]``
+- `m_s -> m_s + m_w`
+- `m_w -> 0`
+- `density -> min(density * (m_s + m_w) / m_s, rho_i)` using the pre-update
+  liquid mass
 
 ## API
 
-```@docs; canonical=false
+```@docs
 go_refreezing!
+```
+
+```@docs; canonical=false
+_go_refreezing!
 ```

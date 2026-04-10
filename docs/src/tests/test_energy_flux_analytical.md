@@ -1,10 +1,12 @@
-# Energy Flux Analytical Tests
+# Energy Flux Analytical Validation Note
 
-This page documents the three analytical checks in `test/test_energy_flux_analytical.jl`.
+This page records the analytical checks used to verify the current
+energy-balance documentation. These notes are retained as validation material;
+they are not currently backed by a file in `test/`.
 
-## Test 1: Single-layer closed-form update
+## Single-Layer Closed-Form Update
 
-For one snow layer, the solver should match the exact implicit-Euler solution:
+For one snow layer, the implemented implicit-Euler update is
 
 ```math
 T^{n+1} = \frac{T^n + \lambda F_{\mathrm{const}}}{1 + \lambda F_{\mathrm{lin}}},
@@ -12,43 +14,19 @@ T^{n+1} = \frac{T^n + \lambda F_{\mathrm{const}}}{1 + \lambda F_{\mathrm{lin}}},
 \lambda = \frac{\Delta t}{c_i m_s}.
 ```
 
-The test compares model output to this formula with strict tolerance (`1e-12`).
+This matches the single-layer branch in `src/processes/energy_flux.jl`.
 
-## Test 2: Uniform profile is steady under pure diffusion
+## Uniform Profile Under Pure Diffusion
 
-With all external fluxes disabled (``q_{sw}=q_{lw}=q_{sh}=q_{lh}=0`` and ``D_sh=\epsilon_{air}=\epsilon_{snow}=0``), a uniform temperature profile is an exact steady state.  
-The test verifies that every active layer remains unchanged (up to floating-point roundoff).
+When all external surface-flux terms are disabled and the temperature profile is
+uniform, the diffusion solve should preserve that uniform state up to
+floating-point roundoff.
 
-## Test 3: Sensible-energy conservation under pure diffusion
+## Sensible-Energy Conservation
 
-Under the same zero-forcing setup, diffusion should only redistribute heat internally.  
-The test checks conservation of total sensible energy:
+Under the same pure-diffusion setup, diffusion should redistribute heat
+internally while conserving total sensible energy:
 
 ```math
 E = \sum_i m_i c_i T_i.
-```
-
-## Run command
-
-```bash
-julia --project=. test/test_energy_flux_analytical.jl
-```
-
-## Results snapshot
-
-Recorded on **2026-03-12**:
-
-| Test block | Passed assertions |
-| --- | ---: |
-| Single-layer closed-form update | 5/5 |
-| Uniform profile steady state | 2/2 |
-| Pure-diffusion energy conservation | 2/2 |
-| **Total** | **9/9** |
-
-Terminal summary:
-
-```text
-Activating project at `~/Documents/Chion.jl`
-Test Summary:                | Pass  Total  Time
-Energy Flux Analytical Cases |    9      9  0.6s
 ```

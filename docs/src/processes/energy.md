@@ -4,228 +4,271 @@ CurrentModule = Chion.SnowpackModel
 
 # Energy Balance
 
-`go_energy_flux!` solves layer temperatures with an implicit 1D conductive step plus surface flux forcing.
+`go_energy_flux!` solves the snow temperature profile with an implicit 1D
+conductive step plus linearized surface forcing. This page keeps the more
+extensive derivation-style description, but the formulas below have been
+checked against the current Julia implementation in `src/processes/energy_flux.jl`
+and `src/processes/surface_fluxes.jl`.
 
 ## Surface Flux Parameterization
 
-The surface energy is given by the sum of net shortwave radiation ``Q_{sw}``, thermal longwave radiation ``Q_{lw}``, sensible heat exchange with the atmosphere ``Q_{sh}``, heat transport by precipitation ``Q_p`` and the exchange of latent heat due to refreezing or melting or rain and meltwater ``Q_{lh}``:
+At the surface, the model combines absorbed shortwave radiation, longwave
+radiation, sensible heat exchange, and precipitation / latent-heat terms into a
+single surface forcing. In continuous form this can be written as
 
 ```math
 c_i\, m_s \,\frac{\partial T_s}{\partial t}
-= Q_{sw} + Q_{lw} + Q_{sh} + Q_p + Q_{lh}
+= Q_{sw} + Q_{lw} + Q_{sh} + Q_{p} + Q_{lh},
 ```
 
-with the heat capacity of ice ``c_i`` and the mass per area of the surface box ``m_{s,i}``.
+with ice heat capacity ``c_i`` and surface-layer mass per area ``m_s``.
 
+In the implementation, these terms are rewritten into a linearized form
 
-
-### Shortwave Radiation 
-The shortwave radiation is given by
 ```math
-Q_{sw} = (1-\alpha)\,Q_{\mathrm{sw,down}}
+Q(T_s^{n+1}) \approx Q_{\mathrm{const}} - Q_{\mathrm{lin}} T_s^{n+1},
 ```
 
-where the albedo ``\alpha`` is temperature dependent. For ``T_s=0^\circ\mathrm{C}``, the albedo is given by ``\alpha=\alpha_{wet}`` and ``\alpha_{dry}`` otherwise. ``Q_{\mathrm{sw,down}}`` is the incoming shortwave radiation absorbed by the surface snow layer.
-
-### Longwave radiation
-
+so that the single-layer update becomes
 
 ```math
-Q_{\mathrm{lw}} = \sigma\left(\epsilon_{\mathrm{air}} T_{\mathrm{air}}^{4} - \epsilon_{\mathrm{snow}} T_{s}^{4}\right)\,.
-```
-### Sensible Heat 
-```math
-Q_{\mathrm{sh}}= D_{\mathrm{sh}}(T_{\mathrm{air}}-T_{\mathrm{s}})
-```
-
-with 
-```math
-D_{\mathrm{sh}}= 1.29\cdot 10^{-2}\mathrm{K}^{-1}\cdot Apu.
-```
-Here ``D_{\mathrm{sh}}=10\,\mathrm{Wm^{-2}K^{-1}}``.
-
-### Precipitation Heat 
-```math
-Q_{p,\mathrm{rain}} = P \,\rho_w \, c_w \,(T_{\mathrm{air}} - T_0),
+T_s^{n+1}
+=
+\frac{T_s^n + \lambda Q_{\mathrm{const}}}
+{1 + \lambda Q_{\mathrm{lin}}},
 \qquad
-Q_{p,\mathrm{snow}} = P \,\rho_w \, c_i \,(T_{\mathrm{air}} - T_s)\,.
+\lambda = \frac{\Delta t}{c_i m_s}.
 ```
 
-``Q_{p}`` can be rewritten as 
+For multi-layer columns, the same surface forcing enters the top row of the
+implicit tridiagonal diffusion system.
+
+### Shortwave Radiation
+
+If `q_sw_net` is not prescribed, absorbed shortwave is
 
 ```math
-Q_{p,\mathrm{snow}}(T_s) + K_{\mathrm{lh}} - H_{\mathrm{lh}}T_s
+Q_{sw} = (1-\alpha)\,Q_{\mathrm{sw,down}},
 ```
 
-with 
+where ``\alpha`` is the already diagnosed surface albedo stored in
+`albedo_dynamic[idx]`.
+
+### Longwave Radiation
+
+If `q_lw_down` is not prescribed, the code uses
 
 ```math
-K_{\mathrm{lh}} = P \,\rho_w \, c_x
+Q_{\mathrm{lw}} =
+\sigma\left(\epsilon_{\mathrm{air}} T_{\mathrm{air}}^{4}
+- \epsilon_{\mathrm{snow}} T_{s}^{4}\right).
+```
+
+The emitted longwave term is nonlinear in surface temperature, so the solver
+linearizes it about the previous-step temperature ``T_s^n``:
+
+```math
+(T_s^{n+1})^4 \approx 4(T_s^n)^3T_s^{n+1}-3(T_s^n)^4.
+```
+
+This gives the implemented constant and linear parts
+
+```math
+Q_{\mathrm{lw,const}} =
+\sigma\left(
+\epsilon_{\mathrm{air}}T_{\mathrm{air}}^4
++ 3\epsilon_{\mathrm{snow}}(T_s^n)^4
+\right),
 ```
 
 ```math
-H_{\mathrm{lh}} = P \,\rho_w \, c_x \, T_{\mathrm{air} }
+Q_{\mathrm{lw,lin}} =
+4\sigma\epsilon_{\mathrm{snow}}(T_s^n)^3.
 ```
 
-with the heat capacity of snow or rain ``c_x``.
-In other words, ``H_{\mathrm{lh}}`` is the slope (derivative) of the precipitation heat flux with respect to surface temperature and ``K_{\mathrm{lh}}`` is the ``T_s``-independent part.
+If `q_lw_down` is prescribed, the incoming longwave term is replaced by that
+value and only the outgoing ``\epsilon_{\mathrm{snow}} T_s^4`` term is
+linearized.
 
-In the case of rainfall (no snow), ``H_{\mathrm{lh}}=0`` and, therefore, rain contributes a temperature-independent heat source.
+### Sensible Heat
 
-### Longwave Radiaton 
-
-
-
-
-The emitted longwave radiation is nonlinear in the surface temperature ``\epsilon_{\mathrm{snow}} T_{s}^{4}`` making the system difficult to solve. 
-To overcome this problem, the temperature at the surface at the time step ``n+1``, i.e., ``(T^{n+1}_s)`` is linearised around the temperature at the previous time step ``n`` (Taylor expansion): 
-
-```math 
-(T^{n+1}_s)^4 \approx 4(T^n)^3T^{n+1}-3(T^n)^4
-```
-Then the longwave radiation is linear in ``T^{n+1}_s`` and the surface energy can be split into a constant part and a linear part:
+If `q_sh` is not prescribed, the code uses
 
 ```math
-Q(T^{n+1}_s) \approx Q_{\mathrm{const}}(T^n_s) - Q_{\mathrm{lin}}(T^n_s)\,T^{n+1}_s.
+Q_{\mathrm{sh}}= D_{\mathrm{sh}}(T_{\mathrm{air}}-T_{s}),
 ```
 
-Collecting all the ``T^{n+1}_s`` (in)dependent terms gives
+with default ``D_{\mathrm{sh}} = 10\,\mathrm{W\,m^{-2}\,K^{-1}}``. In the
+linearized form,
+
+```math
+Q_{\mathrm{sh,const}} = D_{\mathrm{sh}}T_{\mathrm{air}},
+\qquad
+Q_{\mathrm{sh,lin}} = D_{\mathrm{sh}}.
+```
+
+### Precipitation And Latent-Heat Terms
+
+Snowfall and rain heat terms are directly diagnosed from the forcing
+rates in `kg m^-2 s^-1`.
+
+For snowfall, 
+
+```math
+H_{\mathrm{snow}} = P_{\mathrm{snow}} c_i,
+\qquad
+K_{\mathrm{snow}} = P_{\mathrm{snow}} c_i T_{\mathrm{air}},
+```
+
+so the snowfall contribution can be written as
+
+```math
+Q_{\mathrm{snow}}(T_s) =
+K_{\mathrm{snow}} - H_{\mathrm{snow}}T_s
+=
+P_{\mathrm{snow}} c_i (T_{\mathrm{air}} - T_s).
+```
+
+For rainfall onto an existing snow surface, the current implementation uses a
+temperature-independent term
+
+```math
+Q_{\mathrm{rain}} =
+P_{\mathrm{rain}} c_w (T_{\mathrm{air}} - T_0).
+```
+
+If `q_lh` is prescribed, the code uses it directly and disables these internal
+snowfall/rain heat-term diagnoses.
+
+One implementation detail worth stating explicitly: when both snowfall and
+rainfall are positive, the snowfall branch takes precedence in
+`_diagnose_latent_heat_flux_coefficients`.
+
+### Combined Linearized Surface Forcing
+
+Collecting the terms used by the implementation gives
 
 ```math
 Q_{\mathrm{const}} =
-D_{sh}T_{air}
-+\sigma\left(\epsilon_{air}T_{air}^4 + 3\epsilon_{snow}(T_s^n)^4\right)
-+Q_{sw}
-+K_{lh}
+Q_{sw}
++ Q_{\mathrm{lw,const}}
++ Q_{\mathrm{sh,const}}
++ K_{\mathrm{snow/rain/latent}},
 ```
 
 ```math
 Q_{\mathrm{lin}} =
-D_{sh} + 4\sigma\epsilon_{snow}(T_s^n)^3 + H_{lh}.
+Q_{\mathrm{lw,lin}}
++ Q_{\mathrm{sh,lin}}
++ H_{\mathrm{snow/latent}}.
 ```
 
-##  Diffusion 
+In code, these are stored as `surface_flux_constant` and
+`surface_flux_linear`.
 
-The diffusion equation is given by 
+## Diffusion
+
+The vertical diffusion equation is
 
 ```math
-c_i \rho_s \frac{\partial T_s}{\partial t}
-= \frac{\partial}{\partial z}\!\left( K(\rho_s)\,\frac{\partial T_s}{\partial z} \right),
+c_i \rho_s \frac{\partial T}{\partial t}
+= \frac{\partial}{\partial z}\!\left( K(\rho_s)\,\frac{\partial T}{\partial z} \right).
 ```
 
-with the thermal conducitvity of snow (Yen, 1981):
+### Thermal Conductivity Options
+
+`diffusion_model` selects one of three conductivity closures:
+
+- `1`: Yen-style
+- `2`: Sturm piecewise
+- `3` or anything else: Van Dusen-style polynomial
+
+The implemented formulas are:
 
 ```math
-K(\rho_s) = K_i \left(\frac{\rho_s}{\rho_w}\right)^{1.88}.
+K(\rho) = K_i \left(\frac{\rho}{1000}\right)^{1.88}
 ```
 
-Discretizing the equation gives for each interior layer ``i`` with thickness ``\Delta z_i``
+for `diffusion_model = 1`,
 
 ```math
-T_i^{n+1} - T_i^n = \frac{\Delta t}{\rho_i c \Delta z_i}\left(F^{n+1}_{i-1/2}  - F^{n+1}_{i+1/2} \right)
+K(\rho)=
+\begin{cases}
+0.023 + 0.234\times 10^{-3}\rho, & \rho \le 156 \\
+0.138 - 1.01\times 10^{-3}\rho + 3.233\times 10^{-6}\rho^2, & \rho > 156
+\end{cases}
 ```
 
-with the conductive heat flux across the interface between layers ``i`` and ``i+1`` (Fourier law):
+for `diffusion_model = 2`, and
 
 ```math
-F^{n+1}_{i+1/2} = -K_{i+1/2} \frac{T^{n+1}_{i+1} - T^{n+1}_{i} }{\Delta z_{i+1/2} } = -G_{i+1/2}({T^{n+1}_{i+1} - T^{n+1}_{i} })
+K(\rho)=2.1\times 10^{-2} + 4.2\times 10^{-4}\rho + 2.2\times 10^{-9}\rho^3
 ```
 
-So we have a system of ``n`` (number of layers) equations in ``n`` unknowns ``T_i^{n+1}``.
+for the fallback branch.
 
-The layer-center spacing is given by 
+### Interface Conductance
+
+For each layer, the code first computes the layer thickness
 
 ```math
-\Delta z_{i+1/2} = \frac{\Delta z_i = \Delta z_{i+1}}{2}.
+\Delta z_i = \frac{m_i}{\rho_i}.
 ```
 
-The interface conductivity ``K_{i+1/2}`` is given by a thickness-weighted arithmetic mean
+For the interface between neighboring layers ``i`` and ``i+1``, the helper
+`interface_conductance` computes
 
 ```math
-K_{i+1/2} = \frac{K_i \Delta z_i + K_{i+1}\Delta z_{i+1}}{\Delta z_{i} + \Delta z_{i+1}}
-```
-
-then 
-
-```math
-G_{i+1/2} = \frac{2(K_i \Delta z_i + K_{i+1}\Delta z_{i+1})}{(\Delta z_{i} + \Delta z_{i+1})^2}.
-```
-
-Now considering the contribution of the upper interface ``i+1/2`` to layer ``i``, we get 
-
-```math
-F^{n+1}_{i+1/2} = -G_{i+1/2}({T^{n+1}_{i+1} - T^{n+1}_{i} })
-```
-
-and putting this term into the layer equation gives
-
-```math
-T_i^{n+1} - T_i^n =  \frac{\Delta t}{\rho_i c \Delta z_i}G_{i+1/2}\left(\dots  - F^{n+1}_{i+1/2} \right) = \frac{\Delta t}{\rho_i c \Delta z_i} G_{i+1/2} (T_{i+1}^{n+1} - T_{i}^{n+1} )+\dots
-```
-So the coefficient multiplying ``T_i^{n+1}`` is 
-
-```math
--\frac{\Delta t}{\rho_i c \Delta z_i}G_{i+1/2} = - \alpha_{i+1/2} = - \frac{\Delta t}{\rho_i c \Delta z_i} \frac{2(K_i \Delta z_i + K_{i+1}\Delta z_{i+1})}{(\Delta z_{i} + \Delta z_{i+1})^2} = c_i,
-```
-
-which is the superdiagonal entry in the matrix row ``i``. Similarly, the subdiagonal is given by 
-
-```math
-a_i = -\alpha_{i-1/2} = \frac{\Delta t}{\rho_i c \Delta z_i} \frac{2(K_i \Delta z_i + K_{i+1}\Delta z_{i+1})}{(\Delta z_{i} + \Delta z_{i+1})^2}.
-```
-
-The diagonal is set to conserve the stencel, i.e., ``b_i = 1 - a_i - c_i = 1 + \alpha_{i-1/2} + \alpha_{i+1/2}``.
-
-
-So for every layer ``i``, we have
-
-```math 
-a_iT^{n+1}_{i-1} + b_i T^{n+1}_i +c_iT_{i+1}^{n+1} = r_i, 
-```
-
-with ``r_i = T^n_i + \mathrm{sources}``. In matrix form, we solve the tridiagonal matrix: 
-
-```math
-\begin{bmatrix}
-b_1 & c_1 & 0   & \cdots & 0 \\
-a_2 & b_2 & c_2 & \ddots & \vdots \\
-0   & a_3 & b_3 & \ddots & 0 \\
-\vdots & \ddots & \ddots & \ddots & c_{n-1} \\
-0 & \cdots & 0 & a_n & b_n
-\end{bmatrix}
-\begin{bmatrix}
-T_1^{n+1}\\
-T_2^{n+1}\\
-\vdots\\
-T_n^{n+1}
-\end{bmatrix}
+G_{i+1/2}
 =
-\begin{bmatrix}
-r_1\\
-r_2\\
-\vdots\\
-r_n
-\end{bmatrix}.
+\frac{K_i \Delta z_i + K_{i+1}\Delta z_{i+1}}
+{(\Delta z_i + \Delta z_{i+1})^2}.
 ```
 
+and we have
+
+```math
+\beta_i = -\frac{2\Delta t}{c_i m_i},
+```
+
+so the off-diagonal coefficients are proportional to ``\beta_i G_{i\pm1/2}``.
+
+### Discrete System
+
+For interior layers, the implemented stencil can still be understood in the
+usual tridiagonal form
+
+```math
+a_i T_{i-1}^{n+1} + b_i T_i^{n+1} + c_i T_{i+1}^{n+1} = r_i,
+```
+
+with coefficients assembled from the layer masses, conductivities, and
+thicknesses. The surface row additionally includes the linearized surface
+forcing, while the bottom row only sees conductive exchange with the layer
+above.
+
+The multi-layer system is solved with the Thomas algorithm. 
 
 ## Melt-Point Constraint
 
-If the solved surface temperature exceeds ``T_0=0^\circ\mathrm{C}``, the surface temperature is clamped to ``T_0`` and the excessive heat is stored to calculate the the energy used to bring the surface to melt. The solver is then run an additional time to avoid unphysical temperature fluxes into deeper snow layers.  
+If the solved surface temperature exceeds `T0`, the code:
 
+1. marks the step as needing melt
+2. diagnoses the energy required to bring the surface to `T0`
+3. reruns the solve with the surface fixed at `T0`
+4. clamps the final profile to `T <= T0`
+5. returns any remaining positive surface energy as `melt_energy_available`
 
-## Thermal Conductivity Options
-
-`diffusion_model` selects:
-
-- `1`: Yen (1981)
-- `2`: Sturm (1997) piecewise
-- `3` (or other): Van Dusen (1929)
-
-`go_energy_flux!` also accepts `tridiagonal_solver = :linear_algebra` or `:thomas` to choose the backend used for the implicit tridiagonal solve.
+This two-pass handling avoids unphysical conductive fluxes from an
+above-melting-point surface into deeper cold snow.
 
 ## API
 
-```@docs; canonical=false
+```@docs
 go_energy_flux!
+```
+
+```@docs; canonical=false
+_go_energy_flux_resolved!
+_debm_melt_window_fluxes
 ```

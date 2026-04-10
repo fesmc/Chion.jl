@@ -4,60 +4,57 @@ CurrentModule = Chion.SnowpackModel
 
 # Percolation
 
-`go_percolation!` redistributes liquid water vertically through active snow layers and returns the runoff generated during that call.
+`go_percolation!` redistributes retained liquid water downward until each layer
+is at or below the configured retention threshold.
 
 ## Model Formulation
 
-For each layer ``i``, the model computes liquid water content (LWC) as pore-volume saturation:
+For each active layer ``i``, the code first computes pore volume as
+
+```math
+\phi_i =
+\frac{m_{s,i}}{\rho_i^{\mathrm{snow}}}
+- \frac{m_{s,i}}{\rho_i^{\mathrm{ice}}}.
+```
+
+If ``\phi_i > 0``, liquid-water content is
 
 ```math
 \mathrm{LWC}_i =
-\frac{m_{w,i}}
-{m_{s,i}\,\rho_w\left(\frac{1}{\rho_i^{\mathrm{snow}}}-\frac{1}{\rho_i^{\mathrm{ice}}}\right)}
+\frac{m_{w,i}}{\rho_w \phi_i}.
 ```
 
-where:
-
-- ``m_{w,i}``: liquid water mass in layer ``i [\mathrm{kg\,m^{-2}}]``
-- ``m_{s,i}``: snow mass in layer ``i`` ``[\mathrm{kg\,m^{-2}}]``
-- ``\rho_w``: water density ``[\mathrm{kg\,m^{-3}}]``
-- ``\rho_i^{\mathrm{snow}}``: bulk snow density in layer ``i`` ``[\mathrm{kg\,m^{-3}}]``
-- ``\rho_i^{\mathrm{ice}}``: ice density ``[\mathrm{kg\,m^{-3}}]``
-
-If ``\mathrm{LWC}_i > \mathrm{LWC}_{\max}``, excess liquid water percolates downward:
+If ``\mathrm{LWC}_i > \mathrm{LWC}_{\max}``, the excess liquid water is
 
 ```math
 \Delta m_{w,i} =
-\left(\mathrm{LWC}_i - \mathrm{LWC}_{\max}\right)\,
-\rho_w\,m_{s,i}\left(\frac{1}{\rho_i^{\mathrm{snow}}}-\frac{1}{\rho_i^{\mathrm{ice}}}\right)
+\left(\mathrm{LWC}_i - \mathrm{LWC}_{\max}\right)\rho_w\phi_i
 ```
 
-and the layer is clipped to ``\mathrm{LWC}_{\max}``.
+and is routed to the next active layer or to runoff.
 
-## Dense-Layer Rule
+## Pore-Collapse Routing
 
-If a layer is nearly ice (``\rho_i^{\mathrm{snow}} > \rho_i^{\mathrm{ice}} - \rho_{\mathrm{tol}}``), it cannot retain liquid water in this scheme. All liquid water in that layer is transferred downward immediately (or to runoff if no receiving snow layer exists).
+If the pore volume is nonpositive, the current implementation routes all liquid
+water in that layer downward immediately, or to runoff if there is no deeper
+active snow layer.
 
-## Routing Logic
-
-For each layer from top to bottom:
-
-1. Compute percolating amount based on dense-layer or excess-LWC rule.
-2. If the next layer exists and contains snow mass, add percolating water there.
-3. Otherwise, add percolating water to runoff.
-
-The loop follows the original BESSI-style control flow and stops at the first empty layer.
-
-## API
-
-
-```@docs; canonical=false
-go_percolation!
-
-```
+Layers with zero solid mass are treated the same way: their stored liquid water
+is routed onward because they cannot retain it.
 
 ## Notes
 
-- `max_lwc` is dimensionless pore-space saturation (default `0.05`).
-- Returned runoff has units ``[\mathrm{kg\,m^{-2}}]``.
-- The `SnowpackColumn` method also accumulates returned runoff into `column.runoff`.
+- the current default is `max_lwc = 0.1`
+- returned runoff has units ``\mathrm{kg\,m^{-2}}``
+- `rho_i_tol` is still accepted by the function signatures but is not used by
+  the current implementation
+
+## API
+
+```@docs
+go_percolation!
+```
+
+```@docs; canonical=false
+_go_percolation!
+```

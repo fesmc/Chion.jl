@@ -95,6 +95,22 @@ result = Chion.run_case(case)
 state = Chion.get_state(result.domain, 1)
 ```
 
+## Documentation
+
+Detailed documentation lives in `docs/src/` and the rendered site groups the
+material into:
+
+- model state and stepping flow
+- process documentation for albedo, accumulation/melt, layer structure, densification, energy, percolation, and refreezing
+- the high-level case API and runtime outputs
+- reference utilities and validation notes
+
+Build the docs locally with:
+
+```bash
+julia --project=docs docs/make.jl
+```
+
 Useful return values:
 
 - `result.status`: run termination status
