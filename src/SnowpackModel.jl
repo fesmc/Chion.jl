@@ -7,6 +7,7 @@ module SnowpackModel
 using Printf
 using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
+using Enzyme
 using KernelAbstractions
 
 include("model_constants.jl")
@@ -62,5 +63,6 @@ include("step_timing.jl")
 include("step.jl")
 include("step_field_batches.jl")
 include("state_access.jl")
+include("enzyme_ad.jl")
 
 end # module
