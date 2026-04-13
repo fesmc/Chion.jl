@@ -14,11 +14,11 @@ export SnowpackStepFields
 export SnowpackPhysicalConstants
 export SnowpackStateFields
 export ForcingData, GridLayout, RunConfig, RunResult
-export AbstractCaseSource, SyntheticCaseSource, MARCaseSource
 export CaseDefinition, SnowpackCase
 export CASE_NETCDF_VARIABLE_GROUPS, CASE_NETCDF_VARIABLES
 export TimingStats, physics
-export prescribed_case, synthetic_case, mar_case, load_case, build_case, run_case
+export prescribed_definition, synthetic_definition, mar_definition
+export prescribed_case, synthetic_case, mar_case, run_case
 export StepWorkspace, threaded_workspaces
 export ColumnarStepWorkspace
 export continuous_bottom_deplete!

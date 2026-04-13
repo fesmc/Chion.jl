@@ -2,6 +2,7 @@ const SM = SnowpackModel
 
 using Dates
 using Base.Threads: @threads, nthreads
+using NCDatasets
 import CUDA
 import Libdl
 

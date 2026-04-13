@@ -1,11 +1,5 @@
-"""
-    CASE_NETCDF_VARIABLE_GROUPS
-
-Named groups of NetCDF output variables accepted by [`RunConfig`](@ref) and
-the case-running helpers.
-"""
-const CASE_NETCDF_VARIABLE_GROUPS = Dict(
-    :final => [
+const CASE_OUTPUT_GROUPS = (
+    final=(
         :final_thickness,
         :final_wet_mass,
         :final_bulk_density,
@@ -16,16 +10,16 @@ const CASE_NETCDF_VARIABLE_GROUPS = Dict(
         :last_cycle_delta_wet_mass,
         :last_cycle_delta_base_mass,
         :last_cycle_delta_ice_sheet_smb,
-    ],
-    :layers => [
+    ),
+    layers=(
         :n_active,
         :layer_density,
         :layer_thickness,
         :layer_snow_mass,
         :layer_liquid_mass,
         :layer_temperature_c,
-    ],
-    :history => [
+    ),
+    history=(
         :history_mean_thickness,
         :history_mean_wet_mass,
         :history_mean_bulk_density,
@@ -33,8 +27,8 @@ const CASE_NETCDF_VARIABLE_GROUPS = Dict(
         :history_mean_abs_delta_thickness,
         :history_mean_abs_delta_wet_mass,
         :history_mean_abs_delta_base_mass,
-    ],
-    :monthly => [
+    ),
+    monthly=(
         :monthly_mean_thickness,
         :monthly_mean_wet_mass,
         :monthly_mean_bulk_density,
@@ -43,25 +37,25 @@ const CASE_NETCDF_VARIABLE_GROUPS = Dict(
         :monthly_export_to_ice,
         :monthly_net_ice_sheet_forcing,
         :monthly_runoff,
-    ],
-    :step => [
-        :step_export_to_ice,
-        :step_ice_sheet_smb,
-    ],
+    ),
+    step=(:step_export_to_ice, :step_ice_sheet_smb),
 )
 
-"""
-    CASE_NETCDF_VARIABLES
+const CASE_NETCDF_VARIABLE_GROUPS = Dict(key => collect(values) for (key, values) in pairs(CASE_OUTPUT_GROUPS))
+const CASE_NETCDF_VARIABLES = unique(Symbol[var for group in values(CASE_OUTPUT_GROUPS) for var in group])
+const FINAL_GRID_KEYS = CASE_OUTPUT_GROUPS.final
+const LAYER_GRID_KEYS = CASE_OUTPUT_GROUPS.layers
+const MONTHLY_GRID_KEYS = CASE_OUTPUT_GROUPS.monthly
+const HISTORY_OUTPUT_SPECS = (
+    (output=:history_mean_thickness, record=:mean_thickness),
+    (output=:history_mean_wet_mass, record=:mean_wet_mass),
+    (output=:history_mean_bulk_density, record=:mean_bulk_density),
+    (output=:history_mean_base_mass, record=:mean_base_mass),
+    (output=:history_mean_abs_delta_thickness, record=:mean_abs_delta_thickness),
+    (output=:history_mean_abs_delta_wet_mass, record=:mean_abs_delta_wet_mass),
+    (output=:history_mean_abs_delta_base_mass, record=:mean_abs_delta_base_mass),
+)
 
-Flat list of all supported NetCDF output variable names.
-"""
-const CASE_NETCDF_VARIABLES = unique(vcat(values(CASE_NETCDF_VARIABLE_GROUPS)...))
-
-"""
-    TimingStats
-
-Run-level timing accumulator used by the high-level case runtime.
-"""
 mutable struct TimingStats
     totals::Dict{Symbol, Float64}
     counts::Dict{Symbol, Int}
@@ -69,13 +63,6 @@ end
 
 TimingStats() = TimingStats(Dict{Symbol, Float64}(), Dict{Symbol, Int}())
 
-"""
-    ForcingData
-
-Normalized forcing bundle used by case execution. All meteorological fields
-share the same `(ncol, ntime)` shape and `dt_days` stores one duration per time
-step.
-"""
 struct ForcingData
     time_values::Vector{DateTime}
     dt_days::Vector{Float64}
@@ -92,12 +79,6 @@ struct ForcingData
     has_q_lh
 end
 
-"""
-    GridLayout
-
-Mapping between column indices and a regular output grid for gridded case
-inputs and NetCDF export.
-"""
 struct GridLayout
     x::Vector{Float64}
     y::Vector{Float64}
@@ -106,12 +87,6 @@ struct GridLayout
     mask::Matrix{Float64}
 end
 
-"""
-    SnowpackStateFields
-
-Plain Julia container for initializing a [`SnowpackDomain`](@ref) from explicit
-state arrays and domain parameters.
-"""
 struct SnowpackStateFields
     N::Vector{Int}
     mass::Matrix{Float64}
@@ -131,12 +106,6 @@ struct SnowpackStateFields
     rho_max::Float64
 end
 
-"""
-    RunConfig
-
-High-level execution settings for [`SnowpackCase`](@ref) and [`run_case`](@ref),
-including backend selection and output options.
-"""
 struct RunConfig
     name::String
     input_label::String
@@ -151,17 +120,12 @@ struct RunConfig
 end
 
 struct CaseNetCDFWriter
-    ncid::Cint
-    vars::Dict{Symbol, Cint}
+    dataset::NCDataset
+    vars::Dict{Symbol, Any}
     max_steps::Int
     cycles::Int
 end
 
-"""
-    RunResult
-
-Collected outputs and diagnostics returned by [`run_case`](@ref).
-"""
 struct RunResult
     history::Vector{NamedTuple}
     status::Symbol
@@ -209,21 +173,20 @@ time_counted_block!(f::F, stats::TimingStats, key::Symbol, count::Int; kwargs...
 
 function timing_rows(stats::TimingStats; total_wall_sec::Union{Nothing, Float64}=nothing)
     rows = NamedTuple[]
-    total = sum(values(stats.totals))
-    share_total = isnothing(total_wall_sec) ? total : total_wall_sec
+    share_total = isnothing(total_wall_sec) ? sum(values(stats.totals)) : total_wall_sec
     for key in keys(stats.totals)
-        dt = stats.totals[key]
+        total_sec = stats.totals[key]
         count = stats.counts[key]
         push!(rows, (
-            key = key,
-            total_sec = dt,
-            count = count,
-            mean_sec = count > 0 ? dt / count : NaN,
-            share_pct = share_total > 0.0 ? 100.0 * dt / share_total : 0.0,
+            key=key,
+            total_sec=total_sec,
+            count=count,
+            mean_sec=count > 0 ? total_sec / count : NaN,
+            share_pct=share_total > 0.0 ? 100.0 * total_sec / share_total : 0.0,
         ))
     end
     sort!(rows; by=row -> row.total_sec, rev=true)
-    return rows, total
+    return rows, sum(values(stats.totals))
 end
 
 function print_timing_summary(io::IO, stats::TimingStats; total_wall_sec::Union{Nothing, Float64}=nothing)
@@ -231,37 +194,16 @@ function print_timing_summary(io::IO, stats::TimingStats; total_wall_sec::Union{
     println(io, "Timing summary")
     println(io, @sprintf("  %-24s %12s %9s %12s %10s", "stage", "total [s]", "share", "mean [ms]", "count"))
     for row in rows
-        println(
-            io,
-            @sprintf(
-                "  %-24s %12.3f %8.1f%% %12.3f %10d",
-                String(row.key),
-                row.total_sec,
-                row.share_pct,
-                row.mean_sec * 1.0e3,
-                row.count,
-            ),
-        )
+        println(io, @sprintf("  %-24s %12.3f %8.1f%% %12.3f %10d", String(row.key), row.total_sec, row.share_pct, row.mean_sec * 1.0e3, row.count))
     end
-    if !isnothing(total_wall_sec)
-        unaccounted = max(total_wall_sec - total, 0.0)
-        println(
-            io,
-            @sprintf(
-                "  %-24s %12.3f %8.1f%% %12s %10s",
-                "unaccounted",
-                unaccounted,
-                total_wall_sec > 0.0 ? 100.0 * unaccounted / total_wall_sec : 0.0,
-                "",
-                "",
-            ),
-        )
+    if isnothing(total_wall_sec)
         println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
-        println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
-    else
-        println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+        return
     end
-    return
+    unaccounted = max(total_wall_sec - total, 0.0)
+    println(io, @sprintf("  %-24s %12.3f %8.1f%% %12s %10s", "unaccounted", unaccounted, total_wall_sec > 0.0 ? 100.0 * unaccounted / total_wall_sec : 0.0, "", ""))
+    println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+    println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
 end
 
 @inline function normalize_case_backend(backend)
@@ -271,46 +213,23 @@ end
     return Symbol(value)
 end
 
-@inline function normalize_history_stride(stride::Integer)
-    value = Int(stride)
-    value >= 0 || error("`history_stride` must be >= 0.")
-    return value
-end
-
-@inline function should_record_cycle_metrics(cycle::Int, cycles::Int, stride::Int)
-    cycle == cycles && return true
-    stride == 0 && return false
-    return mod(cycle, stride) == 0
-end
-
-@inline function completed_cycle_count(history::Vector{NamedTuple}, status::Symbol, cycles::Int)
-    isempty(history) && return 0
-    return status == :cycles ? cycles : history[end].cycle
-end
-
-@inline function cycle_metrics_schedule_label(stride::Int)
-    stride == 0 && return "final cycle only"
-    stride == 1 && return "every cycle"
-    return "every $(stride) cycles + final"
-end
-
-@inline function _looks_like_directory_path(path::AbstractString)
-    isempty(path) && return false
-    return endswith(path, '/') || endswith(path, '\\')
-end
+@inline normalize_history_stride(stride::Integer) = Int(stride) >= 0 ? Int(stride) : error("`history_stride` must be >= 0.")
+@inline should_record_cycle_metrics(cycle::Int, cycles::Int, stride::Int) = cycle == cycles || (stride > 0 && mod(cycle, stride) == 0)
+@inline completed_cycle_count(history::Vector{NamedTuple}, ::Symbol, cycles::Int) = isempty(history) ? 0 : min(history[end].cycle, cycles)
+@inline cycle_metrics_schedule_label(stride::Int) = stride == 0 ? "final cycle only" : stride == 1 ? "every cycle" : "every $(stride) cycles + final"
+@inline _looks_like_directory_path(path::AbstractString) = !isempty(path) && (endswith(path, '/') || endswith(path, '\\'))
 
 function _case_slug(name::AbstractString)
-    slug = replace(lowercase(strip(String(name))), r"[^a-z0-9]+" => "_")
-    slug = strip(slug, '_')
+    slug = strip(replace(lowercase(strip(String(name))), r"[^a-z0-9]+" => "_"), '_')
     return isempty(slug) ? "snowpack_case" : slug
 end
 
 _default_case_output_dir(name::AbstractString) = joinpath(pwd(), "case_output", _case_slug(name))
 
-@inline function resolve_case_netcdf_path(options::RunConfig)
+function resolve_case_netcdf_path(options::RunConfig)
     default_name = "$(options.name)_final_state.nc"
     isempty(options.netcdf_path) && return joinpath(options.output_dir, default_name)
-    return (isdir(options.netcdf_path) || _looks_like_directory_path(options.netcdf_path)) ?
+    return isdir(options.netcdf_path) || _looks_like_directory_path(options.netcdf_path) ?
         joinpath(options.netcdf_path, default_name) :
         options.netcdf_path
 end
@@ -323,9 +242,8 @@ function normalize_case_netcdf_variables(spec)
         isempty(text) && return copy(CASE_NETCDF_VARIABLES)
         tokens = split(text, ',')
     end
-
     selected = Symbol[]
-    allowed_groups = sort!(String.(collect(keys(CASE_NETCDF_VARIABLE_GROUPS))))
+    allowed_groups = String.(propertynames(CASE_OUTPUT_GROUPS))
     for token in tokens
         stripped = strip(token)
         isempty(stripped) && continue
@@ -334,15 +252,12 @@ function normalize_case_netcdf_variables(spec)
             append!(selected, CASE_NETCDF_VARIABLES)
         elseif key == :none
             continue
-        elseif haskey(CASE_NETCDF_VARIABLE_GROUPS, key)
-            append!(selected, CASE_NETCDF_VARIABLE_GROUPS[key])
+        elseif hasproperty(CASE_OUTPUT_GROUPS, key)
+            append!(selected, getproperty(CASE_OUTPUT_GROUPS, key))
         elseif key in CASE_NETCDF_VARIABLES
             push!(selected, key)
         else
-            error(
-                "Unsupported NetCDF variable selector '$token'. " *
-                "Use `all`, `none`, a group ($(join(allowed_groups, ", "))), or an explicit variable name.",
-            )
+            error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, a group ($(join(sort!(allowed_groups), ", "))), or an explicit variable name.")
         end
     end
     return unique(selected)
@@ -395,8 +310,7 @@ function _forcing_column_count(field, ntime::Int)
     data = collect(field)
     ndims(data) == 1 && return 1
     ndims(data) == 2 || error("Forcing fields must be scalars, vectors, or matrices.")
-    size(data, 2) == ntime ||
-        error("Matrix forcing fields must have $ntime columns, got $(size(data, 2)).")
+    size(data, 2) == ntime || error("Matrix forcing fields must have $ntime columns, got $(size(data, 2)).")
     return size(data, 1)
 end
 
@@ -451,36 +365,17 @@ function ForcingData(;
 )
     has_native_inputs = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
     has_user_inputs = !isnothing(air_temperature_c) || !isnothing(snowfall_mm_day) || !isnothing(rainfall_mm_day)
-    has_native_inputs && has_user_inputs &&
-        error("Pass either model-native forcing fields or user-facing forcing fields, not both.")
+    has_native_inputs && has_user_inputs && error("Pass either model-native forcing fields or user-facing forcing fields, not both.")
 
     dt_days_v = Float64.(collect(dt_days))
     isempty(dt_days_v) && error("`dt_days` must not be empty.")
-    ntime = length(dt_days_v)
     all(>(0.0), dt_days_v) || error("All `dt_days` entries must be positive.")
-
-    column_count = 1
+    ntime = length(dt_days_v)
+    column_count = isnothing(ncol) ? 1 : Int(ncol)
     if isnothing(ncol)
-        for candidate in (
-            air_temperature,
-            snowfall_rate,
-            rainfall_rate,
-            air_temperature_c,
-            snowfall_mm_day,
-            rainfall_mm_day,
-            shortwave_down,
-            wind_speed,
-            q_lw_down,
-            q_sh,
-            q_lh,
-        )
-            if !isnothing(candidate)
-                column_count = _forcing_column_count(candidate, ntime)
-                break
-            end
+        for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c, snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh)
+            isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
         end
-    else
-        column_count = Int(ncol)
     end
     column_count > 0 || error("`ncol` must be positive.")
 
@@ -500,21 +395,15 @@ function ForcingData(;
         rainfall_rate = _forcing_numeric_matrix(rainfall_rate, column_count, ntime, "rainfall_rate")
     end
 
-    shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
     dims = size(air_temperature)
+    shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
     wind_speed_m = isnothing(wind_speed) ? fill(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
     q_lw_down_m = isnothing(q_lw_down) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
-    has_q_lw_down_m = isnothing(q_lw_down) ?
-        fill(false, dims) :
-        (isnothing(has_q_lw_down) ? fill(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down"))
+    has_q_lw_down_m = isnothing(q_lw_down) ? fill(false, dims) : isnothing(has_q_lw_down) ? fill(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down")
     q_sh_m = isnothing(q_sh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
-    has_q_sh_m = isnothing(q_sh) ?
-        fill(false, dims) :
-        (isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh"))
+    has_q_sh_m = isnothing(q_sh) ? fill(false, dims) : isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
     q_lh_m = isnothing(q_lh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
-    has_q_lh_m = isnothing(q_lh) ?
-        fill(false, dims) :
-        (isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh"))
+    has_q_lh_m = isnothing(q_lh) ? fill(false, dims) : isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
@@ -530,11 +419,8 @@ function ForcingData(;
     )
         _ensure_matching_field_sizes(dims, name, field)
     end
-    time_values_v = if isnothing(time_values)
-        _synthesized_time_values(dt_days_v)
-    else
-        DateTime.(collect(time_values))
-    end
+
+    time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
     return ForcingData(
         time_values_v,
@@ -553,17 +439,9 @@ function ForcingData(;
     )
 end
 
-function GridLayout(
-    x::AbstractVector,
-    y::AbstractVector,
-    js::AbstractVector{<:Integer},
-    is::AbstractVector{<:Integer},
-    mask,
-)
-    x_v = Float64.(x)
-    y_v = Float64.(y)
-    js_v = Int.(js)
-    is_v = Int.(is)
+function GridLayout(x::AbstractVector, y::AbstractVector, js::AbstractVector{<:Integer}, is::AbstractVector{<:Integer}, mask)
+    x_v, y_v = Float64.(x), Float64.(y)
+    js_v, is_v = Int.(js), Int.(is)
     mask_m = Matrix{Float64}(mask)
     length(js_v) == length(is_v) || error("`js` and `is` must have the same length.")
     size(mask_m, 1) == length(y_v) || error("`mask` y dimension must match `y`.")
@@ -590,10 +468,8 @@ function SnowpackStateFields(
     rho_max::Real=SM.DEFAULT_RHO_MAX,
 )
     N_v = Int.(N)
-    mass_m = Matrix{Float64}(mass)
-    mass_w_m = Matrix{Float64}(mass_w)
-    density_m = Matrix{Float64}(density)
-    temperature_m = Matrix{Float64}(temperature)
+    mass_m, mass_w_m = Matrix{Float64}(mass), Matrix{Float64}(mass_w)
+    density_m, temperature_m = Matrix{Float64}(density), Matrix{Float64}(temperature)
     ncol = length(N_v)
     size(mass_m, 2) == ncol || error("`mass` must have one column per entry of `N`.")
     size(mass_w_m) == size(mass_m) || error("`mass_w` must match `mass`.")
@@ -640,254 +516,58 @@ function SM.SnowpackDomain(state::SnowpackStateFields)
     )
 end
 
-@inline case_output_enabled(options::RunConfig) = options.write_outputs || options.write_netcdf
-
 @inline function case_selected(options::RunConfig, group::Symbol)
-    group_vars = Set(CASE_NETCDF_VARIABLE_GROUPS[group])
+    group_vars = getproperty(CASE_OUTPUT_GROUPS, group)
     return any(var -> var in group_vars, options.netcdf_variables)
 end
 
-@inline function _grid_shape(layout::GridLayout)
-    return size(layout.mask)
-end
+@inline _grid_shape(layout::GridLayout) = size(layout.mask)
 
-function allocate_summary_buffers(n::Int)
-    return (
-        thickness = Vector{Float64}(undef, n),
-        wet_mass = Vector{Float64}(undef, n),
-        bulk_density = Vector{Float64}(undef, n),
-        base_mass = Vector{Float64}(undef, n),
-        smb_ice = Vector{Float64}(undef, n),
-        liquid_water = Vector{Float64}(undef, n),
-        runoff = Vector{Float64}(undef, n),
-    )
-end
+const SUMMARY_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff)
+const CYCLE_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass)
 
-function allocate_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int)
-    return (
-        thickness = similar(domain.mass, Float64, n),
-        wet_mass = similar(domain.mass, Float64, n),
-        bulk_density = similar(domain.mass, Float64, n),
-        base_mass = similar(domain.mass, Float64, n),
-        smb_ice = similar(domain.mass, Float64, n),
-        liquid_water = similar(domain.mass, Float64, n),
-        runoff = similar(domain.mass, Float64, n),
-    )
-end
+_named_buffers(names::NTuple{N, Symbol}, build::F) where {N, F <: Function} = NamedTuple{names}(ntuple(_ -> build(), N))
 
-function allocate_cycle_summary_buffers(n::Int)
-    return (
-        thickness = Vector{Float64}(undef, n),
-        wet_mass = Vector{Float64}(undef, n),
-        bulk_density = Vector{Float64}(undef, n),
-        base_mass = Vector{Float64}(undef, n),
-    )
-end
+allocate_summary_buffers(n::Int) = _named_buffers(SUMMARY_BUFFER_NAMES, () -> Vector{Float64}(undef, n))
+allocate_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int) = _named_buffers(SUMMARY_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
+allocate_cycle_summary_buffers(n::Int) = _named_buffers(CYCLE_BUFFER_NAMES, () -> Vector{Float64}(undef, n))
+allocate_cycle_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int) = _named_buffers(CYCLE_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
 
-function allocate_cycle_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int)
-    return (
-        thickness = similar(domain.mass, Float64, n),
-        wet_mass = similar(domain.mass, Float64, n),
-        bulk_density = similar(domain.mass, Float64, n),
-        base_mass = similar(domain.mass, Float64, n),
-    )
-end
+@inline _host_vector(data::Vector{Float64}; copy_array::Bool=false) = copy_array ? copy(data) : data
+@inline _host_vector(data; copy_array::Bool=false) = Float64.(Array(data))
 
-const CYCLE_METRIC_BUFFER_LENGTH = 13
-
-struct CycleMetricsWorkspace{A <: AbstractVector{Float64}}
-    device_buffer::A
-    host_buffer::Vector{Float64}
-end
-
-function CycleMetricsWorkspace(domain::SM.AbstractSnowpackDomain)
-    return CycleMetricsWorkspace(
-        similar(domain.mass, Float64, CYCLE_METRIC_BUFFER_LENGTH),
-        zeros(Float64, CYCLE_METRIC_BUFFER_LENGTH),
-    )
-end
-
-function _cycle_metrics_kernel!(
-    metrics,
-    delta_thickness,
-    delta_wet_mass,
-    delta_base_mass,
-    thickness,
-    wet_mass,
-    bulk_density,
-    base_mass,
-    prev_thickness,
-    prev_wet_mass,
-    prev_base_mass,
-)
-    idx = (CUDA.blockIdx().x - 1) * CUDA.blockDim().x + CUDA.threadIdx().x
-    if idx <= length(thickness)
-        thickness_val = thickness[idx]
-        wet_mass_val = wet_mass[idx]
-        bulk_density_val = bulk_density[idx]
-        base_mass_val = base_mass[idx]
-        delta_thickness_val = thickness_val - prev_thickness[idx]
-        delta_wet_mass_val = wet_mass_val - prev_wet_mass[idx]
-        delta_base_mass_val = base_mass_val - prev_base_mass[idx]
-        delta_thickness[idx] = delta_thickness_val
-        delta_wet_mass[idx] = delta_wet_mass_val
-        delta_base_mass[idx] = delta_base_mass_val
-        abs_delta_thickness_val = abs(delta_thickness_val)
-        abs_delta_wet_mass_val = abs(delta_wet_mass_val)
-        abs_delta_base_mass_val = abs(delta_base_mass_val)
-        CUDA.@atomic metrics[1] += thickness_val
-        CUDA.@atomic metrics[2] += wet_mass_val
-        CUDA.@atomic metrics[3] += bulk_density_val
-        CUDA.@atomic metrics[4] += base_mass_val
-        CUDA.@atomic metrics[5] += delta_thickness_val
-        CUDA.@atomic metrics[6] += abs_delta_thickness_val
-        CUDA.@atomic metrics[7] = max(metrics[7], abs_delta_thickness_val)
-        CUDA.@atomic metrics[8] += delta_wet_mass_val
-        CUDA.@atomic metrics[9] += abs_delta_wet_mass_val
-        CUDA.@atomic metrics[10] = max(metrics[10], abs_delta_wet_mass_val)
-        CUDA.@atomic metrics[11] += delta_base_mass_val
-        CUDA.@atomic metrics[12] += abs_delta_base_mass_val
-        CUDA.@atomic metrics[13] = max(metrics[13], abs_delta_base_mass_val)
+function _finite_mean(data)
+    total = 0.0
+    count = 0
+    for value in data
+        isfinite(value) || continue
+        total += value
+        count += 1
     end
-    return nothing
-end
-
-@inline function _metric_mean(total::Float64, count::Int)
     return count == 0 ? NaN : total / count
 end
 
-@inline function _metric_max(value::Float64, has_value::Bool)
-    return has_value ? value : NaN
-end
-
-function cycle_record_from_metrics(cycle::Int, metrics::AbstractVector{Float64}, n::Int)
-    scale = inv(Float64(n))
-    return (
-        cycle = cycle,
-        mean_thickness = metrics[1] * scale,
-        mean_wet_mass = metrics[2] * scale,
-        mean_bulk_density = metrics[3] * scale,
-        mean_base_mass = metrics[4] * scale,
-        mean_signed_delta_thickness = metrics[5] * scale,
-        mean_abs_delta_thickness = metrics[6] * scale,
-        max_abs_delta_thickness = metrics[7],
-        mean_signed_delta_wet_mass = metrics[8] * scale,
-        mean_abs_delta_wet_mass = metrics[9] * scale,
-        max_abs_delta_wet_mass = metrics[10],
-        mean_signed_delta_base_mass = metrics[11] * scale,
-        mean_abs_delta_base_mass = metrics[12] * scale,
-        max_abs_delta_base_mass = metrics[13],
-    )
-end
-
-function make_cycle_record_and_deltas!(
-    cycle::Int,
-    delta_thickness::Vector{Float64},
-    delta_wet_mass::Vector{Float64},
-    delta_base_mass::Vector{Float64},
-    thickness::Vector{Float64},
-    wet_mass::Vector{Float64},
-    bulk_density::Vector{Float64},
-    base_mass::Vector{Float64},
-    prev_thickness::Vector{Float64},
-    prev_wet_mass::Vector{Float64},
-    prev_base_mass::Vector{Float64},
-)
-    sum_thickness = 0.0
-    sum_wet_mass = 0.0
-    sum_bulk_density = 0.0
-    sum_base_mass = 0.0
-    count_thickness = 0
-    count_wet_mass = 0
-    count_bulk_density = 0
-    count_base_mass = 0
-    sum_delta_thickness = 0.0
-    sum_abs_delta_thickness = 0.0
-    max_abs_delta_thickness = 0.0
-    count_delta_thickness = 0
-    has_delta_thickness = false
-    sum_delta_wet_mass = 0.0
-    sum_abs_delta_wet_mass = 0.0
-    max_abs_delta_wet_mass = 0.0
-    count_delta_wet_mass = 0
-    has_delta_wet_mass = false
-    sum_delta_base_mass = 0.0
-    sum_abs_delta_base_mass = 0.0
-    max_abs_delta_base_mass = 0.0
-    count_delta_base_mass = 0
-    has_delta_base_mass = false
-    @inbounds for idx in eachindex(thickness)
-        thickness_val = thickness[idx]
-        wet_mass_val = wet_mass[idx]
-        bulk_density_val = bulk_density[idx]
-        base_mass_val = base_mass[idx]
-        delta_thickness_val = thickness_val - prev_thickness[idx]
-        delta_wet_mass_val = wet_mass_val - prev_wet_mass[idx]
-        delta_base_mass_val = base_mass_val - prev_base_mass[idx]
-        delta_thickness[idx] = delta_thickness_val
-        delta_wet_mass[idx] = delta_wet_mass_val
-        delta_base_mass[idx] = delta_base_mass_val
-        if isfinite(thickness_val)
-            sum_thickness += thickness_val
-            count_thickness += 1
-        end
-        if isfinite(wet_mass_val)
-            sum_wet_mass += wet_mass_val
-            count_wet_mass += 1
-        end
-        if isfinite(bulk_density_val)
-            sum_bulk_density += bulk_density_val
-            count_bulk_density += 1
-        end
-        if isfinite(base_mass_val)
-            sum_base_mass += base_mass_val
-            count_base_mass += 1
-        end
-        if isfinite(delta_thickness_val)
-            abs_delta_thickness_val = abs(delta_thickness_val)
-            sum_delta_thickness += delta_thickness_val
-            sum_abs_delta_thickness += abs_delta_thickness_val
-            max_abs_delta_thickness = max(max_abs_delta_thickness, abs_delta_thickness_val)
-            count_delta_thickness += 1
-            has_delta_thickness = true
-        end
-        if isfinite(delta_wet_mass_val)
-            abs_delta_wet_mass_val = abs(delta_wet_mass_val)
-            sum_delta_wet_mass += delta_wet_mass_val
-            sum_abs_delta_wet_mass += abs_delta_wet_mass_val
-            max_abs_delta_wet_mass = max(max_abs_delta_wet_mass, abs_delta_wet_mass_val)
-            count_delta_wet_mass += 1
-            has_delta_wet_mass = true
-        end
-        if isfinite(delta_base_mass_val)
-            abs_delta_base_mass_val = abs(delta_base_mass_val)
-            sum_delta_base_mass += delta_base_mass_val
-            sum_abs_delta_base_mass += abs_delta_base_mass_val
-            max_abs_delta_base_mass = max(max_abs_delta_base_mass, abs_delta_base_mass_val)
-            count_delta_base_mass += 1
-            has_delta_base_mass = true
-        end
+function _delta_stats(data)
+    signed_total = 0.0
+    abs_total = 0.0
+    max_abs = 0.0
+    count = 0
+    for value in data
+        isfinite(value) || continue
+        abs_value = abs(value)
+        signed_total += value
+        abs_total += abs_value
+        max_abs = max(max_abs, abs_value)
+        count += 1
     end
     return (
-        cycle = cycle,
-        mean_thickness = _metric_mean(sum_thickness, count_thickness),
-        mean_wet_mass = _metric_mean(sum_wet_mass, count_wet_mass),
-        mean_bulk_density = _metric_mean(sum_bulk_density, count_bulk_density),
-        mean_base_mass = _metric_mean(sum_base_mass, count_base_mass),
-        mean_signed_delta_thickness = _metric_mean(sum_delta_thickness, count_delta_thickness),
-        mean_abs_delta_thickness = _metric_mean(sum_abs_delta_thickness, count_delta_thickness),
-        max_abs_delta_thickness = _metric_max(max_abs_delta_thickness, has_delta_thickness),
-        mean_signed_delta_wet_mass = _metric_mean(sum_delta_wet_mass, count_delta_wet_mass),
-        mean_abs_delta_wet_mass = _metric_mean(sum_abs_delta_wet_mass, count_delta_wet_mass),
-        max_abs_delta_wet_mass = _metric_max(max_abs_delta_wet_mass, has_delta_wet_mass),
-        mean_signed_delta_base_mass = _metric_mean(sum_delta_base_mass, count_delta_base_mass),
-        mean_abs_delta_base_mass = _metric_mean(sum_abs_delta_base_mass, count_delta_base_mass),
-        max_abs_delta_base_mass = _metric_max(max_abs_delta_base_mass, has_delta_base_mass),
+        mean_signed=count == 0 ? NaN : signed_total / count,
+        mean_abs=count == 0 ? NaN : abs_total / count,
+        max_abs=count == 0 ? NaN : max_abs,
     )
 end
 
 function make_cycle_record_and_deltas!(
-    workspace::CycleMetricsWorkspace,
     cycle::Int,
     delta_thickness,
     delta_wet_mass,
@@ -900,32 +580,40 @@ function make_cycle_record_and_deltas!(
     prev_wet_mass,
     prev_base_mass,
 )
-    fill!(workspace.device_buffer, 0.0)
-    n = length(thickness)
-    threads = min(256, n)
-    blocks = cld(n, threads)
-    CUDA.@cuda threads=threads blocks=blocks _cycle_metrics_kernel!(
-        workspace.device_buffer,
-        delta_thickness,
-        delta_wet_mass,
-        delta_base_mass,
-        thickness,
-        wet_mass,
-        bulk_density,
-        base_mass,
-        prev_thickness,
-        prev_wet_mass,
-        prev_base_mass,
+    delta_thickness .= thickness .- prev_thickness
+    delta_wet_mass .= wet_mass .- prev_wet_mass
+    delta_base_mass .= base_mass .- prev_base_mass
+    dth = _delta_stats(_host_vector(delta_thickness))
+    dwet = _delta_stats(_host_vector(delta_wet_mass))
+    dbase = _delta_stats(_host_vector(delta_base_mass))
+    return (
+        cycle=cycle,
+        mean_thickness=_finite_mean(_host_vector(thickness)),
+        mean_wet_mass=_finite_mean(_host_vector(wet_mass)),
+        mean_bulk_density=_finite_mean(_host_vector(bulk_density)),
+        mean_base_mass=_finite_mean(_host_vector(base_mass)),
+        mean_signed_delta_thickness=dth.mean_signed,
+        mean_abs_delta_thickness=dth.mean_abs,
+        max_abs_delta_thickness=dth.max_abs,
+        mean_signed_delta_wet_mass=dwet.mean_signed,
+        mean_abs_delta_wet_mass=dwet.mean_abs,
+        max_abs_delta_wet_mass=dwet.max_abs,
+        mean_signed_delta_base_mass=dbase.mean_signed,
+        mean_abs_delta_base_mass=dbase.mean_abs,
+        max_abs_delta_base_mass=dbase.max_abs,
     )
-    copyto!(workspace.host_buffer, workspace.device_buffer)
-    return cycle_record_from_metrics(cycle, workspace.host_buffer, n)
+end
+
+function _copy_summary_fields!(summary, device_summary, fields)
+    for field in fields
+        copyto!(getfield(summary, field), getfield(device_summary, field))
+    end
+    return summary
 end
 
 function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads, device_summary=nothing)
     if backend == :kernelabstractions
-        if isnothing(device_summary)
-            device_summary = allocate_summary_buffers(domain, length(summary.thickness))
-        end
+        isnothing(device_summary) && (device_summary = allocate_summary_buffers(domain, length(summary.thickness)))
         SM.summarize_domain_state!(
             device_summary.thickness,
             device_summary.wet_mass,
@@ -937,34 +625,25 @@ function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=
             domain;
             backend=backend,
         )
-        copyto!(summary.thickness, device_summary.thickness)
-        copyto!(summary.wet_mass, device_summary.wet_mass)
-        copyto!(summary.bulk_density, device_summary.bulk_density)
-        copyto!(summary.base_mass, device_summary.base_mass)
-        copyto!(summary.smb_ice, device_summary.smb_ice)
-        copyto!(summary.liquid_water, device_summary.liquid_water)
-        copyto!(summary.runoff, device_summary.runoff)
-    else
-        SM.summarize_domain_state!(
-            summary.thickness,
-            summary.wet_mass,
-            summary.bulk_density,
-            summary.base_mass,
-            summary.smb_ice,
-            summary.liquid_water,
-            summary.runoff,
-            domain;
-            backend=backend,
-        )
+        return _copy_summary_fields!(summary, device_summary, SUMMARY_BUFFER_NAMES)
     end
+    SM.summarize_domain_state!(
+        summary.thickness,
+        summary.wet_mass,
+        summary.bulk_density,
+        summary.base_mass,
+        summary.smb_ice,
+        summary.liquid_water,
+        summary.runoff,
+        domain;
+        backend=backend,
+    )
     return summary
 end
 
 function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=:threads, device_summary=nothing)
     if backend == :kernelabstractions
-        if isnothing(device_summary)
-            device_summary = allocate_cycle_summary_buffers(domain, length(summary.thickness))
-        end
+        isnothing(device_summary) && (device_summary = allocate_cycle_summary_buffers(domain, length(summary.thickness)))
         SM.summarize_cycle_state!(
             device_summary.thickness,
             device_summary.wet_mass,
@@ -973,36 +652,22 @@ function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::S
             domain;
             backend=backend,
         )
-        copyto!(summary.thickness, device_summary.thickness)
-        copyto!(summary.wet_mass, device_summary.wet_mass)
-        copyto!(summary.bulk_density, device_summary.bulk_density)
-        copyto!(summary.base_mass, device_summary.base_mass)
-    else
-        SM.summarize_cycle_state!(
-            summary.thickness,
-            summary.wet_mass,
-            summary.bulk_density,
-            summary.base_mass,
-            domain;
-            backend=backend,
-        )
+        return _copy_summary_fields!(summary, device_summary, CYCLE_BUFFER_NAMES)
     end
+    SM.summarize_cycle_state!(
+        summary.thickness,
+        summary.wet_mass,
+        summary.bulk_density,
+        summary.base_mass,
+        domain;
+        backend=backend,
+    )
     return summary
 end
 
-function cpu_cycle_summary(summary)
-    return (
-        thickness = Array(summary.thickness),
-        wet_mass = Array(summary.wet_mass),
-        bulk_density = Array(summary.bulk_density),
-        base_mass = Array(summary.base_mass),
-    )
-end
-
 function build_annual_output_schedule(time_values::Vector{DateTime})
-    ntime = length(time_values)
-    write_output = falses(ntime)
-    output_slot = zeros(Int, ntime)
+    write_output = falses(length(time_values))
+    output_slot = zeros(Int, length(time_values))
     source_indices = Int32[]
     source_codes = Int32[]
     years = unique(year.(time_values))
@@ -1015,41 +680,7 @@ function build_annual_output_schedule(time_values::Vector{DateTime})
         ts = time_values[last_t]
         push!(source_codes, Int32(year(ts) * 1000000 + month(ts) * 10000 + day(ts) * 100 + hour(ts)))
     end
-    return (
-        write_output = write_output,
-        output_slot = output_slot,
-        source_indices = source_indices,
-        source_codes = source_codes,
-        years = years,
-    )
-end
-
-function summarize_column_state(domain::SM.AbstractSnowpackDomain, idx::Int)
-    n = domain.N[idx]
-    thickness = 0.0
-    wet_mass = 0.0
-    solid_mass = 0.0
-    liquid_water = 0.0
-    @inbounds for layer_index in 1:n
-        solid = domain.mass[layer_index, idx]
-        liquid = domain.mass_w[layer_index, idx]
-        rho = domain.density[layer_index, idx]
-        solid_mass += solid
-        wet_mass += solid + liquid
-        liquid_water += liquid
-        if solid > 0.0 && rho > SM.EPS_TINY
-            thickness += solid / rho
-        end
-    end
-    return (
-        thickness = thickness,
-        wet_mass = wet_mass,
-        bulk_density = thickness > SM.EPS_TINY ? solid_mass / thickness : 0.0,
-        base_mass = domain.mass_base[idx],
-        smb_ice = domain.smb_ice[idx],
-        liquid_water = liquid_water,
-        runoff = domain.runoff[idx],
-    )
+    return (write_output=write_output, output_slot=output_slot, source_indices=source_indices, source_codes=source_codes, years=years)
 end
 
 function cycle_log_line(record)
@@ -1065,33 +696,57 @@ function cycle_log_line(record)
     )
 end
 
+const HISTORY_CSV_SPECS = (
+    (key=:cycle, label="cycle", integer=true),
+    (key=:mean_thickness, label="mean_thickness_m", integer=false),
+    (key=:mean_wet_mass, label="mean_wet_mass_mmwe", integer=false),
+    (key=:mean_bulk_density, label="mean_bulk_density_kgm3", integer=false),
+    (key=:mean_base_mass, label="mean_base_mass_mmwe", integer=false),
+    (key=:mean_signed_delta_thickness, label="mean_signed_delta_thickness_m", integer=false),
+    (key=:mean_abs_delta_thickness, label="mean_abs_delta_thickness_m", integer=false),
+    (key=:max_abs_delta_thickness, label="max_abs_delta_thickness_m", integer=false),
+    (key=:mean_signed_delta_wet_mass, label="mean_signed_delta_wet_mass_mmwe", integer=false),
+    (key=:mean_abs_delta_wet_mass, label="mean_abs_delta_wet_mass_mmwe", integer=false),
+    (key=:max_abs_delta_wet_mass, label="max_abs_delta_wet_mass_mmwe", integer=false),
+    (key=:mean_signed_delta_base_mass, label="mean_signed_delta_base_mass_mmwe", integer=false),
+    (key=:mean_abs_delta_base_mass, label="mean_abs_delta_base_mass_mmwe", integer=false),
+    (key=:max_abs_delta_base_mass, label="max_abs_delta_base_mass_mmwe", integer=false),
+)
+
 function write_case_history_csv(out_path::AbstractString, history::Vector{NamedTuple})
     mkpath(dirname(out_path))
     open(out_path, "w") do io
-        println(io, "cycle,mean_thickness_m,mean_wet_mass_mmwe,mean_bulk_density_kgm3,mean_base_mass_mmwe,mean_signed_delta_thickness_m,mean_abs_delta_thickness_m,max_abs_delta_thickness_m,mean_signed_delta_wet_mass_mmwe,mean_abs_delta_wet_mass_mmwe,max_abs_delta_wet_mass_mmwe,mean_signed_delta_base_mass_mmwe,mean_abs_delta_base_mass_mmwe,max_abs_delta_base_mass_mmwe")
+        println(io, join((spec.label for spec in HISTORY_CSV_SPECS), ","))
         for rec in history
-            @printf(
-                io,
-                "%d,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f,%.10f\n",
-                rec.cycle,
-                rec.mean_thickness,
-                rec.mean_wet_mass,
-                rec.mean_bulk_density,
-                rec.mean_base_mass,
-                rec.mean_signed_delta_thickness,
-                rec.mean_abs_delta_thickness,
-                rec.max_abs_delta_thickness,
-                rec.mean_signed_delta_wet_mass,
-                rec.mean_abs_delta_wet_mass,
-                rec.max_abs_delta_wet_mass,
-                rec.mean_signed_delta_base_mass,
-                rec.mean_abs_delta_base_mass,
-                rec.max_abs_delta_base_mass,
-            )
+            values = String[]
+            for spec in HISTORY_CSV_SPECS
+                value = getfield(rec, spec.key)
+                push!(values, spec.integer ? string(value) : @sprintf("%.10f", value))
+            end
+            println(io, join(values, ","))
         end
     end
-    return
 end
+
+const SUMMARY_REPORT_SPECS = (
+    (title="Final domain means", fields=(
+        ("Thickness (m)", :mean_thickness),
+        ("Wet mass (mmWE)", :mean_wet_mass),
+        ("Bulk density (kg m-3)", :mean_bulk_density),
+        ("Firn-to-ice mass (mmWE)", :mean_base_mass),
+    )),
+    (title="Last cycle deltas", fields=(
+        ("Mean signed dThickness (m)", :mean_signed_delta_thickness),
+        ("Mean abs dThickness (m)", :mean_abs_delta_thickness),
+        ("Max abs dThickness (m)", :max_abs_delta_thickness),
+        ("Mean signed dSWE (mmWE)", :mean_signed_delta_wet_mass),
+        ("Mean abs dSWE (mmWE)", :mean_abs_delta_wet_mass),
+        ("Max abs dSWE (mmWE)", :max_abs_delta_wet_mass),
+        ("Mean signed dBase (mmWE)", :mean_signed_delta_base_mass),
+        ("Mean abs dBase (mmWE)", :mean_abs_delta_base_mass),
+        ("Max abs dBase (mmWE)", :max_abs_delta_base_mass),
+    )),
+)
 
 function write_case_summary(
     out_path::AbstractString,
@@ -1103,7 +758,6 @@ function write_case_summary(
     timings::TimingStats,
 )
     last_record = history[end]
-    cycles_completed = completed_cycle_count(history, status, options.cycles)
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, options.name)
@@ -1118,35 +772,19 @@ function write_case_summary(
         println(io, "NetCDF output      : ", options.write_netcdf ? "enabled" : "disabled (--no-nc)")
         println(io, "Cycle metrics      : ", cycle_metrics_schedule_label(options.history_stride))
         println(io, "Status             : ", string(status))
-        println(io, "Cycles completed   : ", cycles_completed)
-        println(io)
-        println(io, "Final domain means")
-        println(io, @sprintf("Thickness (m)              : %.6f", last_record.mean_thickness))
-        println(io, @sprintf("Wet mass (mmWE)            : %.6f", last_record.mean_wet_mass))
-        println(io, @sprintf("Bulk density (kg m-3)      : %.6f", last_record.mean_bulk_density))
-        println(io, @sprintf("Firn-to-ice mass (mmWE)    : %.6f", last_record.mean_base_mass))
-        println(io)
-        println(io, "Last cycle deltas")
-        println(io, @sprintf("Mean signed dThickness (m) : %.6f", last_record.mean_signed_delta_thickness))
-        println(io, @sprintf("Mean abs dThickness (m)    : %.6f", last_record.mean_abs_delta_thickness))
-        println(io, @sprintf("Max abs dThickness (m)     : %.6f", last_record.max_abs_delta_thickness))
-        println(io, @sprintf("Mean signed dSWE (mmWE)    : %.6f", last_record.mean_signed_delta_wet_mass))
-        println(io, @sprintf("Mean abs dSWE (mmWE)       : %.6f", last_record.mean_abs_delta_wet_mass))
-        println(io, @sprintf("Max abs dSWE (mmWE)        : %.6f", last_record.max_abs_delta_wet_mass))
-        println(io, @sprintf("Mean signed dBase (mmWE)   : %.6f", last_record.mean_signed_delta_base_mass))
-        println(io, @sprintf("Mean abs dBase (mmWE)      : %.6f", last_record.mean_abs_delta_base_mass))
-        println(io, @sprintf("Max abs dBase (mmWE)       : %.6f", last_record.max_abs_delta_base_mass))
-        if status == :cycles
+        println(io, "Cycles completed   : ", completed_cycle_count(history, status, options.cycles))
+        for section in SUMMARY_REPORT_SPECS
             println(io)
-            println(io, "Interpretation     : Requested cycles completed.")
-        else
-            println(io)
-            println(io, "Interpretation     : Run completed.")
+            println(io, section.title)
+            for (label, key) in section.fields
+                println(io, @sprintf("%-28s : %.6f", label, getfield(last_record, key)))
+            end
         end
+        println(io)
+        println(io, "Interpretation     : Requested cycles completed.")
         println(io)
         print_timing_summary(io, timings)
     end
-    return
 end
 
 function collect_final_layer_grids(
@@ -1164,8 +802,7 @@ function collect_final_layer_grids(
     layer_liquid_mass = fill(NaN, nlayer, ny, nx)
     layer_temperature_c = fill(NaN, nlayer, ny, nx)
     @inbounds for idx in 1:SM.column_count(domain)
-        j = js[idx]
-        i = is[idx]
+        j, i = js[idx], is[idx]
         n_active[j, i] = Int32(domain.N[idx])
         for k in 1:domain.N[idx]
             rho = domain.density[k, idx]
@@ -1181,24 +818,25 @@ function collect_final_layer_grids(
         end
     end
     return (
-        n_active = n_active,
-        layer_density = layer_density,
-        layer_thickness = layer_thickness,
-        layer_snow_mass = layer_snow_mass,
-        layer_liquid_mass = layer_liquid_mass,
-        layer_temperature_c = layer_temperature_c,
+        n_active=n_active,
+        layer_density=layer_density,
+        layer_thickness=layer_thickness,
+        layer_snow_mass=layer_snow_mass,
+        layer_liquid_mass=layer_liquid_mass,
+        layer_temperature_c=layer_temperature_c,
     )
 end
 
-@inline function _empty_layer_grids()
+empty_final_grids() = NamedTuple{FINAL_GRID_KEYS}(ntuple(_ -> Matrix{Float64}(undef, 0, 0), length(FINAL_GRID_KEYS)))
+empty_monthly_grids() = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(_ -> Array{Float64}(undef, 0, 0, 0), length(MONTHLY_GRID_KEYS)))
+
+function _empty_layer_grids()
     return (
-        n_active = Matrix{Int32}(undef, 0, 0),
-        layer_density = Array{Float64}(undef, 0, 0, 0),
-        layer_thickness = Array{Float64}(undef, 0, 0, 0),
-        layer_snow_mass = Array{Float64}(undef, 0, 0, 0),
-        layer_liquid_mass = Array{Float64}(undef, 0, 0, 0),
-        layer_temperature_c = Array{Float64}(undef, 0, 0, 0),
+        n_active=Matrix{Int32}(undef, 0, 0),
+        layer_density=Array{Float64}(undef, 0, 0, 0),
+        layer_thickness=Array{Float64}(undef, 0, 0, 0),
+        layer_snow_mass=Array{Float64}(undef, 0, 0, 0),
+        layer_liquid_mass=Array{Float64}(undef, 0, 0, 0),
+        layer_temperature_c=Array{Float64}(undef, 0, 0, 0),
     )
 end
-
-@inline _empty_monthly_grid() = Array{Float64}(undef, 0, 0, 0)
