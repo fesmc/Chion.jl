@@ -7,7 +7,7 @@ using Printf
 using Base.Threads
 using Chion
 
-const SM = Chion.SnowpackModel
+const SM = Chion
 const DEFAULT_GRIS_FORCING_FILE_PATH = let path = ""
     for candidate in (
         "/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc",

@@ -7,7 +7,7 @@ using Chion
 
 include("gris_forcing_file_case_backend.jl")
 
-const SM = Chion.SnowpackModel
+const SM = Chion
 
 const DEFAULT_CONFIG = (
     name="GrIS forcing file case",

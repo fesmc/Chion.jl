@@ -14,7 +14,7 @@ using Chion
 include(joinpath(@__DIR__, "..", "shared", "forcing_file_problem_loader.jl"))
 using .ChionForcingFileProblemLoader
 
-const SM = Chion.SnowpackModel
+const SM = Chion
 const DEFAULT_NC_PATH = begin
     candidate = "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2026.nc"
     isfile(candidate) ? candidate : ""

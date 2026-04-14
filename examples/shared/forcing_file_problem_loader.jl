@@ -6,7 +6,7 @@ using Printf
 using Base.Threads
 using Chion
 
-const SM = Chion.SnowpackModel
+const SM = Chion
 const FILL_THRESHOLD = -9.0e18
 
 export default_gris_forcing_file_path

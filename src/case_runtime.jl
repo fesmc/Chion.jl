@@ -54,6 +54,9 @@ const HISTORY_OUTPUT_SPECS = (
     (output=:history_mean_abs_delta_wet_mass, record=:mean_abs_delta_wet_mass),
     (output=:history_mean_abs_delta_base_mass, record=:mean_abs_delta_base_mass),
 )
+
+@inline _grid_shape(layout) = size(layout.mask)
+
 function time_block!(stats, key::Symbol, f; synchronize=nothing)
     synchronize === nothing || synchronize()
     t0 = time_ns()

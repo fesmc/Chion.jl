@@ -10,7 +10,7 @@ catch
     false
 end
 
-const SM = Chion.SnowpackModel
+const SM = Chion
 
 export pkg_root
 export result_domain_cpu, summarize_column, output_dir_for

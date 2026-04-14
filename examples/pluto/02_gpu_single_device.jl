@@ -441,14 +441,14 @@ manual_gpu_step = if gpu_status.functional
 	case_data = case.definition
 	domain_cpu = deepcopy(case_data.domain)
 	forcing_cpu = case_data.forcing
-	step_fields_cpu = Chion.SnowpackModel.SnowpackStepFields(forcing_cpu)
-	domain_gpu = Chion.SnowpackModel.gpu_domain(deepcopy(domain_cpu))
-	step_fields_gpu = Chion.SnowpackModel.adapt(CUDA.CuArray, step_fields_cpu)
+	step_fields_cpu = Chion.SnowpackStepFields(forcing_cpu)
+	domain_gpu = Chion.gpu_domain(deepcopy(domain_cpu))
+	step_fields_gpu = Chion.adapt(CUDA.CuArray, step_fields_cpu)
 	workspace_gpu = Chion.ColumnarStepWorkspace(domain_gpu)
 	Chion.step!(domain_gpu, step_fields_gpu, 1, workspace_gpu)
 	CUDA.synchronize()
-	host_domain = Chion.SnowpackModel.cpu_domain(domain_gpu)
-	summary = Chion.SnowpackModel.summarize_domain_state(host_domain; backend=:threads)
+	host_domain = Chion.cpu_domain(domain_gpu)
+	summary = Chion.summarize_domain_state(host_domain; backend=:threads)
 	(
 		device_domain_type=typeof(domain_gpu.mass),
 		device_forcing_type=typeof(step_fields_gpu.air_temperature),
