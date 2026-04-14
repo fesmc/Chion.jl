@@ -4,48 +4,40 @@ CurrentModule = Chion
 
 # Case API And Outputs
 
-The case API separates input preparation from execution:
+The public case API is intentionally small:
 
-1. create or load reusable inputs as a [`CaseDefinition`](@ref)
-2. turn those inputs into a runnable [`SnowpackCase`](@ref)
-3. execute the case and inspect the returned [`RunResult`](@ref)
+1. create a runnable `SnowpackCase` with `prescribed_case` or `synthetic_case`
+2. execute it with `run_case`
+3. inspect the returned `RunResult`
 
 ## Input Units And Normalization
 
 - `prescribed_case(...)` accepts air temperature in Celsius and snowfall /
   rainfall in `mmWE day^-1`
-- `ForcingData(...)` accepts either those user-facing units or model-native
-  rates in `kg m^-2 s^-1`
-- `SnowpackStepForcing` and the runtime kernels always operate in native units
+- `prescribed_case(...; forcing_file=...)` loads a prepared external forcing
+  file and assumes any spatial masking has already been done outside Chion
+- the internal forcing arrays and runtime kernels always operate in native
+  units such as `K`, `kg m^-2 s^-1`, and `W m^-2`
 
 ## Outputs
 
 `RunResult` stores the final domain, cycle history, run status, timing
 diagnostics, and the output paths that were produced when file writing was
 enabled. NetCDF variable selection is controlled with
-[`CASE_NETCDF_VARIABLE_GROUPS`](@ref) and [`CASE_NETCDF_VARIABLES`](@ref).
+`CASE_NETCDF_VARIABLE_GROUPS` and `CASE_NETCDF_VARIABLES`.
 
-## API Reference
+## Public Surface
+
+- `physics(...)` selects the process parameterization bundle.
+- `prescribed_case(...)` creates a runnable case from direct forcing arrays or a prepared forcing file.
+- `synthetic_case(...)` creates a runnable case from built-in synthetic forcing.
+- `run_case(case)` executes a case and returns a `RunResult`.
+- `RunConfig(...)` controls backend, output writing, cycle count, and history stride.
+
+## Reference
 
 ```@docs
-AbstractCaseSource
-SyntheticCaseSource
-MARCaseSource
-CaseDefinition
-SnowpackCase
-physics
-load_case
 prescribed_case
 synthetic_case
-mar_case
-build_case
 run_case
-ForcingData
-GridLayout
-SnowpackStateFields
-RunConfig
-RunResult
-TimingStats
-CASE_NETCDF_VARIABLE_GROUPS
-CASE_NETCDF_VARIABLES
 ```

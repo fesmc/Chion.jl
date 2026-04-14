@@ -28,7 +28,7 @@ arrays for:
 `SnowpackStepForcing` uses model-native units (`K`, `kg m^-2 s^-1`, `W m^-2`).
 The higher-level case API accepts user-facing forcing in Celsius and
 `mmWE day^-1`, then converts it into the native forcing arrays stored in
-[`ForcingData`](@ref).
+the case definition.
 
 ## Step Ordering
 

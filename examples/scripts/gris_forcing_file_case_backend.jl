@@ -189,7 +189,7 @@ end
 function load_gris_forcing_file_problem(
     forcing_file::AbstractString;
     mask_threshold::Union{Nothing, Float64}=50.0,
-    ntot::Integer=20,
+    ntot::Integer=15,
     physics::SM.SnowpackPhysicalConstants{Float64}=Chion.physics(),
 )
     definition = _script_definition_from_forcing_file(
@@ -228,7 +228,7 @@ function run_gris_forcing_file_case(
     end
 
     d0 = definition.domain
-    empty_domain = SM.SnowpackDomain(
+    """empty_domain = SM.SnowpackDomain(
         c=d0.c,
         ncol=d0.ncol,
         Ntot=15,
@@ -249,7 +249,7 @@ function run_gris_forcing_file_case(
         input_label=definition.input_label,
         notes=definition.notes,
         metadata=definition.metadata,
-    )
+    )"""
     case = Chion.SnowpackCase(
         definition;
         run=Chion.RunConfig(

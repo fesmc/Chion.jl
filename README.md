@@ -9,9 +9,8 @@ It supports single-column and gridded runs, threaded CPU execution, single-GPU e
 The current public workflow is:
 
 1. Choose physics with `physics(...)`
-2. Build reusable inputs with `prescribed_case(...)`, `synthetic_case(...)`, `mar_case(...)`, or `load_case(...)`
-3. Turn those inputs into a runnable case with `build_case(...)`
-4. Execute with `run_case(...)`
+2. Create a runnable case with `prescribed_case(...)` or `synthetic_case(...)`
+3. Execute with `run_case(...)`
 
 ## Features
 
@@ -49,7 +48,7 @@ using Chion
 ### Optional Runtime Dependencies
 
 - GPU runs require a working CUDA environment that `CUDA.jl` can use.
-- MAR workflows require HDF5/NetCDF input files.
+- File-backed prescribed workflows require prepared HDF5/NetCDF forcing files.
 - If `libnetcdf` is not on the default library path, set `NETCDF_LIB` explicitly.
 
 The existing launch scripts assume modules such as `julia`, `hdf5`, `netcdf-c`, and optionally `cuda`.
@@ -64,7 +63,7 @@ using Pkg
 Pkg.activate(".")
 using Chion
 
-definition = Chion.prescribed_case(
+case = Chion.prescribed_case(
     physics=Chion.physics(
         albedo=:dynamic,
         densification=:bessi,
@@ -78,10 +77,6 @@ definition = Chion.prescribed_case(
     snowfall_mm_day=[2.0, 0.0, 0.0],
     rainfall_mm_day=0.0,
     shortwave_down=[80.0, 150.0, 220.0],
-)
-
-case = Chion.build_case(
-    definition;
     run=Chion.RunConfig(
         name="demo",
         backend=:threads,
@@ -122,19 +117,14 @@ Useful return values:
 
 ### `prescribed_case(...)`
 
-Build a reusable case definition directly from user-supplied forcing arrays.
-Use this for small experiments, notebooks, and custom forcing pipelines.
+Build a runnable case directly from user-supplied forcing arrays, or from a
+prepared external forcing file via `forcing_file=...`.
+Use this for experiments, notebooks, and file-backed forcing pipelines.
 
 ### `synthetic_case(...)`
 
-Generate built-in synthetic forcing for smoke tests and demos.
+Generate a runnable case with built-in synthetic forcing for smoke tests and demos.
 Supports `variant=:single_column` and `variant=:multi_column`, with `nx` and `ny` controlling the grid size.
-
-### `mar_case(path; ...)`
-
-Currently, we test the model with forcing from the regional climate model MAR, therefore the naming (will change in the future).
-Load a reusable case definition from a MAR NetCDF/HDF5 file.
-This is the main entry point for external forcing workflows.
 
 ## Running Scripts
 
@@ -151,11 +141,11 @@ julia --project=. examples/scripts/run_synthetic_case.jl \
   --no-nc
 ```
 
-### MAR Case
+### Prepared Forcing File
 
 ```bash
-julia --project=. examples/scripts/run_gris_mar_case.jl \
-  --nc=/path/to/MAR_file.nc \
+julia --project=. examples/scripts/run_gris_forcing_file_case.jl \
+  --forcing-file=/path/to/prepared_forcing.nc \
   --backend=gpu \
   --cycles=2 \
   --no-output \
@@ -165,7 +155,7 @@ julia --project=. examples/scripts/run_gris_mar_case.jl \
 There is also a configuration-driven variant:
 
 ```bash
-julia --project=. examples/scripts/run_gris_mar_case_configured.jl
+julia --project=. examples/scripts/run_gris_forcing_file_case_configured.jl
 ```
 
 Its defaults can be overridden with environment variables such as `FORCING_PATH`, `BACKEND`, `CYCLES`, `WRITE_OUTPUTS`, `WRITE_NETCDF`, and `NETCDF_VARIABLES`.
@@ -177,7 +167,7 @@ The current notebook set includes:
 
 - `01_cpu_workflows.jl`: CPU workflows using the public case API
 - `02_gpu_single_device.jl`: single-device GPU workflow
-- `90_mar_external_data_scaffold.jl`: optional external MAR data scaffold
+- `90_forcing_file_external_scaffold.jl`: optional external forcing-file scaffold
 
 For cluster launches, `pluto.sh` starts a Pluto server with a dedicated runtime depot.
 
@@ -190,7 +180,7 @@ For cluster launches, `pluto.sh` starts a Pluto server with a dedicated runtime 
 - `history_stride` controls how often cycle metrics are recorded
 - `netcdf_variables` accepts `all`, `none`, group names, or explicit variable names
 
-NetCDF output requires a grid layout, so it is available for gridded synthetic, prescribed, and MAR cases.
+NetCDF output requires a grid layout, so it is available for gridded synthetic and prescribed cases.
 
 ## Tests
 
@@ -200,4 +190,4 @@ Run the test suite with:
 julia --project=. test/runtests.jl
 ```
 
-The tests cover the high-level case API, including prescribed, synthetic, and MAR-backed smoke cases.
+The tests cover the high-level case API, including direct prescribed, synthetic, and file-backed prescribed smoke cases.

@@ -42,10 +42,9 @@ We do the following steps:
    by adding the repo to `LOAD_PATH`
 2. define `physics`
 3. define forcing vectors
-4. build a `CaseDefinition` from those vectors
-5. `build_case(...; run=RunConfig(..., backend=:gpu, cycles=1))`
-6. `run_case(...)`
-7. move results back to host only when you need host-side inspection
+4. create a runnable `prescribed_case(...; run=RunConfig(..., backend=:gpu, cycles=1))`
+5. `run_case(...)`
+6. move results back to host only when you need host-side inspection
 
 The preferred path is the high-level case API. A later section shows the lower-level device transfer steps for manual batch stepping.
 """
@@ -138,17 +137,28 @@ Let's build the single-column case. The maximum amount of vertical layers is 5 (
 """
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82012
-single_data = Chion.prescribed_case(
-	physics=physics,
-	ntot=5,
-	nx=1,
-	ny=1,
-	initial_surface_mass=250.0,
-	initial_density=320.0,
-	initial_temperature_c=-12.0,
-	input_label="single_column_vectors",
-	; single_forcing_vectors...,
-)
+begin
+	single_case = Chion.prescribed_case(
+		physics=physics,
+		ntot=5,
+		nx=1,
+		ny=1,
+		initial_surface_mass=250.0,
+		initial_density=320.0,
+		initial_temperature_c=-12.0,
+		run=Chion.RunConfig(
+			name="gpu_single_column",
+			backend=:gpu,
+			output_dir=output_dir_for("02_gpu_single_device"),
+			write_outputs=false,
+			write_netcdf=false,
+			cycles=1,
+			history_stride=1,
+		),
+		; single_forcing_vectors...,
+	)
+	single_data = single_case.definition
+end
 
 # ╔═╡ c29af6d1-2ca9-40b3-a51d-43e54f73224c
 gpu_single_forcing_plot = plots_available() ?
@@ -162,18 +172,6 @@ We tell the computer, that we want to run on the GPU and define what forcing dat
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82013
 begin
-	single_case = Chion.build_case(
-		single_data;
-		run=Chion.RunConfig(
-			name="gpu_single_column",
-			backend=:gpu,
-			output_dir=output_dir_for("02_gpu_single_device"),
-			write_outputs=false,
-			write_netcdf=false,
-			cycles=1,
-			history_stride=1,
-		),
-	)
 	gpu_single_run = gpu_status.functional ? run_case_capture(single_case) : nothing
 	single_case
 end
@@ -234,7 +232,7 @@ begin
 			wind_speed=wind_speed,
 		)
 	end
-	constant_snow = Chion.prescribed_case(
+	const_snow_case = Chion.prescribed_case(
 		physics=physics,
 		ntot=5,
 		nx=1,
@@ -242,21 +240,6 @@ begin
 		initial_surface_mass=250.0,
 		initial_density=320.0,
 		initial_temperature_c=-12.0,
-		input_label="single_column_vectors",
-		; single_forcing_vectors_constant_snow...,
-	)
-	
-end
-
-# ╔═╡ c180d37e-0277-4c42-9464-7c06c8f7ad6a
-md"""
-As we see, the amount of snow increases and we have 5 active layers now with the bottom layer accumulating the snow mass. 
-"""
-
-# ╔═╡ 3c726710-1c66-42c3-82bb-eaeaebeb3920
-begin
-	const_snow_case = Chion.build_case(
-		constant_snow;
 		run=Chion.RunConfig(
 			name="gpu_single_column",
 			backend=:gpu,
@@ -266,7 +249,18 @@ begin
 			cycles=1,
 			history_stride=1,
 		),
+		; single_forcing_vectors_constant_snow...,
 	)
+	constant_snow = const_snow_case.definition
+end
+
+# ╔═╡ c180d37e-0277-4c42-9464-7c06c8f7ad6a
+md"""
+As we see, the amount of snow increases and we have 5 active layers now with the bottom layer accumulating the snow mass. 
+"""
+
+# ╔═╡ 3c726710-1c66-42c3-82bb-eaeaebeb3920
+begin
 	gpu_snow_run = gpu_status.functional ? run_case_capture(const_snow_case) : nothing
 	const_snow_case
 
@@ -309,7 +303,7 @@ begin
 end
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82017
-multi_data = let
+multi_case = let
 	nx = multi_grid.nx
 	ny = multi_grid.ny
 	ntime = length(single_forcing_vectors.dt_days)
@@ -342,7 +336,15 @@ multi_data = let
 		initial_surface_mass=multi_surface_mass,
 		initial_density=320.0,
 		initial_temperature_c=-12.0,
-		input_label="multi_column_spatiotemporal_forcing",
+		run=Chion.RunConfig(
+			name="gpu_multi_column",
+			backend=:gpu,
+			output_dir=output_dir_for("02_gpu_single_device"),
+			write_outputs=false,
+			write_netcdf=false,
+			cycles=10,
+			history_stride=1,
+		),
 		dt_days=single_forcing_vectors.dt_days,
 		air_temperature_c=gridcube_to_columns(air_temperature_c_cube),
 		snowfall_mm_day=gridcube_to_columns(snowfall_mm_day_cube),
@@ -356,18 +358,7 @@ end
 
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82018
-multi_case = Chion.build_case(
-	multi_data;
-	run=Chion.RunConfig(
-		name="gpu_multi_column",
-		backend=:gpu,
-		output_dir=output_dir_for("02_gpu_single_device"),
-		write_outputs=false,
-		write_netcdf=false,
-		cycles=10,
-		history_stride=1,
-	),
-)
+multi_data = multi_case.definition
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82019
 gpu_multi_run = gpu_status.functional ? run_case_capture(multi_case) : nothing
@@ -432,7 +423,7 @@ md"""
 
 # ╔═╡ 5d9fd6b6-0c79-11ef-86e7-174c14f82021
 manual_gpu_step = if gpu_status.functional
-	case_data = Chion.prescribed_case(
+	case = Chion.prescribed_case(
 		physics=physics,
 		ntot=5,
 		nx=4,
@@ -440,7 +431,6 @@ manual_gpu_step = if gpu_status.functional
 		initial_surface_mass=240.0,
 		initial_density=320.0,
 		initial_temperature_c=-10.0,
-		input_label="manual_gpu_step_vectors",
 		dt_days=fill(1.0, 8),
 		air_temperature_c=collect(range(-16.0, -6.0; length=8)),
 		snowfall_mm_day=[0.0, 0.4, 1.0, 0.8, 0.2, 0.0, 0.0, 0.0],
@@ -448,6 +438,7 @@ manual_gpu_step = if gpu_status.functional
 		shortwave_down=[120.0, 130.0, 150.0, 180.0, 210.0, 220.0, 200.0, 160.0],
 		wind_speed=[4.2, 4.4, 4.8, 5.0, 5.2, 5.0, 4.7, 4.5],
 	)
+	case_data = case.definition
 	domain_cpu = deepcopy(case_data.domain)
 	forcing_cpu = case_data.forcing
 	step_fields_cpu = Chion.SnowpackModel.SnowpackStepFields(forcing_cpu)

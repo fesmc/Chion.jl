@@ -1,6 +1,7 @@
 using Test
 using Dates
 using HDF5
+using NCDatasets
 using Chion
 
 function _captured_exception(f::Function)
@@ -12,18 +13,16 @@ function _captured_exception(f::Function)
     end
 end
 
-function _write_mar_fixture(path::AbstractString)
+function _write_forcing_file_fixture(path::AbstractString)
     ntime = 3
     nlayer = 2
     ny = 2
     nx = 2
+    fill_value = -1.0e19
 
     x = [0.0, 10_000.0]
     y = [0.0, 10_000.0]
-    mask = [
-        100.0 100.0
-        20.0 100.0
-    ]
+    mask = fill(1.0, ny, nx)
     outlay_bounds = [
         0.0 0.4
         0.4 0.8
@@ -46,6 +45,10 @@ function _write_mar_fixture(path::AbstractString)
         swd[t, j, i] = 100.0 + 20.0 * (t - 1) + 5.0 * (i - 1)
     end
     rf[3, :, :] .= 0.2
+    tt[:, 2, 1] .= fill_value
+    sf[:, 2, 1] .= fill_value
+    rf[:, 2, 1] .= fill_value
+    swd[:, 2, 1] .= fill_value
     ro1[:, 1, :, :] .= 320.0
     ro1[:, 2, :, :] .= 450.0
     ti1[:, 1, :, :] .= -8.0
@@ -136,8 +139,8 @@ end
         @test occursin("air_temperature_c", sprint(showerror, err))
     end
 
-    @testset "prescribed_case builds case definitions" begin
-        definition = Chion.prescribed_case(
+    @testset "prescribed_case returns a runnable case from direct inputs" begin
+        case = Chion.prescribed_case(
             physics=Chion.physics(),
             ntot=4,
             nx=2,
@@ -150,23 +153,37 @@ end
             initial_surface_mass=[120.0, 0.0, 180.0, 60.0],
             initial_density=330.0,
             initial_temperature_c=-11.0,
-            input_label="prescribed_demo",
+            run=Chion.RunConfig(
+                name="prescribed_demo",
+                write_outputs=false,
+                write_netcdf=false,
+                cycles=1,
+            ),
         )
+        definition = case.definition
 
-        @test definition isa Chion.CaseDefinition
+        @test case isa Chion.SnowpackCase
         @test definition.metadata.format == :prescribed
+        @test definition.metadata.source == :direct
         @test definition.metadata.ncol == 4
-        @test definition.input_label == "prescribed_demo"
+        @test definition.input_label == "prescribed_forcing"
         @test size(definition.forcing.air_temperature) == (4, 3)
         @test length(definition.layout.js) == 4
         @test Chion.get_state(definition.domain, 1)["n_active"] == 1
         @test Chion.get_state(definition.domain, 2)["n_active"] == 0
+
+        result = Chion.run_case(case; io=devnull)
+        @test result.status == :cycles
+        @test result.run.name == "prescribed_demo"
     end
 
-    @testset "synthetic_case runs through build_case/run_case" begin
-        definition = Chion.synthetic_case(variant=:multi_column, ntot=4, ntime=4, nx=2, ny=2)
-        case = Chion.build_case(
-            definition;
+    @testset "synthetic_case returns a runnable case" begin
+        case = Chion.synthetic_case(
+            variant=:multi_column,
+            ntot=4,
+            ntime=4,
+            nx=2,
+            ny=2,
             run=Chion.RunConfig(
                 name="synthetic_smoke",
                 backend=:cpu,
@@ -182,15 +199,29 @@ end
         @test result.summary_path == ""
         @test result.history_csv_path == ""
         @test result.run.backend == :threads
-        @test case.definition === definition
+        @test case.definition.metadata.format == :synthetic
     end
 
-    @testset "MAR fixture loads and runs" begin
+    @testset "file-backed prescribed_case loads and runs" begin
         mktempdir() do dir
-            fixture_path = _write_mar_fixture(joinpath(dir, "mar_fixture.h5"))
-            definition = Chion.mar_case(fixture_path; ntot=4, physics=Chion.physics(), mask_threshold=50.0)
+            fixture_path = _write_forcing_file_fixture(joinpath(dir, "forcing_fixture.h5"))
+            case = Chion.prescribed_case(
+                forcing_file=fixture_path,
+                ntot=4,
+                physics=Chion.physics(),
+                run=Chion.RunConfig(
+                    name="forcing_fixture_smoke",
+                    backend=:cpu,
+                    write_outputs=false,
+                    write_netcdf=false,
+                    cycles=1,
+                ),
+            )
+            definition = case.definition
 
-            @test definition.metadata.format == :mar
+            @test case isa Chion.SnowpackCase
+            @test definition.metadata.format == :prescribed
+            @test definition.metadata.source == :file
             @test definition.metadata.ncol == 3
             @test definition.metadata.ntime == 3
             @test definition.input_label == fixture_path
@@ -199,16 +230,6 @@ end
             @test all(definition.forcing.wind_speed .== 5.0)
             @test occursin("default 5.0 m s^-1", only(definition.notes))
 
-            case = Chion.build_case(
-                definition;
-                run=Chion.RunConfig(
-                    name="mar_fixture_smoke",
-                    backend=:cpu,
-                    write_outputs=false,
-                    write_netcdf=false,
-                    cycles=1,
-                ),
-            )
             result = Chion.run_case(case; io=devnull)
 
             @test result.status == :cycles
@@ -217,19 +238,75 @@ end
         end
     end
 
-    @testset "Optional real MAR smoke" begin
-        real_mar_path = get(
+    @testset "direct prescribed_case writes compact NetCDF outputs" begin
+        mktempdir() do dir
+            case = Chion.prescribed_case(
+                physics=Chion.physics(),
+                ntot=4,
+                nx=3,
+                ny=2,
+                dt_days=[1.0, 1.0, 1.0],
+                air_temperature_c=[-12.0, -11.5, -11.0],
+                snowfall_mm_day=[0.2, 0.0, 0.4],
+                rainfall_mm_day=[0.0, 0.1, 0.0],
+                shortwave_down=[100.0, 130.0, 160.0],
+                wind_speed=[3.0, 4.0, 5.0],
+                initial_surface_mass=[120.0, 0.0, 180.0, 60.0, 90.0, 30.0],
+                initial_density=330.0,
+                initial_temperature_c=-11.0,
+                run=Chion.RunConfig(
+                    name="netcdf_smoke",
+                    backend=:cpu,
+                    output_dir=dir,
+                    write_outputs=false,
+                    write_netcdf=true,
+                    netcdf_variables="final,history",
+                    cycles=1,
+                ),
+            )
+            result = Chion.run_case(case; io=devnull)
+
+            @test result.status == :cycles
+            @test isfile(result.netcdf_path)
+            @test endswith(result.netcdf_path, ".nc")
+            ds = NCDataset(result.netcdf_path)
+            @test dimnames(ds["final_thickness"]) == ("x", "y")
+            @test size(ds["final_thickness"]) == (3, 2)
+            @test ds["x"][:] == [0.0, 1.0, 2.0]
+            @test ds["y"][:] == [0.0, 1.0]
+            close(ds)
+        end
+    end
+
+    @testset "forcing_file mode rejects direct forcing keywords" begin
+        err = _captured_exception() do
+            Chion.prescribed_case(
+                forcing_file="prepared.nc",
+                dt_days=[1.0],
+                air_temperature_c=[-10.0],
+                snowfall_mm_day=[0.0],
+                rainfall_mm_day=[0.0],
+                shortwave_down=[100.0],
+            )
+        end
+        @test err isa Exception
+        @test occursin("forcing_file", sprint(showerror, err))
+    end
+
+    @testset "Optional real forcing-file smoke" begin
+        real_forcing_file = get(
             ENV,
-            "CHION_REAL_MAR_PATH",
+            "CHION_REAL_FORCING_FILE",
             "/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc",
         )
-        enabled = get(ENV, "CHION_RUN_REAL_MAR_SMOKE", "0") == "1"
-        if enabled && isfile(real_mar_path)
-            definition = Chion.mar_case(real_mar_path; ntot=10, physics=Chion.physics(), mask_threshold=50.0)
-            case = Chion.build_case(
-                definition;
+        enabled = get(ENV, "CHION_RUN_REAL_FORCING_FILE_SMOKE", "0") == "1"
+        if enabled && isfile(real_forcing_file)
+            case = Chion.prescribed_case(
+                forcing_file=real_forcing_file,
+                ntot=10,
+                physics=Chion.physics(),
                 run=Chion.RunConfig(
-                    name="real_mar_smoke",
+                    name="real_forcing_file_smoke",
                     backend=:cpu,
                     write_outputs=false,
                     write_netcdf=false,
@@ -239,7 +316,7 @@ end
             result = Chion.run_case(case; io=devnull)
             @test result.status == :cycles
         else
-            @info "Skipping optional real MAR smoke test" enabled=enabled path=real_mar_path
+            @info "Skipping optional real forcing-file smoke test" enabled=enabled path=real_forcing_file
             @test true
         end
     end
