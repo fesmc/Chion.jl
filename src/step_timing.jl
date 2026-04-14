@@ -121,31 +121,30 @@ function timing_rows(stats::StepTimingStats)
 end
 
 """
-    print_timing_summary(io, stats)
+    print_timing_summary(io, stats; total_wall_sec=nothing)
 
 Write a human-readable table of accumulated `step!` stage timings to `io`.
 This is purely diagnostic and does not modify model state.
 """
-function print_timing_summary(io::IO, stats::StepTimingStats)
+function print_timing_summary(
+    io::IO,
+    stats::StepTimingStats;
+    total_wall_sec::Union{Nothing, Float64}=nothing,
+)
     rows, total = timing_rows(stats)
-    println(io, "Step timing summary")
-    println(
-        io,
-        @sprintf("  %-24s %12s %9s %12s %10s", "stage", "total [s]", "share", "mean [micro s]", "count"),
-    )
+    share_total = isnothing(total_wall_sec) ? total : total_wall_sec
+    println(io, "Timing summary")
+    println(io, @sprintf("  %-24s %12s %9s %12s %10s", "stage", "total [s]", "share", "mean [ms]", "count"))
     for row in rows
-        println(
-            io,
-            @sprintf(
-                "  %-24s %12.3f %8.1f%% %12.3f %10d",
-                String(row.key),
-                row.total_sec,
-                row.share_pct,
-                row.mean_sec * 1.0e6,
-                row.count,
-            ),
-        )
+        share_pct = share_total > 0.0 ? 100.0 * row.total_sec / share_total : 0.0
+        println(io, @sprintf("  %-24s %12.3f %8.1f%% %12.3f %10d", String(row.key), row.total_sec, share_pct, row.mean_sec * 1.0e3, row.count))
     end
-    println(io, @sprintf("  %-24s %12.3f", "total_timed", total))
-    return
+    if isnothing(total_wall_sec)
+        println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+        return
+    end
+    unaccounted = max(total_wall_sec - total, 0.0)
+    println(io, @sprintf("  %-24s %12.3f %8.1f%% %12s %10s", "unaccounted", unaccounted, share_total > 0.0 ? 100.0 * unaccounted / share_total : 0.0, "", ""))
+    println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+    println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
 end

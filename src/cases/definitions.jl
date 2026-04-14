@@ -1,5 +1,5 @@
 struct CaseDefinition
-    domain::SM.SnowpackDomain
+    domain::SnowpackDomain
     forcing::ForcingData
     layout::Union{Nothing, GridLayout}
     input_label::String
@@ -8,14 +8,14 @@ struct CaseDefinition
 end
 
 function CaseDefinition(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     forcing::ForcingData;
     layout::Union{Nothing, GridLayout}=nothing,
     input_label::AbstractString="",
     notes::AbstractVector{<:AbstractString}=String[],
     metadata::NamedTuple=(;),
 )
-    ncol = SM.column_count(domain)
+    ncol = column_count(domain)
     size(forcing.air_temperature, 1) == ncol ||
         error("Forcing column count ($(size(forcing.air_temperature, 1))) must match the domain column count ($ncol).")
     isnothing(layout) || length(layout.js) == ncol ||
@@ -38,14 +38,14 @@ end
 
 function Base.show(io::IO, data::CaseDefinition)
     layout_state = isnothing(data.layout) ? "none" : "grid"
-    print(io, "CaseDefinition(ncol=$(SM.column_count(data.domain)), ntime=$(length(data.forcing.time_values)), layout=$(layout_state))")
+    print(io, "CaseDefinition(ncol=$(column_count(data.domain)), ntime=$(length(data.forcing.time_values)), layout=$(layout_state))")
 end
 
 function Base.show(io::IO, case::SnowpackCase)
     layout_state = isnothing(case.definition.layout) ? "none" : "grid"
     print(
         io,
-        "SnowpackCase(name=$(repr(case.name)), backend=$(case.run.backend), ncol=$(SM.column_count(case.definition.domain)), ntime=$(length(case.definition.forcing.time_values)), layout=$(layout_state))",
+        "SnowpackCase(name=$(repr(case.name)), backend=$(case.run.backend), ncol=$(column_count(case.definition.domain)), ntime=$(length(case.definition.forcing.time_values)), layout=$(layout_state))",
     )
 end
 
@@ -53,7 +53,7 @@ end
 @inline _case_symbol(value) = Symbol(lowercase(strip(String(value))))
 
 function physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
-    return SM.SnowpackPhysicalConstants(
+    return SnowpackPhysicalConstants(
         Float64;
         albedo_scheme=_case_symbol(albedo),
         low_density_densification=_case_symbol(densification),
@@ -91,7 +91,7 @@ function _surface_state(;
     layer_temperature_c,
     surface_Tsrf_c=layer_temperature_c,
     surface_albedo,
-    physics::SM.SnowpackPhysicalConstants{Float64},
+    physics::SnowpackPhysicalConstants{Float64},
 )
     ncol = length(surface_mass)
     N = Int.(surface_mass .> 0.0)
@@ -105,7 +105,7 @@ function _surface_state(;
         density[1, col] = surface_density[col]
         temperature[1, col] = physics.T0 + layer_temperature_c[col]
     end
-    return SM.SnowpackDomain(
+    return SnowpackDomain(
         N,
         mass,
         mass_w,
@@ -151,7 +151,7 @@ function _synthetic_layout(variant::Symbol, nx::Int, ny::Int)
 end
 
 function synthetic_definition(;
-    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=5,
     variant::Symbol=:multi_column,
     ntime::Integer=12,
@@ -227,7 +227,7 @@ function synthetic_definition(;
 end
 
 function prescribed_definition(;
-    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=15,
     nx::Integer=1,
     ny::Integer=1,

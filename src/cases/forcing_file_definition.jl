@@ -125,8 +125,8 @@ function _forcing_file_extract_layers(
     liquid_water_profile::AbstractVector{<:Real},
     outlay_bounds::AbstractMatrix{<:Real};
     ntot::Int=80,
-    c::SM.SnowpackPhysicalConstants=SM.SnowpackPhysicalConstants(),
-    mass_split::Float64=SM.DEFAULT_MASS_SPLIT,
+    c::SnowpackPhysicalConstants=SnowpackPhysicalConstants(),
+    mass_split::Float64=DEFAULT_MASS_SPLIT,
 )
     if !isfinite(total_height) || total_height <= 0.0
         return (
@@ -219,7 +219,7 @@ function _forcing_file_extract_layers(
 end
 
 function _forcing_file_populate_domain_column_from_restart!(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     idx::Int,
     total_height::Float64,
     density_profile::AbstractVector{<:Real},
@@ -246,14 +246,14 @@ function _forcing_file_populate_domain_column_from_restart!(
         if extracted.N < domain.Ntot
             domain.mass[(extracted.N + 1):end, idx] .= 0.0
             domain.mass_w[(extracted.N + 1):end, idx] .= 0.0
-            domain.density[(extracted.N + 1):end, idx] .= SM.DEFAULT_DENSITY_INIT
+            domain.density[(extracted.N + 1):end, idx] .= DEFAULT_DENSITY_INIT
             domain.temperature[(extracted.N + 1):end, idx] .= domain.c.T0 - 10.0
         end
         domain.Tsrf[idx] = extracted.temperature[1]
     else
         domain.mass[:, idx] .= 0.0
         domain.mass_w[:, idx] .= 0.0
-        domain.density[:, idx] .= SM.DEFAULT_DENSITY_INIT
+        domain.density[:, idx] .= DEFAULT_DENSITY_INIT
         domain.temperature[:, idx] .= domain.c.T0 - 10.0
         domain.Tsrf[idx] = domain.c.T0 - 10.0
     end
@@ -302,7 +302,7 @@ Load a reusable [`CaseDefinition`](@ref) from a prepared external forcing file.
 """
 function _prescribed_definition_from_forcing_file(
     forcing_file::AbstractString;
-    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=20,
 )
     Int(ntot) > 0 || error("`ntot` must be positive.")
@@ -371,7 +371,7 @@ function _prescribed_definition_from_forcing_file(
 
     js = Vector{Int}(undef, nvalid)
     is = Vector{Int}(undef, nvalid)
-    domain = SM.SnowpackDomain(ncol=nvalid, Ntot=Int(ntot), c=physics)
+    domain = SnowpackDomain(ncol=nvalid, Ntot=Int(ntot), c=physics)
     tair_k = Matrix{Float64}(undef, nvalid, ntime)
     snow_rate = Matrix{Float64}(undef, nvalid, ntime)
     rain_rate = Matrix{Float64}(undef, nvalid, ntime)

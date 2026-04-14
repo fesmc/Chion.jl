@@ -86,7 +86,7 @@ function SnowpackCase(
 end
 
 function SnowpackCase(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     forcing::ForcingData;
     layout::Union{Nothing, GridLayout}=nothing,
     input_label::AbstractString="",
@@ -116,7 +116,7 @@ function build_case(
 end
 
 function build_case(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     forcing::ForcingData;
     layout::Union{Nothing, GridLayout}=nothing,
     input_label::AbstractString="",
@@ -149,7 +149,7 @@ Create a runnable synthetic `SnowpackCase`.
 """
 function synthetic_case(;
     run::RunConfig=RunConfig(),
-    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=5,
     variant::Symbol=:multi_column,
     ntime::Integer=12,
@@ -180,7 +180,7 @@ forcing fields remain finite across the loaded timeseries.
 function prescribed_case(;
     run::RunConfig=RunConfig(),
     forcing_file::Union{Nothing, AbstractString}=nothing,
-    physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Union{Nothing, Integer}=nothing,
     nx::Union{Nothing, Integer}=nothing,
     ny::Union{Nothing, Integer}=nothing,
@@ -269,7 +269,7 @@ function prescribed_case(;
 end
 
 """
-    run_case(case; io=stdout, copy_domain=true, timings=TimingStats())
+    run_case(case; io=stdout, copy_domain=true, timings=StepTimingStats())
 
 Run a high-level `SnowpackCase`. By default the initial domain is
 deep-copied so the same case can be rerun on CPU and GPU without reparsing the
@@ -279,7 +279,7 @@ function run_case(
     case::SnowpackCase;
     io::IO=stdout,
     copy_domain::Bool=true,
-    timings::TimingStats=TimingStats(),
+    timings::StepTimingStats=StepTimingStats(),
     run_wall_t0::Integer=time_ns(),
 )
     for note in case.definition.notes

@@ -45,7 +45,7 @@ end
 struct RunResult
     history::Vector{NamedTuple}
     status::Symbol
-    timings::TimingStats
+    timings::StepTimingStats
     simulation_wall_sec::Float64
     run_wall_sec::Float64
     netcdf_path::String

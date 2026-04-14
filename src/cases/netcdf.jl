@@ -29,9 +29,9 @@ const CYCLE_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass)
 _named_buffers(names::NTuple{N, Symbol}, build::F) where {N, F <: Function} = NamedTuple{names}(ntuple(_ -> build(), N))
 
 allocate_summary_buffers(n::Int) = _named_buffers(SUMMARY_BUFFER_NAMES, () -> Vector{Float64}(undef, n))
-allocate_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int) = _named_buffers(SUMMARY_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
+allocate_summary_buffers(domain::AbstractSnowpackDomain, n::Int) = _named_buffers(SUMMARY_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
 allocate_cycle_summary_buffers(n::Int) = _named_buffers(CYCLE_BUFFER_NAMES, () -> Vector{Float64}(undef, n))
-allocate_cycle_summary_buffers(domain::SM.AbstractSnowpackDomain, n::Int) = _named_buffers(CYCLE_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
+allocate_cycle_summary_buffers(domain::AbstractSnowpackDomain, n::Int) = _named_buffers(CYCLE_BUFFER_NAMES, () -> similar(domain.mass, Float64, n))
 
 @inline _host_vector(data::Vector{Float64}; copy_array::Bool=false) = copy_array ? copy(data) : data
 @inline _host_vector(data; copy_array::Bool=false) = Float64.(Array(data))
@@ -201,7 +201,7 @@ function write_case_summary(
     ncol::Int,
     history::Vector{NamedTuple},
     status::Symbol,
-    timings::TimingStats,
+    timings::StepTimingStats,
 )
     last_record = history[end]
     mkpath(dirname(out_path))
@@ -234,7 +234,7 @@ function write_case_summary(
 end
 
 function collect_final_layer_grids(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     js::Vector{Int},
     is::Vector{Int},
     grid_shape::Tuple{Int, Int},
@@ -247,7 +247,7 @@ function collect_final_layer_grids(
     layer_snow_mass = fill(NaN, nlayer, ny, nx)
     layer_liquid_mass = fill(NaN, nlayer, ny, nx)
     layer_temperature_c = fill(NaN, nlayer, ny, nx)
-    @inbounds for idx in 1:SM.column_count(domain)
+    @inbounds for idx in 1:column_count(domain)
         j, i = js[idx], is[idx]
         n_active[j, i] = Int32(domain.N[idx])
         for k in 1:domain.N[idx]
@@ -385,7 +385,7 @@ function _finalize_monthly_grids(monthly_sums, monthly_count::Vector{Int32}, lay
 end
 
 function _write_optional_outputs!(
-    timings::TimingStats,
+    timings::StepTimingStats,
     options::RunConfig,
     time_values::Vector{DateTime},
     ncol::Int,
@@ -406,15 +406,15 @@ function _write_optional_outputs!(
 end
 
 function run_case_cycles_no_netcdf!(
-    timings::TimingStats,
+    timings::StepTimingStats,
     options::RunConfig,
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     workspaces,
-    step_fields::SM.SnowpackStepFields,
+    step_fields::SnowpackStepFields,
     io::IO,
 )
     backend = _backend_info(options)
-    ncol = SM.column_count(domain)
+    ncol = column_count(domain)
     prev = allocate_cycle_summary_buffers(ncol)
     final = allocate_cycle_summary_buffers(ncol)
     device_cycle_summary = backend.is_gpu ? allocate_cycle_summary_buffers(domain, ncol) : nothing
@@ -426,7 +426,7 @@ function run_case_cycles_no_netcdf!(
     time_block!(timings, :summarize_columns_initial; synchronize=backend.sync) do
         if backend.summary_backend == :kernelabstractions
             device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-            SM.summarize_cycle_state!(
+            summarize_cycle_state!(
                 device_cycle_summary.thickness,
                 device_cycle_summary.wet_mass,
                 device_cycle_summary.bulk_density,
@@ -436,7 +436,7 @@ function run_case_cycles_no_netcdf!(
             )
             _copy_summary_fields!(prev, device_cycle_summary, CYCLE_BUFFER_NAMES)
         else
-            SM.summarize_cycle_state!(
+            summarize_cycle_state!(
                 prev.thickness,
                 prev.wet_mass,
                 prev.bulk_density,
@@ -456,7 +456,7 @@ function run_case_cycles_no_netcdf!(
         time_block!(timings, :summarize_columns_cycle; synchronize=backend.sync) do
             if backend.summary_backend == :kernelabstractions
                 device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-                SM.summarize_cycle_state!(
+                summarize_cycle_state!(
                     device_cycle_summary.thickness,
                     device_cycle_summary.wet_mass,
                     device_cycle_summary.bulk_density,
@@ -466,7 +466,7 @@ function run_case_cycles_no_netcdf!(
                 )
                 _copy_summary_fields!(final, device_cycle_summary, CYCLE_BUFFER_NAMES)
             else
-                SM.summarize_cycle_state!(
+                summarize_cycle_state!(
                     final.thickness,
                     final.wet_mass,
                     final.bulk_density,
@@ -498,7 +498,7 @@ function _print_run_report(
     status::Symbol,
     simulation_wall_sec::Float64,
     run_wall_sec::Float64,
-    timings::TimingStats;
+    timings::StepTimingStats;
     nc_path::AbstractString="",
     summary_path::AbstractString="",
     history_csv_path::AbstractString="",

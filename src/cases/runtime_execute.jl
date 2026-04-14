@@ -5,19 +5,19 @@
 )
 
 @inline _step_cycle!(domain, step_fields, workspaces, options::RunConfig) =
-    options.backend == :gpu ? SM.step!(domain, step_fields, workspaces; update_snow_cover=false) : SM.step!(domain, step_fields, workspaces)
+    options.backend == :gpu ? step!(domain, step_fields, workspaces; update_snow_cover=false) : step!(domain, step_fields, workspaces)
 
-@inline _step_timestep!(domain, step_fields, t::Int, workspaces, ::RunConfig) = SM.step!(domain, step_fields, t, workspaces)
+@inline _step_timestep!(domain, step_fields, t::Int, workspaces, ::RunConfig) = step!(domain, step_fields, t, workspaces)
 
-function _prepare_backend!(timings::TimingStats, options::RunConfig, domain::SM.SnowpackDomain, forcing::ForcingData)
-    step_fields = SM.SnowpackStepFields(forcing)
+function _prepare_backend!(timings::StepTimingStats, options::RunConfig, domain::SnowpackDomain, forcing::ForcingData)
+    step_fields = SnowpackStepFields(forcing)
     if options.backend == :gpu
-        SM.cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
+        cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
         domain = time_block!(timings, :gpu_transfer) do
-            SM.gpu_domain(domain)
+            gpu_domain(domain)
         end
         step_fields = time_block!(timings, :gpu_transfer) do
-            SM.adapt(CUDA.CuArray, step_fields)
+            adapt(CUDA.CuArray, step_fields)
         end
         workspaces = time_block!(timings, :gpu_transfer) do
             ColumnarStepWorkspace(domain)
@@ -45,15 +45,15 @@ function _case_flags(options::RunConfig, layout::Union{Nothing, GridLayout})
 end
 
 function execute_case!(
-    domain::SM.SnowpackDomain,
+    domain::SnowpackDomain,
     forcing::ForcingData;
     layout::Union{Nothing, GridLayout}=nothing,
     options::RunConfig=RunConfig(),
     io::IO=stdout,
-    timings::TimingStats=TimingStats(),
+    timings::StepTimingStats=StepTimingStats(),
     run_wall_t0::Integer=time_ns(),
 )
-    ncol = SM.column_count(domain)
+    ncol = column_count(domain)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the domain column count.")
     options.write_netcdf && isnothing(layout) && error("NetCDF output requires a grid layout.")
     isnothing(layout) || length(layout.js) == ncol || error("Grid-layout point count must match the domain column count.")
@@ -62,7 +62,7 @@ function execute_case!(
     initial_thickness_vec = if flags.write_final_fields
         summary = allocate_cycle_summary_buffers(ncol)
         time_block!(timings, :prepare_initial_output_fields) do
-            SM.summarize_cycle_state!(summary.thickness, summary.wet_mass, summary.bulk_density, summary.base_mass, domain)
+            summarize_cycle_state!(summary.thickness, summary.wet_mass, summary.bulk_density, summary.base_mass, domain)
         end
         copy(summary.thickness)
     else
@@ -121,7 +121,7 @@ function execute_case!(
     time_block!(timings, :summarize_columns_initial; synchronize=backend.sync) do
         if backend.summary_backend == :kernelabstractions
             device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-            SM.summarize_cycle_state!(
+            summarize_cycle_state!(
                 device_cycle_summary.thickness,
                 device_cycle_summary.wet_mass,
                 device_cycle_summary.bulk_density,
@@ -131,7 +131,7 @@ function execute_case!(
             )
             _copy_summary_fields!(prev, device_cycle_summary, CYCLE_BUFFER_NAMES)
         else
-            SM.summarize_cycle_state!(
+            summarize_cycle_state!(
                 prev.thickness,
                 prev.wet_mass,
                 prev.bulk_density,
@@ -161,7 +161,7 @@ function execute_case!(
                 time_counted_block!(timings, :step_diagnostics, ncol; synchronize=backend.sync) do
                     if backend.summary_backend == :kernelabstractions
                         device_step_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-                        SM.summarize_domain_state!(
+                        summarize_domain_state!(
                             device_step_summary.thickness,
                             device_step_summary.wet_mass,
                             device_step_summary.bulk_density,
@@ -174,7 +174,7 @@ function execute_case!(
                         )
                         _copy_summary_fields!(step_summary, device_step_summary, SUMMARY_BUFFER_NAMES)
                     else
-                        SM.summarize_domain_state!(
+                        summarize_domain_state!(
                             step_summary.thickness,
                             step_summary.wet_mass,
                             step_summary.bulk_density,
@@ -209,7 +209,7 @@ function execute_case!(
         time_block!(timings, :summarize_columns_cycle; synchronize=backend.sync) do
             if backend.summary_backend == :kernelabstractions
                 device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-                SM.summarize_cycle_state!(
+                summarize_cycle_state!(
                     device_cycle_summary.thickness,
                     device_cycle_summary.wet_mass,
                     device_cycle_summary.bulk_density,
@@ -219,7 +219,7 @@ function execute_case!(
                 )
                 _copy_summary_fields!(final, device_cycle_summary, CYCLE_BUFFER_NAMES)
             else
-                SM.summarize_cycle_state!(
+                summarize_cycle_state!(
                     final.thickness,
                     final.wet_mass,
                     final.bulk_density,
@@ -252,7 +252,7 @@ function execute_case!(
     end
     layer_grids = if flags.need_layer_outputs
         final_domain = backend.is_gpu ? time_block!(timings, :gpu_transfer) do
-            SM.cpu_domain(domain)
+            cpu_domain(domain)
         end : domain
         time_block!(timings, :collect_final_layer_grids) do
             collect_final_layer_grids(final_domain, layout.js, layout.is, _grid_shape(layout), final_domain.Ntot)

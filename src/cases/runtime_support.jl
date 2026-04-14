@@ -54,6 +54,8 @@ const HISTORY_OUTPUT_SPECS = (
     (output=:history_mean_abs_delta_wet_mass, record=:mean_abs_delta_wet_mass),
     (output=:history_mean_abs_delta_base_mass, record=:mean_abs_delta_base_mass),
 )
+const TimingStats = StepTimingStats
+
 function time_block!(stats, key::Symbol, f; synchronize=nothing)
     synchronize === nothing || synchronize()
     t0 = time_ns()
@@ -77,12 +79,21 @@ end
 time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
     time_counted_block!(stats, key, count, f; kwargs...)
 
-using Dates
-using Base.Threads: @threads, nthreads
-using NCDatasets
-import CUDA
-import Libdl
-
-include("cases/runtime_core.jl")
-include("cases/netcdf.jl")
-include("cases/runtime_execute.jl")
+function print_timing_summary(io::IO, stats::StepTimingStats; total_wall_sec::Union{Nothing, Float64}=nothing)
+    rows, total = timing_rows(stats)
+    share_total = isnothing(total_wall_sec) ? total : total_wall_sec
+    println(io, "Timing summary")
+    println(io, @sprintf("  %-24s %12s %9s %12s %10s", "stage", "total [s]", "share", "mean [ms]", "count"))
+    for row in rows
+        share_pct = share_total > 0.0 ? 100.0 * row.total_sec / share_total : 0.0
+        println(io, @sprintf("  %-24s %12.3f %8.1f%% %12.3f %10d", String(row.key), row.total_sec, share_pct, row.mean_sec * 1.0e3, row.count))
+    end
+    if isnothing(total_wall_sec)
+        println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+        return
+    end
+    unaccounted = max(total_wall_sec - total, 0.0)
+    println(io, @sprintf("  %-24s %12.3f %8.1f%% %12s %10s", "unaccounted", unaccounted, share_total > 0.0 ? 100.0 * unaccounted / share_total : 0.0, "", ""))
+    println(io, @sprintf("  %-24s %12.3f", "total_accounted", total))
+    println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
+end
