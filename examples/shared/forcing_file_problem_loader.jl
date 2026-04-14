@@ -1,4 +1,4 @@
-module ChionMarProblemLoader
+module ChionForcingFileProblemLoader
 
 using Dates
 using HDF5
@@ -9,16 +9,16 @@ using Chion
 const SM = Chion.SnowpackModel
 const FILL_THRESHOLD = -9.0e18
 
-export default_gris_nc_path
+export default_gris_forcing_file_path
 export read_dataset_shapes, read_hdf5_subset, read_hdf5_full
 export read_timeslice_2d, read_timeslice_3d
 export valid_or, mmwe_day_to_kgm2s
-export read_mar_times, choose_time_index, infer_dt_days
-export extract_mar_layers, populate_domain_column_from_mar!
+export read_forcing_times, choose_time_index, infer_dt_days
+export extract_forcing_file_layers, populate_domain_column_from_forcing_file!
 export read_full_timeseries_3d, read_first_available_timeseries_3d
-export load_gris_mar_problem
+export load_gris_forcing_file_problem
 
-function default_gris_nc_path()
+function default_gris_forcing_file_path()
     for candidate in (
         "/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc",
         "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2026.nc",
@@ -122,7 +122,7 @@ end
 @inline valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
 @inline mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
 
-function read_mar_times(nc_path::AbstractString, shapes::Dict{String, Vector{Int}})
+function read_forcing_times(nc_path::AbstractString, shapes::Dict{String, Vector{Int}})
     yyyy = round.(Int, vec(read_hdf5_full(nc_path, "YYYY", shapes)))
     mm = round.(Int, vec(read_hdf5_full(nc_path, "MM", shapes)))
     dd = round.(Int, vec(read_hdf5_full(nc_path, "DD", shapes)))
@@ -162,7 +162,7 @@ function infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
     end
 end
 
-function extract_mar_layers(
+function extract_forcing_file_layers(
     total_height::Float64,
     density_profile::AbstractVector{<:Real},
     temperature_profile_c::AbstractVector{<:Real},
@@ -194,7 +194,7 @@ function extract_mar_layers(
         temperature::Float64,
     )
         snow_mass <= 0.0 && return
-        # Preserve the native MAR layering on restart. Pre-splitting into
+        # Preserve the native restart layering on restart. Pre-splitting into
         # Chion-sized chunks shifts the day-zero vertical grid.
         push!(layer_mass, snow_mass)
         push!(layer_mass_w, liquid_mass)
@@ -264,7 +264,7 @@ function extract_mar_layers(
     )
 end
 
-function populate_domain_column_from_mar!(
+function populate_domain_column_from_forcing_file!(
     domain::SM.SnowpackDomain,
     idx::Int,
     total_height::Float64,
@@ -273,7 +273,7 @@ function populate_domain_column_from_mar!(
     liquid_water_profile::AbstractVector{<:Real},
     outlay_bounds::AbstractMatrix{<:Real},
 )
-    layers = extract_mar_layers(
+    layers = extract_forcing_file_layers(
         total_height,
         density_profile,
         temperature_profile_c,
@@ -333,27 +333,28 @@ function read_first_available_timeseries_3d(
     return nothing
 end
 
-function load_gris_mar_problem(
+function load_gris_forcing_file_problem(
     nc_path::AbstractString;
-    mask_threshold::Float64=50.0,
-    turbulent_flux_sign::Float64=1.0,
     ntot::Integer=20,
     physics::SM.SnowpackPhysicalConstants{Float64}=Chion.physics(),
 )
-    definition = Chion.mar_case(
-        nc_path;
-        mask_threshold=mask_threshold,
-        turbulent_flux_sign=turbulent_flux_sign,
+    case = Chion.prescribed_case(
+        forcing_file=nc_path,
         physics=physics,
         ntot=ntot,
+        run=Chion.RunConfig(
+            write_outputs=false,
+            write_netcdf=false,
+            cycles=1,
+        ),
     )
+    definition = case.definition
     return (
         domain=definition.domain,
         forcing=definition.forcing,
         layout=definition.layout,
         wind_forcing_message=isempty(definition.notes) ? "" : definition.notes[1],
         nvalid=hasproperty(definition.metadata, :ncol) ? definition.metadata.ncol : SM.column_count(definition.domain),
-        mask_threshold=mask_threshold,
         nc_path=String(nc_path),
     )
 end
