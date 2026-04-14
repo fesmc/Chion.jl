@@ -1,5 +1,5 @@
 ```@meta
-CurrentModule = Chion.SnowpackModel
+CurrentModule = Chion
 ```
 
 # Densification
