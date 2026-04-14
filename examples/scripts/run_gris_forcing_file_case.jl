@@ -3,24 +3,23 @@
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-include("gris_mar_case_backend.jl")
+include("gris_forcing_file_case_backend.jl")
 
 function print_gris_api_help()
     println("Usage:")
-    println("  julia --project=. examples/scripts/run_gris_mar_case.jl [options]")
+    println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl [options]")
     println()
     println("Core options:")
-    println("  --nc=PATH                    MAR NetCDF/HDF5 file")
-    println("  --output-dir=PATH            Output directory (default: examples/plots/gris_mar_case)")
-    println("  --netcdf-path=PATH           Output NetCDF path (default: OUTPUT_DIR/gris_mar_case_final_state.nc)")
+    println("  --forcing-file=PATH          Prepared HDF5/NetCDF forcing file")
+    println("  --mask-threshold=VALUE       Apply MAR-style masking in this script before loading (default: 50)")
+    println("  --output-dir=PATH            Output directory (default: examples/plots/gris_forcing_file_case)")
+    println("  --netcdf-path=PATH           Output NetCDF path (default: OUTPUT_DIR/gris_forcing_file_case_final_state.nc)")
     println("  --no-output                  Skip summary/CSV file output")
     println("  --no-nc                      Skip NetCDF output")
     println("  --netcdf-vars=SPEC           NetCDF variables to write: all, none, group names, or comma-separated variables")
-    println("  --mask-threshold=VALUE       Minimum MSK value for GrIS cells (default: 50)")
     println("  --ntot=N                     Chion maximum active layers (default: 20)")
     println("  --cycles=N                   Number of forcing cycles to run (default: 10)")
     println("  --backend=threads|cpu|gpu    Execution backend (default: threads)")
-    println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 before forcing Chion")
     println()
     println("Physics options:")
     println("  --albedo=NAME                constant|dynamic|legacy|bessi (default: dynamic)")
@@ -31,8 +30,8 @@ function print_gris_api_help()
     println("  final, layers, history, monthly, step")
     println()
     println("Examples:")
-    println("  julia --project=. examples/scripts/run_gris_mar_case.jl --nc=$(DEFAULT_GRIS_MAR_NC_PATH) --backend=threads --cycles=2 --no-output --no-nc")
-    println("  julia --project=. examples/scripts/run_gris_mar_case.jl --backend=gpu --no-output --netcdf-vars=final,history")
+    println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl --forcing-file=$(DEFAULT_GRIS_FORCING_FILE_PATH) --backend=threads --cycles=2 --no-output --no-nc")
+    println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl --backend=gpu --no-output --netcdf-vars=final,history")
 end
 
 function main(args::Vector{String})
@@ -41,8 +40,8 @@ function main(args::Vector{String})
         return
     end
 
-    nc_path = arg_value(args, "nc", DEFAULT_GRIS_MAR_NC_PATH)
-    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_GRIS_MAR_NC_PATH).")
+    forcing_file = arg_value(args, "forcing-file", DEFAULT_GRIS_FORCING_FILE_PATH)
+    isempty(forcing_file) && error("Pass --forcing-file=PATH or place the prepared forcing file at $(DEFAULT_GRIS_FORCING_FILE_PATH).")
 
     physics = Chion.physics(
         albedo=Symbol(lowercase(arg_value(args, "albedo", "dynamic"))),
@@ -51,9 +50,8 @@ function main(args::Vector{String})
     )
 
     run = Chion.RunConfig(
-        name="GrIS MAR case",
-        input_label=abspath(nc_path),
-        output_dir=arg_value(args, "output-dir", DEFAULT_GRIS_MAR_OUTPUT_DIR),
+        name="GrIS forcing file case",
+        output_dir=arg_value(args, "output-dir", DEFAULT_GRIS_FORCING_FILE_OUTPUT_DIR),
         netcdf_path=arg_value(args, "netcdf-path", ""),
         write_outputs=!has_flag(args, "no-output"),
         write_netcdf=!has_flag(args, "no-nc"),
@@ -62,11 +60,10 @@ function main(args::Vector{String})
         backend=arg_value(args, "backend", "threads"),
     )
 
-    run_gris_mar_case(
-        nc_path;
+    run_gris_forcing_file_case(
+        forcing_file;
         io=stdout,
         mask_threshold=parse(Float64, arg_value(args, "mask-threshold", "50.0")),
-        turbulent_flux_sign=has_flag(args, "flip-turbulent-fluxes") ? -1.0 : 1.0,
         ntot=parse(Int, arg_value(args, "ntot", "20")),
         run=run,
         physics=physics,

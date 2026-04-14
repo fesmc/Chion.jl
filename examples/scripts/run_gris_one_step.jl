@@ -11,8 +11,8 @@ using Statistics
 using Base.Threads
 using Chion
 
-include(joinpath(@__DIR__, "..", "shared", "mar_problem_loader.jl"))
-using .ChionMarProblemLoader
+include(joinpath(@__DIR__, "..", "shared", "forcing_file_problem_loader.jl"))
+using .ChionForcingFileProblemLoader
 
 const SM = Chion.SnowpackModel
 const DEFAULT_NC_PATH = begin
@@ -44,13 +44,11 @@ function print_help()
     println("  julia --project=. examples/scripts/run_gris_one_step.jl [options]")
     println()
     println("Options:")
-    println("  --nc=PATH                    MAR NetCDF/HDF5 file")
+    println("  --nc=PATH                    Prepared HDF5/NetCDF forcing file")
     println("  --time-index=N               1-based time index to run (default: 1)")
-    println("  --date=YYYYMMDDHH            Pick a time step by MAR DATE value")
+    println("  --date=YYYYMMDDHH            Pick a time step by DATE value")
     println("  --out-dir=PATH               Output directory (default: examples/plots/gris_one_step)")
-    println("  --mask-threshold=VALUE       Minimum MSK value for GrIS cells (default: 50)")
     println("  --ntot=N                     Chion maximum active layers (default: 80)")
-    println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 before forcing Chion")
     println("  --help                       Show this message")
 end
 
@@ -68,15 +66,13 @@ end
 
 function parse_config(args::Vector{String})
     nc_path = arg_value(args, "nc", DEFAULT_NC_PATH)
-    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_NC_PATH).")
+    isempty(nc_path) && error("Pass --nc=PATH or place the prepared forcing file at $(DEFAULT_NC_PATH).")
     return (
         nc_path = nc_path,
         time_index = parse(Int, arg_value(args, "time-index", "1")),
         date_code = arg_value(args, "date", ""),
         out_dir = arg_value(args, "out-dir", DEFAULT_OUT_DIR),
-        mask_threshold = parse(Float64, arg_value(args, "mask-threshold", "50.0")),
         ntot = parse(Int, arg_value(args, "ntot", "80")),
-        turbulent_flux_sign = has_flag(args, "flip-turbulent-fluxes") ? -1.0 : 1.0,
     )
 end
 
@@ -242,11 +238,10 @@ function write_summary(
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, "Chion GrIS one-step run")
-        println(io, "MAR file      : ", abspath(config.nc_path))
+        println(io, "Forcing file  : ", abspath(config.nc_path))
         println(io, "Date          : ", date_label)
         println(io, @sprintf("dt (days)     : %.3f", dt_days))
         println(io, "GrIS cells    : ", count(valid_mask), " / ", length(valid_mask))
-        println(io, @sprintf("Mask threshold: %.2f", config.mask_threshold))
         println(io)
         println(io, "Domain means over valid GrIS cells")
         println(io, @sprintf("T2m (C)               : %.3f", domain_mean(forcing.t2m_c)))
@@ -274,7 +269,7 @@ function main(args::Vector{String})
     config = parse_config(args)
     shapes = read_dataset_shapes(config.nc_path)
 
-    date_codes, time_values = read_mar_times(config.nc_path, shapes)
+    date_codes, time_values = read_forcing_times(config.nc_path, shapes)
     time_index = choose_time_index(config, date_codes)
     selected_time = time_values[time_index]
     dt_days = infer_dt_days(time_values, time_index)
@@ -289,8 +284,8 @@ function main(args::Vector{String})
     rf_mm_day = read_timeslice_2d(config.nc_path, "RF", time_index, shapes)
     swd = read_timeslice_2d(config.nc_path, "SWD", time_index, shapes)
     lwd = read_timeslice_2d(config.nc_path, "LWD", time_index, shapes)
-    shf = read_timeslice_2d(config.nc_path, "SHF", time_index, shapes) .* config.turbulent_flux_sign
-    lhf = read_timeslice_2d(config.nc_path, "LHF", time_index, shapes) .* config.turbulent_flux_sign
+    shf = read_timeslice_2d(config.nc_path, "SHF", time_index, shapes)
+    lhf = read_timeslice_2d(config.nc_path, "LHF", time_index, shapes)
     zn3 = read_timeslice_2d(config.nc_path, "ZN3", time_index, shapes)
     ro1 = read_timeslice_3d(config.nc_path, "RO1", time_index, shapes)
     ti1 = read_timeslice_3d(config.nc_path, "TI1", time_index, shapes)
@@ -299,7 +294,11 @@ function main(args::Vector{String})
     ny, nx = size(mask)
     valid_mask = falses(ny, nx)
     @inbounds for j in 1:ny, i in 1:nx
-        valid_mask[j, i] = isfinite(mask[j, i]) && mask[j, i] >= config.mask_threshold && isfinite(tt_c[j, i])
+        valid_mask[j, i] =
+            isfinite(tt_c[j, i]) &&
+            isfinite(sf_mm_day[j, i]) &&
+            isfinite(rf_mm_day[j, i]) &&
+            isfinite(swd[j, i])
     end
 
     initial_thickness = fill(NaN, ny, nx)
@@ -325,7 +324,7 @@ function main(args::Vector{String})
         I = valid_indices[idx]
         j, i = Tuple(I)
 
-        populate_domain_column_from_mar!(
+        populate_domain_column_from_forcing_file!(
             domain,
             idx,
             Float64(zn3[j, i]),
@@ -408,7 +407,7 @@ function main(args::Vector{String})
         heatmap_panel(x, y, forcing.turbulent_heat; title="SHF + LHF used", unit="W/m^2", clim=symmetric_clims(forcing.turbulent_heat), color=P.cgrad([:navy, :white, :firebrick])),
         layout=(2, 3),
         size=(1800, 1100),
-        plot_title="Chion one-step MAR forcing fields, $date_label",
+        plot_title="Chion one-step forcing-file fields, $date_label",
     )
 
     response_plot = P.plot(
@@ -432,7 +431,7 @@ function main(args::Vector{String})
     write_summary(summary_path, config, date_label, dt_days, valid_mask, forcing, response)
 
     println("GrIS one-step run complete.")
-    println("MAR file       : $(abspath(config.nc_path))")
+    println("Forcing file   : $(abspath(config.nc_path))")
     println("Time index     : $(time_index)")
     println("Date           : $(date_label)")
     println(@sprintf("dt (days)      : %.3f", dt_days))

@@ -3,24 +3,23 @@
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-include("gris_mar_case_backend.jl")
+include("gris_forcing_file_case_backend.jl")
 
 function print_compare_help()
     println("Usage:")
-    println("  julia --project=. examples/scripts/compare_gris_mar_case.jl [options]")
+    println("  julia --project=. examples/scripts/compare_gris_forcing_file_case.jl [options]")
     println()
     println("This compares the existing examples/scripts/run_gris_equilibrium.jl runner")
-    println("against the new API-backed examples/scripts/run_gris_mar_case.jl runner")
+    println("against the new API-backed examples/scripts/run_gris_forcing_file_case.jl runner")
     println("in an old-compatible configuration.")
     println()
     println("Options:")
-    println("  --nc=PATH                    MAR NetCDF/HDF5 file")
+    println("  --forcing-file=PATH          Prepared HDF5/NetCDF forcing file")
+    println("  --mask-threshold=VALUE       MAR mask threshold for the API-backed forcing-file runner (default: 50)")
     println("  --backend=threads|cpu|gpu    Backend to compare (default: threads)")
     println("  --cycles=N                   Number of cycles for both runners (default: 1)")
-    println("  --mask-threshold=VALUE       Mask threshold passed to both runners (default: 50)")
     println("  --write-output               Enable summary/plot/CSV outputs in both runners")
     println("  --write-nc                   Enable NetCDF output in both runners")
-    println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 in both runners")
     println("  --help                       Show this message")
 end
 
@@ -72,16 +71,16 @@ function build_runner_args(args::Vector{String})
     write_netcdf = has_flag(args, "write-nc")
     !write_output && write_netcdf && error("The old runner does not support NetCDF-only mode. Use --write-output together with --write-nc, or omit --write-nc.")
 
-    nc_path = arg_value(args, "nc", DEFAULT_GRIS_MAR_NC_PATH)
-    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_GRIS_MAR_NC_PATH).")
+    forcing_file = arg_value(args, "forcing-file", DEFAULT_GRIS_FORCING_FILE_PATH)
+    isempty(forcing_file) && error("Pass --forcing-file=PATH or place the prepared forcing file at $(DEFAULT_GRIS_FORCING_FILE_PATH).")
+    mask_threshold = arg_value(args, "mask-threshold", "50.0")
 
     old_args = String[
-        "--nc=$(nc_path)",
+        "--nc=$(forcing_file)",
         "--backend=$(backend == :threads ? "threads" : "gpu")",
         "--cycles=$(arg_value(args, "cycles", "1"))",
-        "--mask-threshold=$(arg_value(args, "mask-threshold", "50.0"))",
     ]
-    new_args = copy(old_args)
+    new_args = ["--forcing-file=$(forcing_file)", "--mask-threshold=$(mask_threshold)", "--backend=$(backend == :threads ? "threads" : "gpu")", "--cycles=$(arg_value(args, "cycles", "1"))"]
 
     if !write_output
         push!(old_args, "--no-output")
@@ -92,10 +91,6 @@ function build_runner_args(args::Vector{String})
         if write_output
             push!(old_args, "--no-nc")
         end
-    end
-    if has_flag(args, "flip-turbulent-fluxes")
-        push!(old_args, "--flip-turbulent-fluxes")
-        push!(new_args, "--flip-turbulent-fluxes")
     end
     return old_args, new_args
 end
@@ -121,7 +116,7 @@ function main(args::Vector{String})
     old_args, new_args = build_runner_args(args)
     project_dir = joinpath(@__DIR__, "..", "..")
     old_script = joinpath(@__DIR__, "run_gris_equilibrium.jl")
-    new_script = joinpath(@__DIR__, "run_gris_mar_case.jl")
+    new_script = joinpath(@__DIR__, "run_gris_forcing_file_case.jl")
 
     old_run = capture_command(`julia --project=$(project_dir) $(old_script) $(old_args)`)
     old_run.exitcode == 0 || error("Old runner failed.\nCommand: $(old_run.command)\nSTDERR:\n$(old_run.stderr)\nSTDOUT:\n$(old_run.stdout)")

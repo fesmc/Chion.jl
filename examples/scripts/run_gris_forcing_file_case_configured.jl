@@ -5,14 +5,14 @@ Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 using Chion
 
-include("gris_mar_case_backend.jl")
+include("gris_forcing_file_case_backend.jl")
 
 const SM = Chion.SnowpackModel
 
 const DEFAULT_CONFIG = (
-    name="GrIS MAR case",
-    forcing_path=DEFAULT_GRIS_MAR_NC_PATH,
-    output_dir=joinpath(@__DIR__, "..", "plots", "gris_mar_case_configured"),
+    name="GrIS forcing file case",
+    forcing_path=DEFAULT_GRIS_FORCING_FILE_PATH,
+    output_dir=joinpath(@__DIR__, "..", "plots", "gris_forcing_file_case_configured"),
     netcdf_path="",
     write_outputs=false,
     write_netcdf=false,
@@ -22,7 +22,6 @@ const DEFAULT_CONFIG = (
     cycles=1000,
     history_stride=1,
     backend=:gpu,
-    turbulent_flux_sign=1.0,
     albedo=:dynamic,
     densification=:bessi,
     fresh_snow_density=:constant,
@@ -73,7 +72,6 @@ function config_from_env(base=DEFAULT_CONFIG)
         :netcdf_variables => env_string("NETCDF_VARIABLES"),
         :mask_threshold => env_float("MASK_THRESHOLD"),
         :ntot => env_int("NTOT"),
-        :turbulent_flux_sign => env_float("TURBULENT_FLUX_SIGN"),
         :albedo => env_symbol("ALBEDO"),
         :densification => env_symbol("DENSIFICATION"),
         :fresh_snow_density => env_symbol("FRESH_SNOW_DENSITY"),
@@ -93,7 +91,6 @@ function main(config=DEFAULT_CONFIG)
 
     run = Chion.RunConfig(
         name=config.name,
-        input_label=abspath(config.forcing_path),
         output_dir=config.output_dir,
         netcdf_path=config.netcdf_path,
         write_outputs=config.write_outputs,
@@ -104,11 +101,10 @@ function main(config=DEFAULT_CONFIG)
         backend=config.backend,
     )
 
-    return run_gris_mar_case(
+    return run_gris_forcing_file_case(
         config.forcing_path;
         io=stdout,
         mask_threshold=config.mask_threshold,
-        turbulent_flux_sign=config.turbulent_flux_sign,
         ntot=config.ntot,
         run=run,
         physics=physics,

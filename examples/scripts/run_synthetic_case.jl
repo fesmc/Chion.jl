@@ -43,7 +43,7 @@ function main(args::Vector{String})
         return
     end
 
-    case_definition = Chion.synthetic_case(
+    case = Chion.synthetic_case(
         variant=:multi_column,
         physics=Chion.physics(
             albedo=Symbol(lowercase(arg_value(args, "albedo", "dynamic"))),
@@ -54,13 +54,8 @@ function main(args::Vector{String})
         ntime=12,
         nx=parse(Int, arg_value(args, "nx", "2")),
         ny=parse(Int, arg_value(args, "ny", "2")),
-    )
-    input_label = hasproperty(case_definition.metadata, :label) ? case_definition.metadata.label : case_definition.input_label
-    case = Chion.build_case(
-        case_definition;
         run=Chion.RunConfig(
             name="synthetic_case",
-            input_label=input_label,
             output_dir=arg_value(args, "output-dir", joinpath(@__DIR__, "..", "plots", "synthetic_case")),
             netcdf_path=arg_value(args, "netcdf-path", ""),
             write_outputs=!has_flag(args, "no-output"),

@@ -108,16 +108,14 @@ function print_spinup_help()
     println("  julia --project=. examples/scripts/run_gris_equilibrium.jl [options]")
     println()
     println("Options:")
-    println("  --nc=PATH                    MAR NetCDF/HDF5 file")
+    println("  --nc=PATH                    Prepared HDF5/NetCDF forcing file")
     println("  --out-dir=PATH               Output directory (default: examples/plots/gris_equilibrium)")
     println("  --out-nc=PATH                Output NetCDF path (default: OUT_DIR/gris_equilibrium_final_state.nc)")
     println("  --no-nc                      Skip NetCDF output and NetCDF-only step diagnostics for cleaner timing")
     println("  --no-output                  Skip all file output (implies --no-nc) for clean timing runs")
-    println("  --mask-threshold=VALUE       Minimum MSK value for GrIS cells (default: 50)")
     println("  --ntot=N                     Chion maximum active layers (default: 80)")
     println("  --max-cycles=N               Maximum forcing-cycle repeats (default: 10)")
     println("  --backend=threads|gpu        Execution backend (default: threads)")
-    println("  --flip-turbulent-fluxes      Multiply SHF and LHF by -1 before forcing Chion")
     println("  --help                       Show this message")
 end
 
@@ -131,7 +129,7 @@ end
 
 function parse_spinup_config(args::Vector{String})
     nc_path = arg_value(args, "nc", DEFAULT_NC_PATH)
-    isempty(nc_path) && error("Pass --nc=PATH or place the MAR file at $(DEFAULT_NC_PATH).")
+    isempty(nc_path) && error("Pass --nc=PATH or place the prepared forcing file at $(DEFAULT_NC_PATH).")
     write_outputs = !has_flag(args, "no-output")
     return (
         nc_path = nc_path,
@@ -139,11 +137,9 @@ function parse_spinup_config(args::Vector{String})
         out_nc = arg_value(args, "out-nc", ""),
         write_outputs = write_outputs,
         write_netcdf = write_outputs && !has_flag(args, "no-nc"),
-        mask_threshold = parse(Float64, arg_value(args, "mask-threshold", "50.0")),
         ntot = parse(Int, arg_value(args, "ntot", "20")),
         max_cycles = parse(Int, arg_value(args, "max-cycles", "10")),
         backend = normalize_backend(arg_value(args, "backend", "threads")),
-        turbulent_flux_sign = has_flag(args, "flip-turbulent-fluxes") ? -1.0 : 1.0,
     )
 end
 
@@ -715,12 +711,11 @@ function write_spinup_summary(
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, "Chion GrIS equilibrium spin-up")
-        println(io, "MAR file           : ", abspath(config.nc_path))
+        println(io, "Forcing file       : ", abspath(config.nc_path))
         println(io, "Forcing start      : ", first(time_values))
         println(io, "Forcing end        : ", last(time_values))
         println(io, "Forcing steps      : ", length(time_values))
         println(io, "GrIS cells         : ", nvalid, " / ", ngrid)
-        println(io, @sprintf("Mask threshold     : %.2f", config.mask_threshold))
         println(io, "Backend            : ", String(config.backend))
         println(io, "Threads            : ", nthreads())
         println(io, "File output        : ", config.write_outputs ? "enabled" : "disabled (--no-output)")
@@ -1001,7 +996,7 @@ function init_spinup_netcdf(
     var_step_valid = nc_def_var(ncid, "step_valid", NC_INT, Cint[dim_step])
     nc_put_att_text(ncid, var_step_valid, "long_name", "1 where a yearly output record was completed and written, 0 for unused trailing slots")
 
-    var_mask = define_nc_output_variable(ncid, dims_yx, "gris_mask", "MAR ice-sheet mask", "1")
+    var_mask = define_nc_output_variable(ncid, dims_yx, "gris_mask", "Prepared forcing valid-cell mask", "1")
     var_init_th = define_nc_output_variable(ncid, dims_yx, "initial_thickness", "Initial snow thickness", "m")
     var_final_th = define_nc_output_variable(ncid, dims_yx, "final_thickness", "Final snow thickness", "m")
     var_final_wet = define_nc_output_variable(ncid, dims_yx, "final_wet_mass", "Final snow wet mass", "mmWE")
@@ -1230,8 +1225,8 @@ function main(args::Vector{String})
     shapes = time_block!(timings, :read_dataset_shapes) do
         read_dataset_shapes(config.nc_path)
     end
-    date_codes, time_values = time_block!(timings, :read_mar_times) do
-        read_mar_times(config.nc_path, shapes)
+    date_codes, time_values = time_block!(timings, :read_forcing_times) do
+        read_forcing_times(config.nc_path, shapes)
     end
     dt_days = time_block!(timings, :prepare_timestep_sizes) do
         [infer_dt_days(time_values, t) for t in eachindex(time_values)]
@@ -1266,10 +1261,10 @@ function main(args::Vector{String})
         read_full_timeseries_3d(config.nc_path, "LWD", shapes)
     end
     shf_full = time_block!(timings, :read_forcing_shf) do
-        read_full_timeseries_3d(config.nc_path, "SHF", shapes) .* config.turbulent_flux_sign
+        read_full_timeseries_3d(config.nc_path, "SHF", shapes)
     end
     lhf_full = time_block!(timings, :read_forcing_lhf) do
-        read_full_timeseries_3d(config.nc_path, "LHF", shapes) .* config.turbulent_flux_sign
+        read_full_timeseries_3d(config.nc_path, "LHF", shapes)
     end
     u_wind_info = time_block!(timings, :read_forcing_wind) do
         read_first_available_timeseries_3d(config.nc_path, ["UU", "U10"], shapes)
@@ -1284,10 +1279,10 @@ function main(args::Vector{String})
             nothing
         end
         wind_message = if isnothing(wind_full_local)
-            "Wind forcing: MAR wind components not found; using default 5.0 m s^-1."
+            "Wind forcing: file wind components not found; using default 5.0 m s^-1."
         else
             @sprintf(
-                "Wind forcing: |V| from MAR components %s and %s.",
+                "Wind forcing: |V| from components %s and %s.",
                 u_wind_info.name,
                 v_wind_info.name,
             )
@@ -1313,7 +1308,11 @@ function main(args::Vector{String})
     valid_mask, valid_indices, nvalid = time_block!(timings, :build_valid_domain) do
         valid_mask_local = falses(ny, nx)
         @inbounds for j in 1:ny, i in 1:nx
-            valid_mask_local[j, i] = isfinite(mask[j, i]) && mask[j, i] >= config.mask_threshold && isfinite(tt_full[1, j, i])
+            valid_mask_local[j, i] =
+                all(isfinite, @view(tt_full[:, j, i])) &&
+                all(isfinite, @view(sf_full[:, j, i])) &&
+                all(isfinite, @view(rf_full[:, j, i])) &&
+                all(isfinite, @view(swd_full[:, j, i]))
         end
         valid_indices_local = findall(valid_mask_local)
         return valid_mask_local, valid_indices_local, length(valid_indices_local)
@@ -1399,7 +1398,7 @@ function main(args::Vector{String})
                 is[idx] = i
             end
 
-            populate_domain_column_from_mar!(
+            populate_domain_column_from_forcing_file!(
                 domain,
                 idx,
                 Float64(zn3_init[j, i]),
@@ -1463,7 +1462,7 @@ function main(args::Vector{String})
         run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
 
         println("GrIS equilibrium spin-up complete.")
-        println("MAR file       : $(abspath(config.nc_path))")
+        println("Forcing file   : $(abspath(config.nc_path))")
         println("Forcing start  : $(first(time_values))")
         println("Forcing end    : $(last(time_values))")
         println("Backend        : $(String(config.backend))")
@@ -2045,7 +2044,7 @@ function main(args::Vector{String})
     run_wall_sec = (time_ns() - run_wall_t0) * 1.0e-9
 
     println("GrIS equilibrium spin-up complete.")
-    println("MAR file       : $(abspath(config.nc_path))")
+    println("Forcing file   : $(abspath(config.nc_path))")
     println("Forcing start  : $(first(time_values))")
     println("Forcing end    : $(last(time_values))")
     println("Backend        : $(String(config.backend))")
