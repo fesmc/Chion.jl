@@ -1,34 +1,8 @@
-function SnowpackCase(
-    definition::CaseDefinition;
-    name::AbstractString="snowpack_case",
-    input_label::Union{Nothing, AbstractString}=nothing,
-    output_dir::AbstractString="",
-    netcdf_path::AbstractString="",
-    write_outputs::Bool=true,
-    write_netcdf::Bool=true,
-    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
-    cycles::Integer=10,
-    backend=:threads,
-    history_stride::Integer=1,
-)
-    resolved_name = String(name)
-    resolved_output_dir = isempty(output_dir) ? _default_case_output_dir(resolved_name) : String(output_dir)
-    resolved_input_label = isnothing(input_label) ? definition.input_label : String(input_label)
-    run = RunConfig(
-        name=resolved_name,
-        input_label=resolved_input_label,
-        output_dir=resolved_output_dir,
-        netcdf_path=String(netcdf_path),
-        write_outputs=write_outputs,
-        write_netcdf=write_netcdf,
-        netcdf_variables=netcdf_variables,
-        cycles=Int(cycles),
-        backend=backend,
-        history_stride=Int(history_stride),
-    )
-    run.write_netcdf && isnothing(definition.layout) &&
+function SnowpackCase(definition::CaseDefinition; run::RunConfig=RunConfig(), kwargs...)
+    resolved_run = isempty(kwargs) ? run : _resolved_run_config(definition, run; kwargs...)
+    resolved_run.write_netcdf && isnothing(definition.layout) &&
         error("`write_netcdf=true` requires a grid layout, but this case definition has `layout=nothing`.")
-    return SnowpackCase(run.name, definition, run)
+    return SnowpackCase(resolved_run.name, definition, resolved_run)
 end
 
 function SnowpackCase(
@@ -48,13 +22,106 @@ function SnowpackCase(
         notes=notes,
         metadata=metadata,
     )
-    return SnowpackCase(definition; kwargs...)
+    return build_case(definition; kwargs...)
+end
+
+function _resolved_run_config(
+    definition::CaseDefinition,
+    run::RunConfig;
+    name::Union{Nothing, AbstractString}=nothing,
+    input_label::Union{Nothing, AbstractString}=nothing,
+    output_dir::Union{Nothing, AbstractString}=nothing,
+    out_dir::Union{Nothing, AbstractString}=nothing,
+    netcdf_path::Union{Nothing, AbstractString}=nothing,
+    write_outputs::Union{Nothing, Bool}=nothing,
+    write_netcdf::Union{Nothing, Bool}=nothing,
+    netcdf_variables=nothing,
+    cycles::Union{Nothing, Integer}=nothing,
+    max_cycles::Union{Nothing, Integer}=nothing,
+    backend=nothing,
+    history_stride::Union{Nothing, Integer}=nothing,
+    cycle_metrics_stride::Union{Nothing, Integer}=nothing,
+    run_forcing_once::Union{Nothing, Bool}=nothing,
+)
+    isnothing(output_dir) || isnothing(out_dir) || error("Pass only one of `output_dir` or `out_dir`.")
+    isnothing(cycles) || isnothing(max_cycles) || error("Pass only one of `cycles` or `max_cycles`.")
+    isnothing(history_stride) || isnothing(cycle_metrics_stride) || error("Pass only one of `history_stride` or `cycle_metrics_stride`.")
+
+    resolved_name = isnothing(name) ? run.name : String(name)
+    resolved_input_label = isnothing(input_label) ? run.input_label : String(input_label)
+    resolved_output_dir = isnothing(output_dir) ? out_dir : output_dir
+    resolved_cycles = if !isnothing(cycles)
+        Int(cycles)
+    elseif !isnothing(max_cycles)
+        Int(max_cycles)
+    elseif run_forcing_once === true
+        1
+    else
+        run.cycles
+    end
+    resolved_history_stride = isnothing(history_stride) ?
+        (isnothing(cycle_metrics_stride) ? run.history_stride : Int(cycle_metrics_stride)) :
+        Int(history_stride)
+
+    final_name = isempty(resolved_name) ? "snowpack_case" : resolved_name
+    final_output_dir = let candidate = isnothing(resolved_output_dir) ? run.output_dir : String(resolved_output_dir)
+        isempty(candidate) ? _default_case_output_dir(final_name) : candidate
+    end
+    final_input_label = isempty(resolved_input_label) ? definition.input_label : resolved_input_label
+
+    return RunConfig(
+        name=final_name,
+        input_label=final_input_label,
+        output_dir=final_output_dir,
+        netcdf_path=isnothing(netcdf_path) ? run.netcdf_path : String(netcdf_path),
+        write_outputs=isnothing(write_outputs) ? run.write_outputs : write_outputs,
+        write_netcdf=isnothing(write_netcdf) ? run.write_netcdf : write_netcdf,
+        netcdf_variables=isnothing(netcdf_variables) ? run.netcdf_variables : netcdf_variables,
+        cycles=resolved_cycles,
+        backend=isnothing(backend) ? run.backend : backend,
+        history_stride=resolved_history_stride,
+    )
+end
+
+"""
+    build_case(definition; run=RunConfig(), kwargs...)
+
+Create a runnable [`SnowpackCase`](@ref) from a reusable [`CaseDefinition`](@ref).
+Pass `run=RunConfig(...)` for the baseline configuration and optional keyword
+overrides when you want to tweak a few fields.
+"""
+function build_case(
+    definition::CaseDefinition;
+    run::RunConfig=RunConfig(),
+    kwargs...,
+)
+    return SnowpackCase(definition; run=run, kwargs...)
+end
+
+function build_case(
+    domain::SM.SnowpackDomain,
+    forcing::ForcingData;
+    layout::Union{Nothing, GridLayout}=nothing,
+    input_label::AbstractString="",
+    notes::AbstractVector{<:AbstractString}=String[],
+    metadata::NamedTuple=(;),
+    kwargs...,
+)
+    definition = CaseDefinition(
+        domain,
+        forcing;
+        layout=layout,
+        input_label=input_label,
+        notes=notes,
+        metadata=metadata,
+    )
+    return build_case(definition; kwargs...)
 end
 
 """
     synthetic_case(; ...)
 
-Create a runnable synthetic [`SnowpackCase`](@ref) in one step.
+Create a reusable synthetic [`CaseDefinition`](@ref).
 """
 function synthetic_case(;
     physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
@@ -63,18 +130,8 @@ function synthetic_case(;
     ntime::Integer=12,
     nx::Union{Nothing, Integer}=nothing,
     ny::Union{Nothing, Integer}=nothing,
-    name::AbstractString="synthetic_case",
-    input_label::Union{Nothing, AbstractString}=nothing,
-    output_dir::AbstractString="",
-    netcdf_path::AbstractString="",
-    write_outputs::Bool=true,
-    write_netcdf::Bool=true,
-    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
-    cycles::Integer=10,
-    backend=:threads,
-    history_stride::Integer=1,
 )
-    definition = synthetic_definition(
+    return synthetic_definition(
         physics=physics,
         ntot=ntot,
         variant=variant,
@@ -82,25 +139,12 @@ function synthetic_case(;
         nx=nx,
         ny=ny,
     )
-    return SnowpackCase(
-        definition;
-        name=name,
-        input_label=input_label,
-        output_dir=output_dir,
-        netcdf_path=netcdf_path,
-        write_outputs=write_outputs,
-        write_netcdf=write_netcdf,
-        netcdf_variables=netcdf_variables,
-        cycles=cycles,
-        backend=backend,
-        history_stride=history_stride,
-    )
 end
 
 """
     prescribed_case(; ...)
 
-Create a runnable [`SnowpackCase`](@ref) directly from user-facing forcing
+Create a reusable [`CaseDefinition`](@ref) directly from user-facing forcing
 vectors and simple initial-condition keywords.
 """
 function prescribed_case(;
@@ -126,17 +170,8 @@ function prescribed_case(;
     initial_temperature_c=-12.0,
     initial_albedo=physics.alpha_dry,
     input_label::AbstractString="prescribed_forcing",
-    name::AbstractString="prescribed_case",
-    output_dir::AbstractString="",
-    netcdf_path::AbstractString="",
-    write_outputs::Bool=true,
-    write_netcdf::Bool=true,
-    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
-    cycles::Integer=10,
-    backend=:threads,
-    history_stride::Integer=1,
 )
-    definition = prescribed_definition(
+    return prescribed_definition(
         physics=physics,
         ntot=ntot,
         nx=nx,
@@ -160,25 +195,12 @@ function prescribed_case(;
         initial_albedo=initial_albedo,
         input_label=input_label,
     )
-    return SnowpackCase(
-        definition;
-        name=name,
-        input_label=input_label,
-        output_dir=output_dir,
-        netcdf_path=netcdf_path,
-        write_outputs=write_outputs,
-        write_netcdf=write_netcdf,
-        netcdf_variables=netcdf_variables,
-        cycles=cycles,
-        backend=backend,
-        history_stride=history_stride,
-    )
 end
 
 """
     mar_case(path; ...)
 
-Create a runnable [`SnowpackCase`](@ref) directly from a MAR NetCDF/HDF5 file.
+Create a reusable [`CaseDefinition`](@ref) directly from a MAR NetCDF/HDF5 file.
 """
 function mar_case(
     path::AbstractString;
@@ -186,36 +208,13 @@ function mar_case(
     ntot::Integer=20,
     mask_threshold::Real=50.0,
     turbulent_flux_sign::Real=1.0,
-    name::AbstractString="mar_case",
-    input_label::Union{Nothing, AbstractString}=nothing,
-    output_dir::AbstractString="",
-    netcdf_path::AbstractString="",
-    write_outputs::Bool=true,
-    write_netcdf::Bool=true,
-    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
-    cycles::Integer=10,
-    backend=:threads,
-    history_stride::Integer=1,
 )
-    definition = mar_definition(
+    return mar_definition(
         path;
         physics=physics,
         ntot=ntot,
         mask_threshold=mask_threshold,
         turbulent_flux_sign=turbulent_flux_sign,
-    )
-    return SnowpackCase(
-        definition;
-        name=name,
-        input_label=input_label,
-        output_dir=output_dir,
-        netcdf_path=netcdf_path,
-        write_outputs=write_outputs,
-        write_netcdf=write_netcdf,
-        netcdf_variables=netcdf_variables,
-        cycles=cycles,
-        backend=backend,
-        history_stride=history_stride,
     )
 end
 
