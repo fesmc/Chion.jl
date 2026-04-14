@@ -26,22 +26,22 @@ _define_nc_double_variable(ds::NCDataset, name::AbstractString, dims; attrib::Di
     defVar(ds, String(name), Float64, dims; attrib=attrib)
 
 const CASE_NC_SPECS = (
-    (key=:final_thickness, dims=("y", "x"), name="final_thickness", long_name="Final snow thickness", units="m", integer=false),
-    (key=:final_wet_mass, dims=("y", "x"), name="final_wet_mass", long_name="Final snow wet mass", units="mmWE", integer=false),
-    (key=:final_bulk_density, dims=("y", "x"), name="final_bulk_density", long_name="Final bulk snow density", units="kg m-3", integer=false),
-    (key=:final_base_mass, dims=("y", "x"), name="final_base_mass", long_name="Cumulative firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:final_ice_sheet_smb, dims=("y", "x"), name="final_ice_sheet_smb", long_name="Cumulative net mass forcing to the ice sheet", units="mmWE", integer=false),
-    (key=:final_runoff, dims=("y", "x"), name="final_runoff", long_name="Final cumulative runoff", units="mmWE", integer=false),
-    (key=:last_cycle_delta_thickness, dims=("y", "x"), name="last_cycle_delta_thickness", long_name="Last cycle snow-thickness change", units="m", integer=false),
-    (key=:last_cycle_delta_wet_mass, dims=("y", "x"), name="last_cycle_delta_wet_mass", long_name="Last cycle wet-mass change", units="mmWE", integer=false),
-    (key=:last_cycle_delta_base_mass, dims=("y", "x"), name="last_cycle_delta_base_mass", long_name="Last cycle firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:last_cycle_delta_ice_sheet_smb, dims=("y", "x"), name="last_cycle_delta_ice_sheet_smb", long_name="Last cycle net mass forcing to the ice sheet", units="mmWE", integer=false),
-    (key=:n_active, dims=("y", "x"), name="n_active", long_name="Number of active Chion layers", units="", integer=true),
-    (key=:layer_density, dims=("layer", "y", "x"), name="layer_density", long_name="Final Chion layer density", units="kg m-3", integer=false),
-    (key=:layer_thickness, dims=("layer", "y", "x"), name="layer_thickness", long_name="Final Chion layer thickness", units="m", integer=false),
-    (key=:layer_snow_mass, dims=("layer", "y", "x"), name="layer_snow_mass", long_name="Final Chion layer snow mass", units="kg m-2", integer=false),
-    (key=:layer_liquid_mass, dims=("layer", "y", "x"), name="layer_liquid_mass", long_name="Final Chion layer liquid-water mass", units="kg m-2", integer=false),
-    (key=:layer_temperature_c, dims=("layer", "y", "x"), name="layer_temperature_c", long_name="Final Chion layer temperature", units="C", integer=false),
+    (key=:final_thickness, dims=("x", "y"), name="final_thickness", long_name="Final snow thickness", units="m", integer=false),
+    (key=:final_wet_mass, dims=("x", "y"), name="final_wet_mass", long_name="Final snow wet mass", units="mmWE", integer=false),
+    (key=:final_bulk_density, dims=("x", "y"), name="final_bulk_density", long_name="Final bulk snow density", units="kg m-3", integer=false),
+    (key=:final_base_mass, dims=("x", "y"), name="final_base_mass", long_name="Cumulative firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:final_ice_sheet_smb, dims=("x", "y"), name="final_ice_sheet_smb", long_name="Cumulative net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:final_runoff, dims=("x", "y"), name="final_runoff", long_name="Final cumulative runoff", units="mmWE", integer=false),
+    (key=:last_cycle_delta_thickness, dims=("x", "y"), name="last_cycle_delta_thickness", long_name="Last cycle snow-thickness change", units="m", integer=false),
+    (key=:last_cycle_delta_wet_mass, dims=("x", "y"), name="last_cycle_delta_wet_mass", long_name="Last cycle wet-mass change", units="mmWE", integer=false),
+    (key=:last_cycle_delta_base_mass, dims=("x", "y"), name="last_cycle_delta_base_mass", long_name="Last cycle firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:last_cycle_delta_ice_sheet_smb, dims=("x", "y"), name="last_cycle_delta_ice_sheet_smb", long_name="Last cycle net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:n_active, dims=("x", "y"), name="n_active", long_name="Number of active Chion layers", units="", integer=true),
+    (key=:layer_density, dims=("layer", "x", "y"), name="layer_density", long_name="Final Chion layer density", units="kg m-3", integer=false),
+    (key=:layer_thickness, dims=("layer", "x", "y"), name="layer_thickness", long_name="Final Chion layer thickness", units="m", integer=false),
+    (key=:layer_snow_mass, dims=("layer", "x", "y"), name="layer_snow_mass", long_name="Final Chion layer snow mass", units="kg m-2", integer=false),
+    (key=:layer_liquid_mass, dims=("layer", "x", "y"), name="layer_liquid_mass", long_name="Final Chion layer liquid-water mass", units="kg m-2", integer=false),
+    (key=:layer_temperature_c, dims=("layer", "x", "y"), name="layer_temperature_c", long_name="Final Chion layer temperature", units="C", integer=false),
     (key=:history_mean_thickness, dims=("cycle",), name="history_mean_thickness", long_name="Cycle-mean snow thickness", units="m", integer=false),
     (key=:history_mean_wet_mass, dims=("cycle",), name="history_mean_wet_mass", long_name="Cycle-mean snow wet mass", units="mmWE", integer=false),
     (key=:history_mean_bulk_density, dims=("cycle",), name="history_mean_bulk_density", long_name="Cycle-mean bulk snow density", units="kg m-3", integer=false),
@@ -49,16 +49,16 @@ const CASE_NC_SPECS = (
     (key=:history_mean_abs_delta_thickness, dims=("cycle",), name="history_mean_abs_delta_thickness", long_name="Cycle mean absolute snow-thickness change", units="m", integer=false),
     (key=:history_mean_abs_delta_wet_mass, dims=("cycle",), name="history_mean_abs_delta_wet_mass", long_name="Cycle mean absolute wet-mass change", units="mmWE", integer=false),
     (key=:history_mean_abs_delta_base_mass, dims=("cycle",), name="history_mean_abs_delta_base_mass", long_name="Cycle mean absolute firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:monthly_mean_thickness, dims=("month", "y", "x"), name="monthly_mean_thickness", long_name="Monthly mean snow thickness", units="m", integer=false),
-    (key=:monthly_mean_wet_mass, dims=("month", "y", "x"), name="monthly_mean_wet_mass", long_name="Monthly mean snow wet mass", units="mmWE", integer=false),
-    (key=:monthly_mean_bulk_density, dims=("month", "y", "x"), name="monthly_mean_bulk_density", long_name="Monthly mean bulk snow density", units="kg m-3", integer=false),
-    (key=:monthly_mean_base_mass, dims=("month", "y", "x"), name="monthly_mean_base_mass", long_name="Monthly mean cumulative firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:monthly_mean_ice_sheet_smb, dims=("month", "y", "x"), name="monthly_mean_ice_sheet_smb", long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
-    (key=:monthly_export_to_ice, dims=("month", "y", "x"), name="monthly_export_to_ice", long_name="Monthly firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:monthly_net_ice_sheet_forcing, dims=("month", "y", "x"), name="monthly_net_ice_sheet_forcing", long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
-    (key=:monthly_runoff, dims=("month", "y", "x"), name="monthly_runoff", long_name="Monthly runoff production", units="mmWE", integer=false),
-    (key=:step_export_to_ice, dims=("step", "y", "x"), name="step_export_to_ice", long_name="Annual firn mass exported to the ice model for each written output interval", units="mmWE", integer=false),
-    (key=:step_ice_sheet_smb, dims=("step", "y", "x"), name="step_ice_sheet_smb", long_name="Annual net mass forcing to the ice sheet for each written output interval", units="mmWE", integer=false),
+    (key=:monthly_mean_thickness, dims=("month", "x", "y"), name="monthly_mean_thickness", long_name="Monthly mean snow thickness", units="m", integer=false),
+    (key=:monthly_mean_wet_mass, dims=("month", "x", "y"), name="monthly_mean_wet_mass", long_name="Monthly mean snow wet mass", units="mmWE", integer=false),
+    (key=:monthly_mean_bulk_density, dims=("month", "x", "y"), name="monthly_mean_bulk_density", long_name="Monthly mean bulk snow density", units="kg m-3", integer=false),
+    (key=:monthly_mean_base_mass, dims=("month", "x", "y"), name="monthly_mean_base_mass", long_name="Monthly mean cumulative firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:monthly_mean_ice_sheet_smb, dims=("month", "x", "y"), name="monthly_mean_ice_sheet_smb", long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:monthly_export_to_ice, dims=("month", "x", "y"), name="monthly_export_to_ice", long_name="Monthly firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:monthly_net_ice_sheet_forcing, dims=("month", "x", "y"), name="monthly_net_ice_sheet_forcing", long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:monthly_runoff, dims=("month", "x", "y"), name="monthly_runoff", long_name="Monthly runoff production", units="mmWE", integer=false),
+    (key=:step_export_to_ice, dims=("step", "x", "y"), name="step_export_to_ice", long_name="Annual firn mass exported to the ice model for each written output interval", units="mmWE", integer=false),
+    (key=:step_ice_sheet_smb, dims=("step", "x", "y"), name="step_ice_sheet_smb", long_name="Annual net mass forcing to the ice sheet for each written output interval", units="mmWE", integer=false),
 )
 
 function _define_selected_nc_variables!(ds::NCDataset, selected::Set{Symbol})
@@ -95,7 +95,7 @@ function init_case_netcdf(
     step_source_code = Int32[code for _ in 1:options.cycles for code in annual_output_source_codes]
 
     ds = NCDataset(netcdf_path, "c")
-    for (name, len) in (("y", ny), ("x", nx), ("layer", max(nlayer, 1)), ("cycle", options.cycles), ("month", length(month_cycle)), ("point", length(layout.js)), ("step", max_steps))
+    for (name, len) in (("x", nx), ("y", ny), ("layer", max(nlayer, 1)), ("cycle", options.cycles), ("month", length(month_cycle)), ("point", length(layout.js)), ("step", max_steps))
         defDim(ds, name, len)
     end
 
@@ -116,8 +116,8 @@ function init_case_netcdf(
     _define_nc_int_variable(ds, "step_cycle", ("step",); long_name="Repeated annual forcing cycle index for each yearly output")[:] = step_cycle
     _define_nc_int_variable(ds, "step_source_index", ("step",); long_name="1-based index of the last forcing step included in each yearly output")[:] = step_source_index
     _define_nc_int_variable(ds, "step_source_code", ("step",); long_name="Source forcing timestamp code YYYYMMDDHH for the final step included in each yearly output")[:] = step_source_code
-    _define_nc_output_variable(ds, "domain_mask", ("y", "x"); long_name="Domain mask", units="1")[:, :] = Float32.(layout.mask)
-    _define_nc_output_variable(ds, "initial_thickness", ("y", "x"); long_name="Initial snow thickness", units="m")[:, :] = Float32.(initial_thickness)
+    _define_nc_output_variable(ds, "domain_mask", ("x", "y"); long_name="Domain mask", units="1")[:, :] = Float32.(permutedims(layout.mask, (2, 1)))
+    _define_nc_output_variable(ds, "initial_thickness", ("x", "y"); long_name="Initial snow thickness", units="m")[:, :] = Float32.(permutedims(initial_thickness, (2, 1)))
 
     vars = _define_selected_nc_variables!(ds, selected)
     if any(key -> key in selected, CASE_OUTPUT_GROUPS.step)
@@ -136,7 +136,7 @@ function init_case_netcdf(
 end
 
 function maybe_write_step_output!(writer::CaseNetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real})
-    haskey(writer.vars, key) && (writer.vars[key][step_index, :, :] = Float32.(data))
+    haskey(writer.vars, key) && (writer.vars[key][step_index, :, :] = Float32.(permutedims(data, (2, 1))))
     return
 end
 
@@ -151,17 +151,17 @@ function _write_dataset_var!(var, data::Vector{Int32})
 end
 
 function _write_dataset_var!(var, data::AbstractMatrix{Int32})
-    var[:, :] = data
+    var[:, :] = permutedims(data, (2, 1))
     return
 end
 
 function _write_dataset_var!(var, data::AbstractMatrix{<:Real})
-    var[:, :] = Float32.(data)
+    var[:, :] = Float32.(permutedims(data, (2, 1)))
     return
 end
 
 function _write_dataset_var!(var, data::Array{Float64, 3})
-    var[:, :, :] = Float32.(data)
+    var[:, :, :] = Float32.(permutedims(data, (1, 3, 2)))
     return
 end
 
