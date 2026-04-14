@@ -158,7 +158,7 @@ parse_densification(text) = begin
     scheme
 end
 
-function build_case(inp, cfg, physics)
+function make_case(inp, cfg, physics)
     tair = carry_forward(inp.tair, 268.0)
     wind = carry_forward(inp.wind, 5.0; nonnegative=true)
     snow = max.(replace(copy(inp.snow), NaN => 0.0), 0.0)
@@ -167,7 +167,7 @@ function build_case(inp, cfg, physics)
     lw = replace(copy(inp.lw), NaN => 0.0)
     dt_days = [i < length(inp.dates) ? Dates.value(inp.dates[i + 1] - inp.dates[i]) / 86_400_000.0 : Dates.value(inp.dates[i] - inp.dates[i - 1]) / 86_400_000.0 for i in eachindex(inp.dates)]
     init_mass = (!cfg.no_init_from_obs && isfinite(inp.obs_depth[1]) && inp.obs_depth[1] > 0) ? cfg.initial_density * inp.obs_depth[1] : 0.0
-    definition = Chion.prescribed_case(
+    return Chion.prescribed_case(
         physics = physics,
         ntot = cfg.ntot,
         nx = 1,
@@ -184,15 +184,14 @@ function build_case(inp, cfg, physics)
         initial_surface_mass = init_mass,
         initial_density = cfg.initial_density,
         initial_temperature_c = tair[1] - 273.15,
-        input_label = inp.met_path,
-    )
-    Chion.build_case(
-        definition;
-        name = "ESM-SnowMIP validation",
-        backend = :cpu,
-        write_outputs = false,
-        write_netcdf = false,
-        cycles = 1,
+        run = Chion.RunConfig(
+            name = "ESM-SnowMIP validation",
+            input_label = inp.met_path,
+            backend = :cpu,
+            write_outputs = false,
+            write_netcdf = false,
+            cycles = 1,
+        ),
     )
 end
 
@@ -296,7 +295,7 @@ function write_outputs(out_dir, slug, dates, obs_depth, sim_depth, obs_swe, sim_
         end
     end
     open(txt, "w") do io
-        println(io, "General API  : prescribed_case + build_case + step!")
+        println(io, "General API  : prescribed_case + step!")
         println(io, @sprintf("Snow depth : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.depth.n, metrics.depth.bias, metrics.depth.mae, metrics.depth.rmse, metrics.depth.corr))
         println(io, @sprintf("Snow SWE   : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.swe.n, metrics.swe.bias, metrics.swe.mae, metrics.swe.rmse, metrics.swe.corr))
     end
@@ -335,14 +334,14 @@ function main(args)
         fresh_snow_density = Symbol(lowercase(arg_value(args, "fresh-snow-density", "constant"))),
     )
     inp = load_inputs(cfg)
-    case = build_case(inp, cfg, physics)
+    case = make_case(inp, cfg, physics)
     sim = run_timeseries(case; use_radiation=!cfg.no_radiation)
     metrics = (depth=metric(inp.obs_depth, sim.depth), swe=metric(inp.obs_swe, sim.swe))
     slug = arg_value(args, "slug", isempty(cfg.met_nc) ? "$(cfg.site)_$(cfg.forcing)" : splitext(basename(cfg.met_nc))[1])
     out = write_outputs(arg_value(args, "out-dir", DEFAULT_OUT_DIR), slug, inp.dates, inp.obs_depth, sim.depth, inp.obs_swe, sim.swe, sim, metrics; plot_on=!has_flag(args, "no-plot"))
 
     println("Validation complete.")
-    println("General API : prescribed_case + build_case + step!")
+    println("General API : prescribed_case + step!")
     println("Met file    : $(abspath(inp.met_path))")
     println("Obs file    : $(abspath(inp.obs_path))")
     println("CSV output  : $(abspath(out.csv))")
