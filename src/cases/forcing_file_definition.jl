@@ -1,6 +1,6 @@
-const _MAR_FILL_THRESHOLD = -9.0e18
+const _FORCING_FILE_FILL_THRESHOLD = -9.0e18
 
-function _mar_read_dataset_shapes(path::AbstractString)
+function _forcing_file_read_dataset_shapes(path::AbstractString)
     shapes = Dict{String, Vector{Int}}()
     h5open(path, "r") do file
         for name in keys(file)
@@ -13,16 +13,16 @@ function _mar_read_dataset_shapes(path::AbstractString)
     return shapes
 end
 
-function _mar_clean_fill!(A)
+function _forcing_file_clean_fill!(A)
     @inbounds for i in eachindex(A)
-        if A[i] <= _MAR_FILL_THRESHOLD
+        if A[i] <= _FORCING_FILE_FILL_THRESHOLD
             A[i] = NaN
         end
     end
     return A
 end
 
-function _mar_read_hdf5_subset(
+function _forcing_file_read_hdf5_subset(
     path::AbstractString,
     varname::AbstractString,
     full_shape::Vector{Int};
@@ -47,16 +47,16 @@ function _mar_read_hdf5_subset(
         logical = Float64.(raw)
         return nd > 1 ? permutedims(logical, nd:-1:1) : logical
     end
-    _mar_clean_fill!(data)
+    _forcing_file_clean_fill!(data)
     return data
 end
 
-function _mar_read_hdf5_full(path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
+function _forcing_file_read_hdf5_full(path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
     haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
-    return _mar_read_hdf5_subset(path, varname, shapes[varname])
+    return _forcing_file_read_hdf5_subset(path, varname, shapes[varname])
 end
 
-function _mar_read_timeslice_2d(
+function _forcing_file_read_timeslice_2d(
     path::AbstractString,
     varname::AbstractString,
     time_index::Int,
@@ -73,11 +73,11 @@ function _mar_read_timeslice_2d(
     else
         error("Variable '$varname' does not have a supported rank for 2D slicing.")
     end
-    data = _mar_read_hdf5_subset(path, varname, shape; start=start, count=count)
+    data = _forcing_file_read_hdf5_subset(path, varname, shape; start=start, count=count)
     return dropdims(data; dims=Tuple(findall(==(1), size(data))))
 end
 
-function _mar_read_timeslice_3d(
+function _forcing_file_read_timeslice_3d(
     path::AbstractString,
     varname::AbstractString,
     time_index::Int,
@@ -88,18 +88,18 @@ function _mar_read_timeslice_3d(
     length(shape) == 4 || error("Variable '$varname' does not have the expected 4D layout.")
     start = [time_index - 1, 0, 0, 0]
     count = [1, shape[2], shape[3], shape[4]]
-    data = _mar_read_hdf5_subset(path, varname, shape; start=start, count=count)
+    data = _forcing_file_read_hdf5_subset(path, varname, shape; start=start, count=count)
     return dropdims(data; dims=(1,))
 end
 
-@inline _mar_valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
-@inline _mar_mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
+@inline _forcing_file_valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
+@inline _forcing_file_mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
 
-function _mar_read_times(path::AbstractString, shapes::Dict{String, Vector{Int}})
-    yyyy = round.(Int, vec(_mar_read_hdf5_full(path, "YYYY", shapes)))
-    mm = round.(Int, vec(_mar_read_hdf5_full(path, "MM", shapes)))
-    dd = round.(Int, vec(_mar_read_hdf5_full(path, "DD", shapes)))
-    hh = round.(Int, vec(_mar_read_hdf5_full(path, "HH", shapes)))
+function _forcing_file_read_times(path::AbstractString, shapes::Dict{String, Vector{Int}})
+    yyyy = round.(Int, vec(_forcing_file_read_hdf5_full(path, "YYYY", shapes)))
+    mm = round.(Int, vec(_forcing_file_read_hdf5_full(path, "MM", shapes)))
+    dd = round.(Int, vec(_forcing_file_read_hdf5_full(path, "DD", shapes)))
+    hh = round.(Int, vec(_forcing_file_read_hdf5_full(path, "HH", shapes)))
     ntime = length(yyyy)
     times = Vector{DateTime}(undef, ntime)
     for i in 1:ntime
@@ -108,7 +108,7 @@ function _mar_read_times(path::AbstractString, shapes::Dict{String, Vector{Int}}
     return times
 end
 
-function _mar_infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
+function _forcing_file_infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
     if length(time_values) == 1
         return 1.0
     elseif time_index < length(time_values)
@@ -118,7 +118,7 @@ function _mar_infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
     end
 end
 
-function _mar_extract_layers(
+function _forcing_file_extract_layers(
     total_height::Float64,
     density_profile::AbstractVector{<:Real},
     temperature_profile_c::AbstractVector{<:Real},
@@ -197,9 +197,9 @@ function _mar_extract_layers(
         layer_thickness = max(depth_cap - lower, 0.0)
         layer_thickness <= 0.0 && continue
 
-        rho = clamp(_mar_valid_or(300.0, Float64(density_profile[k])), 50.0, c.rho_i)
-        temp_k = clamp(_mar_valid_or(-10.0, Float64(temperature_profile_c[k])) + c.T0, 200.0, c.T0)
-        water_fraction = max(_mar_valid_or(0.0, Float64(liquid_water_profile[k])), 0.0)
+        rho = clamp(_forcing_file_valid_or(300.0, Float64(density_profile[k])), 50.0, c.rho_i)
+        temp_k = clamp(_forcing_file_valid_or(-10.0, Float64(temperature_profile_c[k])) + c.T0, 200.0, c.T0)
+        water_fraction = max(_forcing_file_valid_or(0.0, Float64(liquid_water_profile[k])), 0.0)
         snow_mass = rho * layer_thickness
         liquid_mass = water_fraction * snow_mass
         append_restart_layer!(snow_mass, liquid_mass, rho, temp_k)
@@ -218,7 +218,7 @@ function _mar_extract_layers(
     )
 end
 
-function _mar_populate_domain_column_from_restart!(
+function _forcing_file_populate_domain_column_from_restart!(
     domain::SM.SnowpackDomain,
     idx::Int,
     total_height::Float64,
@@ -227,7 +227,7 @@ function _mar_populate_domain_column_from_restart!(
     liquid_water_profile::AbstractVector{<:Real},
     outlay_bounds::AbstractMatrix{<:Real},
 )
-    extracted = _mar_extract_layers(
+    extracted = _forcing_file_extract_layers(
         total_height,
         density_profile,
         temperature_profile_c,
@@ -265,7 +265,7 @@ function _mar_populate_domain_column_from_restart!(
     return domain
 end
 
-function _mar_read_full_timeseries_3d(
+function _forcing_file_read_full_timeseries_3d(
     path::AbstractString,
     varname::AbstractString,
     shapes::Dict{String, Vector{Int}},
@@ -273,103 +273,100 @@ function _mar_read_full_timeseries_3d(
     haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
     shape = shapes[varname]
     if length(shape) == 4
-        data = _mar_read_hdf5_full(path, varname, shapes)
+        data = _forcing_file_read_hdf5_full(path, varname, shapes)
         size(data, 2) == 1 || error("Variable '$varname' has an unexpected non-singleton vertical dimension.")
         return dropdims(data; dims=(2,))
     elseif length(shape) == 3
-        return _mar_read_hdf5_full(path, varname, shapes)
+        return _forcing_file_read_hdf5_full(path, varname, shapes)
     end
     error("Variable '$varname' does not have a supported timeseries layout.")
 end
 
-function _mar_read_first_available_timeseries_3d(
+function _forcing_file_read_first_available_timeseries_3d(
     path::AbstractString,
     candidate_names::Vector{String},
     shapes::Dict{String, Vector{Int}},
 )
     for name in candidate_names
         if haskey(shapes, name)
-            return (name=name, data=_mar_read_full_timeseries_3d(path, name, shapes))
+            return (name=name, data=_forcing_file_read_full_timeseries_3d(path, name, shapes))
         end
     end
     return nothing
 end
 
 """
-    mar_definition(path; physics=physics(), ntot=20, mask_threshold=50.0, turbulent_flux_sign=1.0)
+    _prescribed_definition_from_forcing_file(forcing_file; physics=physics(), ntot=20)
 
-Load a reusable [`CaseDefinition`](@ref) from a MAR NetCDF/HDF5 forcing file.
+Load a reusable [`CaseDefinition`](@ref) from a prepared external forcing file.
 """
-function mar_definition(
-    path::AbstractString;
+function _prescribed_definition_from_forcing_file(
+    forcing_file::AbstractString;
     physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
     ntot::Integer=20,
-    mask_threshold::Real=50.0,
-    turbulent_flux_sign::Real=1.0,
 )
     Int(ntot) > 0 || error("`ntot` must be positive.")
-    isempty(strip(path)) && error("`path` must point to a MAR NetCDF/HDF5 file.")
-    source_path = abspath(String(path))
+    isempty(strip(forcing_file)) && error("`forcing_file` must point to a prepared forcing file.")
+    source_path = abspath(String(forcing_file))
     isfile(source_path) || error("Forcing file was not found: $(source_path)")
 
-    shapes = _mar_read_dataset_shapes(source_path)
+    shapes = _forcing_file_read_dataset_shapes(source_path)
     required_variables = ("x", "y", "MSK", "OUTLAY_bnds", "TT", "SF", "RF", "SWD", "LWD", "SHF", "LHF", "ZN3", "RO1", "TI1", "WA1", "YYYY", "MM", "DD", "HH")
     missing = String[var for var in required_variables if !haskey(shapes, var)]
     isempty(missing) || error(
-        "MAR forcing file $(abspath(source_path)) is missing required variables: $(join(missing, ", "))."
+        "Forcing file $(abspath(source_path)) is missing required variables: $(join(missing, ", "))."
     )
 
-    time_values = _mar_read_times(source_path, shapes)
-    dt_days = [_mar_infer_dt_days(time_values, t) for t in eachindex(time_values)]
+    time_values = _forcing_file_read_times(source_path, shapes)
+    dt_days = [_forcing_file_infer_dt_days(time_values, t) for t in eachindex(time_values)]
 
-    x = vec(_mar_read_hdf5_full(source_path, "x", shapes))
-    y = vec(_mar_read_hdf5_full(source_path, "y", shapes))
-    mask = _mar_read_hdf5_full(source_path, "MSK", shapes)
-    outlay_bounds = _mar_read_hdf5_full(source_path, "OUTLAY_bnds", shapes)
+    x = vec(_forcing_file_read_hdf5_full(source_path, "x", shapes))
+    y = vec(_forcing_file_read_hdf5_full(source_path, "y", shapes))
+    mask = _forcing_file_read_hdf5_full(source_path, "MSK", shapes)
+    outlay_bounds = _forcing_file_read_hdf5_full(source_path, "OUTLAY_bnds", shapes)
 
-    tt_full = _mar_read_full_timeseries_3d(source_path, "TT", shapes)
-    sf_full = _mar_read_full_timeseries_3d(source_path, "SF", shapes)
-    rf_full = _mar_read_full_timeseries_3d(source_path, "RF", shapes)
-    swd_full = _mar_read_full_timeseries_3d(source_path, "SWD", shapes)
-    lwd_full = _mar_read_full_timeseries_3d(source_path, "LWD", shapes)
-    shf_full = _mar_read_full_timeseries_3d(source_path, "SHF", shapes) .* Float64(turbulent_flux_sign)
-    lhf_full = _mar_read_full_timeseries_3d(source_path, "LHF", shapes) .* Float64(turbulent_flux_sign)
+    tt_full = _forcing_file_read_full_timeseries_3d(source_path, "TT", shapes)
+    sf_full = _forcing_file_read_full_timeseries_3d(source_path, "SF", shapes)
+    rf_full = _forcing_file_read_full_timeseries_3d(source_path, "RF", shapes)
+    swd_full = _forcing_file_read_full_timeseries_3d(source_path, "SWD", shapes)
+    lwd_full = _forcing_file_read_full_timeseries_3d(source_path, "LWD", shapes)
+    shf_full = _forcing_file_read_full_timeseries_3d(source_path, "SHF", shapes)
+    lhf_full = _forcing_file_read_full_timeseries_3d(source_path, "LHF", shapes)
 
-    u_wind_info = _mar_read_first_available_timeseries_3d(source_path, ["UU", "U10"], shapes)
-    v_wind_info = _mar_read_first_available_timeseries_3d(source_path, ["VV", "V10"], shapes)
+    u_wind_info = _forcing_file_read_first_available_timeseries_3d(source_path, ["UU", "U10"], shapes)
+    v_wind_info = _forcing_file_read_first_available_timeseries_3d(source_path, ["VV", "V10"], shapes)
     wind_full = if !isnothing(u_wind_info) && !isnothing(v_wind_info)
         hypot.(u_wind_info.data, v_wind_info.data)
     else
         nothing
     end
     wind_note = if isnothing(wind_full)
-        "Wind forcing: MAR wind components not found; using default 5.0 m s^-1."
+        "Wind forcing: file wind components not found; using default 5.0 m s^-1."
     else
         @sprintf(
-            "Wind forcing: |V| from MAR components %s and %s.",
+            "Wind forcing: |V| from components %s and %s.",
             u_wind_info.name,
             v_wind_info.name,
         )
     end
 
-    zn3_init = _mar_read_timeslice_2d(source_path, "ZN3", 1, shapes)
-    ro1_init = _mar_read_timeslice_3d(source_path, "RO1", 1, shapes)
-    ti1_init = _mar_read_timeslice_3d(source_path, "TI1", 1, shapes)
-    wa1_init = _mar_read_timeslice_3d(source_path, "WA1", 1, shapes)
+    zn3_init = _forcing_file_read_timeslice_2d(source_path, "ZN3", 1, shapes)
+    ro1_init = _forcing_file_read_timeslice_3d(source_path, "RO1", 1, shapes)
+    ti1_init = _forcing_file_read_timeslice_3d(source_path, "TI1", 1, shapes)
+    wa1_init = _forcing_file_read_timeslice_3d(source_path, "WA1", 1, shapes)
 
     ny, nx = size(mask)
     valid_mask = falses(ny, nx)
     @inbounds for j in 1:ny, i in 1:nx
         valid_mask[j, i] =
-            isfinite(mask[j, i]) &&
-            mask[j, i] >= Float64(mask_threshold) &&
-            isfinite(tt_full[1, j, i])
+            all(isfinite, @view(tt_full[:, j, i])) &&
+            all(isfinite, @view(sf_full[:, j, i])) &&
+            all(isfinite, @view(rf_full[:, j, i])) &&
+            all(isfinite, @view(swd_full[:, j, i]))
     end
     valid_indices = findall(valid_mask)
     nvalid = length(valid_indices)
-    nvalid > 0 || error(
-        "No valid MAR grid cells remain after applying `mask_threshold=$(Float64(mask_threshold))`."
-    )
+    nvalid > 0 || error("No valid forcing-file grid cells remain after filtering for finite required prescribed forcing.")
     ntime = length(time_values)
 
     js = Vector{Int}(undef, nvalid)
@@ -391,7 +388,7 @@ function mar_definition(
         j, i = Tuple(valid_indices[idx])
         js[idx] = j
         is[idx] = i
-        _mar_populate_domain_column_from_restart!(
+        _forcing_file_populate_domain_column_from_restart!(
             domain,
             idx,
             Float64(zn3_init[j, i]),
@@ -401,10 +398,10 @@ function mar_definition(
             outlay_bounds,
         )
         for t in 1:ntime
-            tair_k[idx, t] = _mar_valid_or(-15.0, Float64(tt_full[t, j, i])) + domain.c.T0
-            snow_rate[idx, t] = _mar_mmwe_day_to_kgm2s(Float64(sf_full[t, j, i]))
-            rain_rate[idx, t] = _mar_mmwe_day_to_kgm2s(Float64(rf_full[t, j, i]))
-            s_boa[idx, t] = _mar_valid_or(0.0, Float64(swd_full[t, j, i]))
+            tair_k[idx, t] = _forcing_file_valid_or(-15.0, Float64(tt_full[t, j, i])) + domain.c.T0
+            snow_rate[idx, t] = _forcing_file_mmwe_day_to_kgm2s(Float64(sf_full[t, j, i]))
+            rain_rate[idx, t] = _forcing_file_mmwe_day_to_kgm2s(Float64(rf_full[t, j, i]))
+            s_boa[idx, t] = _forcing_file_valid_or(0.0, Float64(swd_full[t, j, i]))
             q_lw_ij = Float64(lwd_full[t, j, i])
             q_sh_ij = Float64(shf_full[t, j, i])
             q_lh_ij = Float64(lhf_full[t, j, i])
@@ -414,7 +411,7 @@ function mar_definition(
             q_lw[idx, t] = has_q_lw[idx, t] ? q_lw_ij : 0.0
             q_sh[idx, t] = has_q_sh[idx, t] ? q_sh_ij : 0.0
             q_lh[idx, t] = has_q_lh[idx, t] ? q_lh_ij : 0.0
-            wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : _mar_valid_or(5.0, Float64(wind_full[t, j, i]))
+            wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : _forcing_file_valid_or(5.0, Float64(wind_full[t, j, i]))
         end
     end
 
@@ -435,10 +432,9 @@ function mar_definition(
     )
     layout = GridLayout(x, y, js, is, mask)
     metadata = (
-        format=:mar,
+        format=:prescribed,
+        source=:file,
         path=source_path,
-        mask_threshold=Float64(mask_threshold),
-        turbulent_flux_sign=Float64(turbulent_flux_sign),
         ncol=nvalid,
         ntime=ntime,
         ntot=Int(ntot),
