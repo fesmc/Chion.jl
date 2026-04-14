@@ -225,7 +225,7 @@ end
 
 function prescribed_definition(;
     physics::SM.SnowpackPhysicalConstants{Float64}=physics(),
-    ntot::Integer=5,
+    ntot::Integer=15,
     nx::Integer=1,
     ny::Integer=1,
     dt_days,
@@ -281,6 +281,7 @@ function prescribed_definition(;
         input_label=String(input_label),
         metadata=(
             format=:prescribed,
+            source=:direct,
             nx=Int(nx),
             ny=Int(ny),
             grid_shape=(Int(ny), Int(nx)),

@@ -275,10 +275,12 @@ function RunConfig(;
     backend=:threads,
     history_stride::Integer=1,
 )
+    resolved_name = String(name)
+    resolved_output_dir = isempty(output_dir) ? _default_case_output_dir(resolved_name) : String(output_dir)
     return RunConfig(
-        String(name),
+        resolved_name,
         String(input_label),
-        String(output_dir),
+        resolved_output_dir,
         String(netcdf_path),
         write_outputs,
         write_netcdf,
