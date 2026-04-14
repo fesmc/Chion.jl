@@ -12,7 +12,6 @@ export SnowpackDomain
 export SnowpackStepForcing
 export SnowpackStepFields
 export SnowpackPhysicalConstants
-export SnowpackStateFields
 export RunConfig, RunResult
 export SnowpackCase
 export CASE_NETCDF_VARIABLE_GROUPS, CASE_NETCDF_VARIABLES

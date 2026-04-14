@@ -44,203 +44,6 @@ function _case_flags(options::RunConfig, layout::Union{Nothing, GridLayout})
     )
 end
 
-function _prepare_output_schedule(time_values::Vector{DateTime}, cycles::Int)
-    annual_output = build_annual_output_schedule(time_values)
-    month_keys = unique((year(t), month(t)) for t in time_values)
-    month_lookup = Dict(key => idx for (idx, key) in enumerate(month_keys))
-    return (
-        annual_output=annual_output,
-        step_month=[month_lookup[(year(t), month(t))] for t in time_values],
-        nmonth_per_cycle=length(month_keys),
-        nmonth_total=cycles * length(month_keys),
-        month_cycle=Int32[cyc for cyc in 1:cycles for _ in month_keys],
-        month_of_year=Int32[key[2] for _ in 1:cycles for key in month_keys],
-        source_month_code=Int32[key[1] * 100 + key[2] for _ in 1:cycles for key in month_keys],
-    )
-end
-
-_allocate_step_vectors(active::Bool, ncol::Int) = NamedTuple{CASE_OUTPUT_GROUPS.step}(ntuple(_ -> active ? zeros(Float64, ncol) : Float64[], length(CASE_OUTPUT_GROUPS.step)))
-_allocate_monthly_sums(active::Bool, nmonth_total::Int, ncol::Int) = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(_ -> active ? zeros(Float64, nmonth_total, ncol) : Matrix{Float64}(undef, 0, 0), length(MONTHLY_GRID_KEYS)))
-
-function _step_output_grids(step_vectors, layout::GridLayout)
-    return NamedTuple{CASE_OUTPUT_GROUPS.step}(ntuple(i -> scatter_to_grid(getfield(step_vectors, CASE_OUTPUT_GROUPS.step[i]), layout.js, layout.is, _grid_shape(layout)), length(CASE_OUTPUT_GROUPS.step)))
-end
-
-function _reset_step_vectors!(step_vectors)
-    for key in CASE_OUTPUT_GROUPS.step
-        isempty(getfield(step_vectors, key)) || fill!(getfield(step_vectors, key), 0.0)
-    end
-    return
-end
-
-function _accumulate_step_diagnostics!(summary, previous, monthly_sums, step_vectors, month_idx::Int, flags)
-    current_base = summary.base_mass
-    current_smb = summary.smb_ice
-    current_runoff = summary.runoff
-    delta_base = current_base .- previous.base_mass
-    delta_smb = current_smb .- previous.smb_ice
-    delta_runoff = current_runoff .- previous.runoff
-
-    if flags.need_monthly_outputs
-        monthly_sums.monthly_mean_thickness[month_idx, :] .+= summary.thickness
-        monthly_sums.monthly_mean_wet_mass[month_idx, :] .+= summary.wet_mass
-        monthly_sums.monthly_mean_bulk_density[month_idx, :] .+= summary.bulk_density
-        monthly_sums.monthly_mean_base_mass[month_idx, :] .+= current_base
-        monthly_sums.monthly_mean_ice_sheet_smb[month_idx, :] .+= delta_smb
-        monthly_sums.monthly_export_to_ice[month_idx, :] .+= delta_base
-        monthly_sums.monthly_net_ice_sheet_forcing[month_idx, :] .+= delta_smb
-        monthly_sums.monthly_runoff[month_idx, :] .+= delta_runoff
-    end
-    if flags.need_step_outputs
-        step_vectors.step_export_to_ice .+= delta_base
-        step_vectors.step_ice_sheet_smb .+= delta_smb
-    end
-    previous.base_mass .= current_base
-    previous.smb_ice .= current_smb
-    previous.runoff .= current_runoff
-    return
-end
-
-function _update_cycle_smb_delta!(last_delta::Vector{Float64}, previous_cycle_smb_ice::Vector{Float64}, domain)
-    current = _host_vector(domain.smb_ice; copy_array=true)
-    last_delta .= current .- previous_cycle_smb_ice
-    previous_cycle_smb_ice .= current
-    return
-end
-
-function _scatter_final_grids(final_state, domain, deltas, layout::GridLayout)
-    final_smb_ice = _host_vector(domain.smb_ice; copy_array=true)
-    final_runoff = _host_vector(domain.runoff; copy_array=true)
-    return (
-        final_thickness=scatter_to_grid(final_state.thickness, layout.js, layout.is, _grid_shape(layout)),
-        final_wet_mass=scatter_to_grid(final_state.wet_mass, layout.js, layout.is, _grid_shape(layout)),
-        final_bulk_density=scatter_to_grid(final_state.bulk_density, layout.js, layout.is, _grid_shape(layout)),
-        final_base_mass=scatter_to_grid(final_state.base_mass, layout.js, layout.is, _grid_shape(layout)),
-        final_ice_sheet_smb=scatter_to_grid(final_smb_ice, layout.js, layout.is, _grid_shape(layout)),
-        final_runoff=scatter_to_grid(final_runoff, layout.js, layout.is, _grid_shape(layout)),
-        last_cycle_delta_thickness=scatter_to_grid(deltas.thickness, layout.js, layout.is, _grid_shape(layout)),
-        last_cycle_delta_wet_mass=scatter_to_grid(deltas.wet_mass, layout.js, layout.is, _grid_shape(layout)),
-        last_cycle_delta_base_mass=scatter_to_grid(deltas.base_mass, layout.js, layout.is, _grid_shape(layout)),
-        last_cycle_delta_ice_sheet_smb=scatter_to_grid(deltas.ice_sheet_smb, layout.js, layout.is, _grid_shape(layout)),
-    )
-end
-
-const MONTHLY_MEAN_KEYS = (:monthly_mean_thickness, :monthly_mean_wet_mass, :monthly_mean_bulk_density)
-
-function _finalize_monthly_grids(monthly_sums, monthly_count::Vector{Int32}, layout::GridLayout)
-    vectors = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(i -> begin
-        key = MONTHLY_GRID_KEYS[i]
-        data = copy(getfield(monthly_sums, key))
-        if key in MONTHLY_MEAN_KEYS
-            @inbounds for m in axes(data, 1)
-                data[m, :] ./= max(monthly_count[m], 1)
-            end
-        end
-        data
-    end, length(MONTHLY_GRID_KEYS)))
-    return NamedTuple{MONTHLY_GRID_KEYS}(ntuple(i -> monthly_vectors_to_grids(getfield(vectors, MONTHLY_GRID_KEYS[i]), layout.js, layout.is, _grid_shape(layout)), length(MONTHLY_GRID_KEYS)))
-end
-
-function _write_optional_outputs!(
-    timings::TimingStats,
-    options::RunConfig,
-    time_values::Vector{DateTime},
-    ncol::Int,
-    history::Vector{NamedTuple},
-    status::Symbol,
-)
-    options.write_outputs || return "", ""
-    mkpath(options.output_dir)
-    summary_path = joinpath(options.output_dir, "$(options.name)_summary.txt")
-    history_csv_path = joinpath(options.output_dir, "$(options.name)_history.csv")
-    time_block!(timings, :write_summary_text) do
-        write_case_summary(summary_path, options, time_values, ncol, history, status, timings)
-    end
-    time_block!(timings, :write_history_csv) do
-        write_case_history_csv(history_csv_path, history)
-    end
-    return summary_path, history_csv_path
-end
-
-function run_case_cycles_no_netcdf!(
-    timings::TimingStats,
-    options::RunConfig,
-    domain::SM.SnowpackDomain,
-    workspaces,
-    step_fields::SM.SnowpackStepFields,
-    io::IO,
-)
-    backend = _backend_info(options)
-    ncol = SM.column_count(domain)
-    prev = allocate_cycle_summary_buffers(ncol)
-    final = allocate_cycle_summary_buffers(ncol)
-    device_cycle_summary = backend.is_gpu ? allocate_cycle_summary_buffers(domain, ncol) : nothing
-    deltas = (
-        thickness=fill(NaN, ncol),
-        wet_mass=fill(NaN, ncol),
-        base_mass=fill(NaN, ncol),
-    )
-    time_block!(timings, :summarize_columns_initial; synchronize=backend.sync) do
-        summarize_cycle_columns!(prev, domain; backend=backend.summary_backend, device_summary=device_cycle_summary)
-    end
-
-    history = NamedTuple[]
-    simulation_wall_t0 = time_ns()
-    for cycle in 1:options.cycles
-        time_counted_block!(timings, :model_step_wall, ncol * size(step_fields.air_temperature, 2); synchronize=backend.sync) do
-            _step_cycle!(domain, step_fields, workspaces, options)
-        end
-        time_block!(timings, :summarize_columns_cycle; synchronize=backend.sync) do
-            summarize_cycle_columns!(final, domain; backend=backend.summary_backend, device_summary=device_cycle_summary)
-        end
-        if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
-            record = time_block!(timings, :cycle_metrics; synchronize=backend.sync) do
-                make_cycle_record_and_deltas!(cycle, deltas.thickness, deltas.wet_mass, deltas.base_mass, final.thickness, final.wet_mass, final.bulk_density, final.base_mass, prev.thickness, prev.wet_mass, prev.base_mass)
-            end
-            push!(history, record)
-            time_block!(timings, :cycle_logging) do
-                println(io, cycle_log_line(record))
-            end
-        end
-        prev, final = final, prev
-    end
-    return (history=history, status=:cycles, simulation_wall_sec=(time_ns() - simulation_wall_t0) * 1.0e-9)
-end
-
-function _print_run_report(
-    io::IO,
-    options::RunConfig,
-    time_values::Vector{DateTime},
-    history::Vector{NamedTuple},
-    status::Symbol,
-    simulation_wall_sec::Float64,
-    run_wall_sec::Float64,
-    timings::TimingStats;
-    nc_path::AbstractString="",
-    summary_path::AbstractString="",
-    history_csv_path::AbstractString="",
-)
-    println(io, "$(options.name) complete.")
-    println(io, "Input label     : ", isempty(options.input_label) ? "(not provided)" : options.input_label)
-    println(io, "Forcing start   : $(first(time_values))")
-    println(io, "Forcing end     : $(last(time_values))")
-    println(io, "Backend         : $(String(options.backend))")
-    println(io, "Cycles          : $(completed_cycle_count(history, status, options.cycles))")
-    println(io, "Status          : $(string(status))")
-    println(io, "Cycle metrics   : $(cycle_metrics_schedule_label(options.history_stride))")
-    println(io, @sprintf("Simulation wall : %.3f s", simulation_wall_sec))
-    println(io, @sprintf("Run wall total  : %.3f s", run_wall_sec))
-    haskey(timings.totals, :model_step_wall) && println(io, @sprintf("Model step wall : %.3f s", timings.totals[:model_step_wall]))
-    println(io, "Output NetCDF   : ", options.write_netcdf ? abspath(nc_path) : "skipped (--no-nc)")
-    if options.write_outputs
-        println(io, "History CSV     : $(abspath(history_csv_path))")
-        println(io, "Summary         : $(abspath(summary_path))")
-    else
-        println(io, "File outputs    : skipped (--no-output)")
-    end
-    print_timing_summary(io, timings; total_wall_sec=run_wall_sec)
-end
-
 function execute_case!(
     domain::SM.SnowpackDomain,
     forcing::ForcingData;
@@ -259,7 +62,7 @@ function execute_case!(
     initial_thickness_vec = if flags.write_final_fields
         summary = allocate_cycle_summary_buffers(ncol)
         time_block!(timings, :prepare_initial_output_fields) do
-            summarize_cycle_columns!(summary, domain)
+            SM.summarize_cycle_state!(summary.thickness, summary.wet_mass, summary.bulk_density, summary.base_mass, domain)
         end
         copy(summary.thickness)
     else
@@ -316,7 +119,27 @@ function execute_case!(
     step_vectors = _allocate_step_vectors(flags.need_step_outputs, ncol)
 
     time_block!(timings, :summarize_columns_initial; synchronize=backend.sync) do
-        summarize_cycle_columns!(prev, domain; backend=backend.summary_backend, device_summary=device_cycle_summary)
+        if backend.summary_backend == :kernelabstractions
+            device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
+            SM.summarize_cycle_state!(
+                device_cycle_summary.thickness,
+                device_cycle_summary.wet_mass,
+                device_cycle_summary.bulk_density,
+                device_cycle_summary.base_mass,
+                domain;
+                backend=backend.summary_backend,
+            )
+            _copy_summary_fields!(prev, device_cycle_summary, CYCLE_BUFFER_NAMES)
+        else
+            SM.summarize_cycle_state!(
+                prev.thickness,
+                prev.wet_mass,
+                prev.bulk_density,
+                prev.base_mass,
+                domain;
+                backend=backend.summary_backend,
+            )
+        end
     end
     previous = (
         base_mass=_host_vector(prev.base_mass; copy_array=true),
@@ -336,7 +159,33 @@ function execute_case!(
             end
             if flags.need_step_diagnostics
                 time_counted_block!(timings, :step_diagnostics, ncol; synchronize=backend.sync) do
-                    summarize_columns!(step_summary, domain; backend=backend.summary_backend, device_summary=device_step_summary)
+                    if backend.summary_backend == :kernelabstractions
+                        device_step_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
+                        SM.summarize_domain_state!(
+                            device_step_summary.thickness,
+                            device_step_summary.wet_mass,
+                            device_step_summary.bulk_density,
+                            device_step_summary.base_mass,
+                            device_step_summary.smb_ice,
+                            device_step_summary.liquid_water,
+                            device_step_summary.runoff,
+                            domain;
+                            backend=backend.summary_backend,
+                        )
+                        _copy_summary_fields!(step_summary, device_step_summary, SUMMARY_BUFFER_NAMES)
+                    else
+                        SM.summarize_domain_state!(
+                            step_summary.thickness,
+                            step_summary.wet_mass,
+                            step_summary.bulk_density,
+                            step_summary.base_mass,
+                            step_summary.smb_ice,
+                            step_summary.liquid_water,
+                            step_summary.runoff,
+                            domain;
+                            backend=backend.summary_backend,
+                        )
+                    end
                     _accumulate_step_diagnostics!(step_summary, previous, monthly_sums, step_vectors, month_idx, flags)
                 end
                 flags.need_monthly_outputs && (monthly_count[month_idx] += 1)
@@ -358,7 +207,27 @@ function execute_case!(
         end
 
         time_block!(timings, :summarize_columns_cycle; synchronize=backend.sync) do
-            summarize_cycle_columns!(final, domain; backend=backend.summary_backend, device_summary=device_cycle_summary)
+            if backend.summary_backend == :kernelabstractions
+                device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
+                SM.summarize_cycle_state!(
+                    device_cycle_summary.thickness,
+                    device_cycle_summary.wet_mass,
+                    device_cycle_summary.bulk_density,
+                    device_cycle_summary.base_mass,
+                    domain;
+                    backend=backend.summary_backend,
+                )
+                _copy_summary_fields!(final, device_cycle_summary, CYCLE_BUFFER_NAMES)
+            else
+                SM.summarize_cycle_state!(
+                    final.thickness,
+                    final.wet_mass,
+                    final.bulk_density,
+                    final.base_mass,
+                    domain;
+                    backend=backend.summary_backend,
+                )
+            end
         end
         if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
             record = time_block!(timings, :cycle_metrics; synchronize=backend.sync) do

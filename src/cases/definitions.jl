@@ -105,16 +105,19 @@ function _surface_state(;
         density[1, col] = surface_density[col]
         temperature[1, col] = physics.T0 + layer_temperature_c[col]
     end
-    return SnowpackStateFields(
+    return SM.SnowpackDomain(
         N,
         mass,
         mass_w,
         density,
-        temperature;
-        Tsrf=physics.T0 .+ surface_Tsrf_c,
-        snow_cover=Float64.(N .> 0),
-        albedo_dynamic=surface_albedo,
-        physics=physics,
+        temperature,
+        zeros(Float64, ncol),
+        zeros(Float64, ncol),
+        zeros(Float64, ncol),
+        physics.T0 .+ surface_Tsrf_c,
+        Float64.(N .> 0),
+        surface_albedo;
+        c=physics,
     )
 end
 
@@ -164,7 +167,7 @@ function synthetic_definition(;
 
     surface_mass = layout_data.surface_mass
     surface_temperature_c = layout_data.surface_temperature_offsets
-    state = _surface_state(
+    domain = _surface_state(
         ntot=ntot,
         surface_mass=surface_mass,
         surface_density=fill(320.0, ncol),
@@ -205,7 +208,7 @@ function synthetic_definition(;
     )
 
     return CaseDefinition(
-        SnowpackDomain(state),
+        domain,
         forcing;
         layout=GridLayout(layout_data.x, layout_data.y, layout_data.js, layout_data.is, layout_data.mask),
         input_label=layout_data.label,
@@ -266,7 +269,7 @@ function prescribed_definition(;
         has_q_lh=has_q_lh,
         time_values=time_values,
     )
-    state = _surface_state(
+    domain = _surface_state(
         ntot=ntot,
         surface_mass=_column_vector(initial_surface_mass, ncol, "initial_surface_mass"),
         surface_density=_column_vector(initial_density, ncol, "initial_density"),
@@ -275,7 +278,7 @@ function prescribed_definition(;
         physics=physics,
     )
     return CaseDefinition(
-        SnowpackDomain(state),
+        domain,
         forcing;
         layout=layout,
         input_label=String(input_label),
