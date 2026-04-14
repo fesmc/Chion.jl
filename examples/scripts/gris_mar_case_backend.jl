@@ -61,6 +61,30 @@ function run_gris_mar_case(
         physics=physics,
         ntot=ntot,
     )
+
+    d0 = definition.domain
+    empty_domain = SM.SnowpackDomain(
+        c=d0.c,
+        ncol=d0.ncol,
+        Ntot=15,
+        mass_max=d0.mass_max,
+        mass_split=d0.mass_split,
+        mass_min=d0.mass_min,
+        rho_max=d0.rho_max,
+        density_init=d0.c.rho_s,     # 350
+        temperature_init=d0.c.T0,    # 273.15 K
+    )
+    empty_domain.Tsrf .= d0.c.T0
+    empty_domain.albedo_dynamic .= d0.c.alpha_dry   # 0.85
+
+    definition = Chion.CaseDefinition(
+        empty_domain,
+        definition.forcing;
+        layout=definition.layout,
+        input_label=definition.input_label,
+        notes=definition.notes,
+        metadata=definition.metadata,
+    )
     case = Chion.build_case(
         definition;
         run=Chion.RunConfig(
