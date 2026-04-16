@@ -3,13 +3,6 @@ Scratch storage for stepping and energy-flux solves.
 """
 
 """
-    _workspace_array(::Type{NF}, dims...)
-
-Allocate a CPU scratch array of element type `NF` and shape `dims...`.
-"""
-@inline _workspace_array(::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} = zeros(NF, dims...)
-
-"""
     _workspace_array(storage, ::Type{NF}, dims...)
 
 Allocate scratch storage compatible with `storage`, preserving the active
@@ -33,17 +26,6 @@ struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
     previous_temperature::PT
     layer_thickness::TT
     thermal_conductivity::KT
-end
-
-"""
-    EnergyWorkspace(::Type{NF}, dims...)
-
-Allocate a full set of scratch arrays for the tridiagonal energy solve using
-CPU storage of type `NF`.
-"""
-function EnergyWorkspace(::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
-    allocate() = _workspace_array(NF, dims...)
-    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
 """
@@ -78,15 +60,15 @@ struct ColumnarStepWorkspace{LWT,ET}
 end
 
 """
-    ColumnarStepWorkspace(::Type{NF}, Ntot, ncol)
+    ColumnarStepWorkspace(storage, ::Type{NF}, Ntot, ncol)
 
 Allocate column-major scratch arrays that hold per-layer temporary state for
-every column in a batch.
+every column in a batch on the same backend as `storage`.
 """
-function ColumnarStepWorkspace(::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
+function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
     return ColumnarStepWorkspace(
-        _workspace_array(NF, Ntot, ncol),
-        EnergyWorkspace(NF, Ntot, ncol),
+        _workspace_array(storage, NF, Ntot, ncol),
+        EnergyWorkspace(storage, NF, Ntot, ncol),
     )
 end
 
@@ -98,10 +80,7 @@ for all columns.
 """
 function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
     NF = number_type(domain.c)
-    return ColumnarStepWorkspace(
-        _workspace_array(domain.mass, NF, domain.Ntot, column_count(domain)),
-        EnergyWorkspace(domain.mass, NF, domain.Ntot, column_count(domain)),
-    )
+    return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, column_count(domain))
 end
 
 Adapt.@adapt_structure EnergyWorkspace
