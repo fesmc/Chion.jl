@@ -131,7 +131,7 @@ end
 
 @inline _write_dataset_var!(var, data::AbstractVector) = (var[:] = eltype(var) <: Integer ? data : Float32.(data))
 @inline _write_dataset_var!(var, data::AbstractMatrix) = (var[:, :] = eltype(var) <: Integer ? permutedims(data, (2, 1)) : Float32.(permutedims(data, (2, 1))))
-@inline _write_dataset_var!(var, data::Array{Float64, 3}) = (var[:, :, :] = Float32.(permutedims(data, (1, 3, 2))))
+@inline _write_dataset_var!(var, data::AbstractArray{<:Real, 3}) = (var[:, :, :] = Float32.(permutedims(data, (1, 3, 2))))
 
 maybe_write_step_output!(writer::NetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
     (haskey(writer.vars, key) && (writer.vars[key][step_index, :, :] = Float32.(permutedims(data, (2, 1))); nothing))
