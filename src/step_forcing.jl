@@ -169,7 +169,6 @@ vector-valued `dt_days` storage.
 """
 @inline _step_dt(dt_days::Number, ::Int) = dt_days
 @inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
-@inline _step_dt(dt_days::CUDA.CuArray, time_index::Int) = CUDA.@allowscalar dt_days[time_index]
 
 """
     _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh)
@@ -289,4 +288,20 @@ function SnowpackStepForcing(
 end
 
 @adapt_structure SnowpackStepForcing
-@adapt_structure SnowpackStepFields
+
+function Adapt.adapt_structure(to, fields::SnowpackStepFields)
+    return SnowpackStepFields(
+        fields.dt_days,
+        adapt(to, fields.air_temperature),
+        adapt(to, fields.snowfall_rate),
+        adapt(to, fields.rainfall_rate),
+        adapt(to, fields.shortwave_down),
+        adapt(to, fields.wind_speed),
+        adapt(to, fields.q_lw_down),
+        adapt(to, fields.has_q_lw_down),
+        adapt(to, fields.q_sh),
+        adapt(to, fields.has_q_sh),
+        adapt(to, fields.q_lh),
+        adapt(to, fields.has_q_lh),
+    )
+end
