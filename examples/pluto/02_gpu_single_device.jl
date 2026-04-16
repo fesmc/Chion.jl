@@ -534,7 +534,7 @@ md"""
 		backend=:cpu,
 		domain_storage="Array",
 		manual_transfer="none",
-		workspace="threaded_workspaces(domain)",
+		workspace="ColumnarStepWorkspace(domain)",
 		supported=true,
 	),
 	(

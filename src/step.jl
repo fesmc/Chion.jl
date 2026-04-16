@@ -1,5 +1,5 @@
 """
-Core stepping flow and public single-column entrypoints.
+Core stepping flow shared by batch stepping kernels.
 """
 
 """
@@ -282,76 +282,4 @@ function _step_state_resolved!(
     end
 
     return nothing
-end
-
-"""
-    step!(domain, idx, forcing, workspace=StepWorkspace(domain); timings=nothing, update_snow_cover=true)
-
-Advance column `idx` of `domain` by one step using a prebuilt
-`SnowpackStepForcing`. Mutates `domain` in-place and reuses `workspace` for
-temporary storage.
-"""
-function step!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
-    forcing::SnowpackStepForcing,
-    workspace=StepWorkspace(domain);
-    timings=nothing,
-    update_snow_cover::Bool=true,
-)
-    return _step_state_resolved!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        idx,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        forcing,
-        workspace,
-        update_snow_cover;
-        timings=timings,
-    )
-end
-
-"""
-    step!(domain, idx, air_temperature, precipitation_rate, dt_days; workspace=StepWorkspace(domain), timings=nothing, kwargs...)
-
-Advance column `idx` of `domain` by one step from scalar meteorological input.
-Keyword arguments are normalized into a `SnowpackStepForcing` before the core
-step routine is called.
-"""
-function step!(
-    domain::AbstractSnowpackDomain,
-    idx::Int,
-    air_temperature,
-    precipitation_rate,
-    dt_days;
-    workspace=StepWorkspace(domain),
-    timings=nothing,
-    kwargs...,
-)
-    return step!(
-        domain,
-        idx,
-        _resolved_step_forcing(
-            domain.c,
-            air_temperature,
-            precipitation_rate,
-            dt_days;
-            kwargs...,
-        ),
-        workspace;
-        timings=timings,
-    )
 end

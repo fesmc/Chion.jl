@@ -49,7 +49,6 @@ export valid_or, mmwe_day_to_kgm2s
 export read_forcing_times, choose_time_index, infer_dt_days
 export extract_forcing_file_layers, populate_domain_column_from_forcing_file!
 export read_full_timeseries_3d, read_first_available_timeseries_3d
-export StepWorkspace, threaded_workspaces
 export ColumnarStepWorkspace
 export continuous_bottom_deplete!
 export update_surface_albedo!

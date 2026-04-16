@@ -227,6 +227,19 @@ function run_timeseries(case; use_radiation=true)
     domain = deepcopy(case.definition.domain)
     forcing = case.definition.forcing
     n = length(forcing.time_values)
+    sanitized = (
+        air_temperature=similar(forcing.air_temperature),
+        snowfall_rate=similar(forcing.snowfall_rate),
+        rainfall_rate=similar(forcing.rainfall_rate),
+        shortwave_down=similar(forcing.shortwave_down),
+        wind_speed=similar(forcing.wind_speed),
+        q_lw_down=similar(forcing.q_lw_down),
+        has_q_lw_down=similar(forcing.has_q_lw_down),
+        q_sh=similar(forcing.q_sh),
+        has_q_sh=similar(forcing.has_q_sh),
+        q_lh=similar(forcing.q_lh),
+        has_q_lh=similar(forcing.has_q_lh),
+    )
     sim = (
         depth = fill(NaN, n),
         swe = fill(NaN, n),
@@ -240,7 +253,7 @@ function run_timeseries(case; use_radiation=true)
         snow = fill(NaN, n),
         cum_snow = zeros(Float64, n),
     )
-    ws = Chion.StepWorkspace(domain)
+    workspace = Chion.ColumnarStepWorkspace(domain)
     s0 = current_state(domain)
     sim.depth[1] = s0.depth; sim.swe[1] = s0.swe; sim.rho[1] = s0.rho; sim.cover[1] = s0.cover
     last_tair = isfinite(forcing.air_temperature[1, 1]) ? forcing.air_temperature[1, 1] : 268.0
@@ -253,10 +266,37 @@ function run_timeseries(case; use_radiation=true)
         sw_i = use_radiation && isfinite(forcing.shortwave_down[1, i]) ? max(forcing.shortwave_down[1, i], 0.0) : NaN
         lw_i = use_radiation && forcing.has_q_lw_down[1, i] && isfinite(forcing.q_lw_down[1, i]) ? forcing.q_lw_down[1, i] : NaN
         sim.tair[i] = T - 273.15; sim.wind[i] = W; sim.snow[i] = S; sim.rain[i] = R; sim.sw[i] = sw_i; sim.lw[i] = lw_i
+        sanitized.air_temperature[1, i] = T
+        sanitized.snowfall_rate[1, i] = S
+        sanitized.rainfall_rate[1, i] = R
+        sanitized.shortwave_down[1, i] = isfinite(sw_i) ? sw_i : 0.0
+        sanitized.wind_speed[1, i] = W
+        sanitized.q_lw_down[1, i] = isfinite(lw_i) ? lw_i : 0.0
+        sanitized.has_q_lw_down[1, i] = isfinite(lw_i)
+        sanitized.q_sh[1, i] = 0.0
+        sanitized.has_q_sh[1, i] = false
+        sanitized.q_lh[1, i] = 0.0
+        sanitized.has_q_lh[1, i] = false
         i == 1 && continue
         dt = forcing.dt_days[i - 1]
         sim.cum_snow[i] = sim.cum_snow[i - 1] + S * dt * 86_400.0
-        Chion.step!(domain, 1, T, S + R, dt; workspace=ws, snowfall_rate=S, rainfall_rate=R, wind_speed=W, shortwave_down=isfinite(sw_i) ? sw_i : nothing, q_lw_down=isfinite(lw_i) ? lw_i : nothing)
+    end
+    step_fields = Chion.SnowpackStepFields(
+        dt_days=forcing.dt_days,
+        air_temperature=sanitized.air_temperature,
+        snowfall_rate=sanitized.snowfall_rate,
+        rainfall_rate=sanitized.rainfall_rate,
+        shortwave_down=sanitized.shortwave_down,
+        wind_speed=sanitized.wind_speed,
+        q_lw_down=sanitized.q_lw_down,
+        has_q_lw_down=sanitized.has_q_lw_down,
+        q_sh=sanitized.q_sh,
+        has_q_sh=sanitized.has_q_sh,
+        q_lh=sanitized.q_lh,
+        has_q_lh=sanitized.has_q_lh,
+    )
+    for i in 2:n
+        Chion.step!(domain, step_fields, i - 1, workspace)
         st = current_state(domain)
         sim.depth[i] = st.depth; sim.swe[i] = st.swe; sim.rho[i] = st.rho; sim.cover[i] = st.cover
     end
@@ -312,7 +352,7 @@ function write_outputs(out_dir, slug, dates, obs_depth, sim_depth, obs_swe, sim_
         end
     end
     open(txt, "w") do io
-        println(io, "General API  : domain + forcing + step!")
+        println(io, "General API  : domain + forcing + KernelAbstractions batch step!")
         println(io, @sprintf("Snow depth : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.depth.n, metrics.depth.bias, metrics.depth.mae, metrics.depth.rmse, metrics.depth.corr))
         println(io, @sprintf("Snow SWE   : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.swe.n, metrics.swe.bias, metrics.swe.mae, metrics.swe.rmse, metrics.swe.corr))
     end
@@ -358,7 +398,7 @@ function main(args)
     out = write_outputs(arg_value(args, "out-dir", DEFAULT_OUT_DIR), slug, inp.dates, inp.obs_depth, sim.depth, inp.obs_swe, sim.swe, sim, metrics; plot_on=!has_flag(args, "no-plot"))
 
     println("Validation complete.")
-    println("General API : domain + forcing + step!")
+    println("General API : domain + forcing + KernelAbstractions batch step!")
     println("Met file    : $(abspath(inp.met_path))")
     println("Obs file    : $(abspath(inp.obs_path))")
     println("CSV output  : $(abspath(out.csv))")

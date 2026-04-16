@@ -22,7 +22,6 @@ time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
     time_counted_block!(stats, key, count, f; kwargs...)
 
 using Dates
-using Base.Threads: @threads
 using NCDatasets
 import CUDA
 import Libdl
@@ -41,15 +40,15 @@ function _prepare_backend!(timings::StepTimingStats, domain::SnowpackDomain, for
         step_fields = time_block!(timings, :gpu_transfer) do
             adapt(CUDA.CuArray, step_fields)
         end
-        workspaces = time_block!(timings, :gpu_transfer) do
+        workspace = time_block!(timings, :gpu_transfer) do
             ColumnarStepWorkspace(domain)
         end
-        return domain, step_fields, workspaces
+        return domain, step_fields, workspace
     end
-    workspaces = time_block!(timings, :create_workspaces) do
-        threaded_workspaces(domain)
+    workspace = time_block!(timings, :create_workspaces) do
+        ColumnarStepWorkspace(domain)
     end
-    return domain, step_fields, workspaces
+    return domain, step_fields, workspace
 end
 
 function execute_run!(
@@ -68,8 +67,6 @@ function execute_run!(
 
     selected = Set(options.netcdf_variables)
     is_gpu = options.backend == :gpu
-    summary_backend = is_gpu ? :kernelabstractions : :threads
-    synchronize = is_gpu ? CUDA.synchronize : nothing
     write_final_fields = options.write_netcdf && !isnothing(layout)
     need_step_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.step)
     need_monthly_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.monthly)
@@ -80,14 +77,21 @@ function execute_run!(
     initial_thickness_vec = if write_final_fields
         summary = allocate_cycle_summary_buffers(ncol)
         time_block!(timings, :prepare_initial_output_fields) do
-            summarize_cycle_state!(summary.thickness, summary.wet_mass, summary.bulk_density, summary.base_mass, domain)
+            summarize_cycle_state!(
+                summary.thickness,
+                summary.wet_mass,
+                summary.bulk_density,
+                summary.base_mass,
+                domain;
+                backend=:kernelabstractions,
+            )
         end
         copy(summary.thickness)
     else
         Float64[]
     end
 
-    domain, step_fields, workspaces = _prepare_backend!(timings, domain, forcing; is_gpu=is_gpu)
+    domain, step_fields, workspace = _prepare_backend!(timings, domain, forcing; is_gpu=is_gpu)
     schedule = nothing
     writer = nothing
     nc_path = ""
@@ -119,9 +123,9 @@ function execute_run!(
 
     prev = allocate_cycle_summary_buffers(ncol)
     final = allocate_cycle_summary_buffers(ncol)
-    device_cycle_summary = is_gpu ? allocate_cycle_summary_buffers(domain, ncol) : nothing
+    backend_cycle_summary = allocate_cycle_summary_buffers(domain, ncol)
     step_summary = need_step_diagnostics ? allocate_summary_buffers(ncol) : nothing
-    device_step_summary = is_gpu && need_step_diagnostics ? allocate_summary_buffers(domain, ncol) : nothing
+    backend_step_summary = need_step_diagnostics ? allocate_summary_buffers(domain, ncol) : nothing
     deltas = (
         thickness=fill(NaN, ncol),
         wet_mass=fill(NaN, ncol),
@@ -133,28 +137,16 @@ function execute_run!(
     monthly_count = need_monthly_outputs ? zeros(Int32, monthly_total) : Int32[]
     step_vectors = _allocate_step_vectors(need_step_outputs, ncol)
 
-    time_block!(timings, :summarize_columns_initial; synchronize=synchronize) do
-        if summary_backend == :kernelabstractions
-            device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-            summarize_cycle_state!(
-                device_cycle_summary.thickness,
-                device_cycle_summary.wet_mass,
-                device_cycle_summary.bulk_density,
-                device_cycle_summary.base_mass,
-                domain;
-                backend=summary_backend,
-            )
-            _copy_summary_fields!(prev, device_cycle_summary, CYCLE_BUFFER_NAMES)
-        else
-            summarize_cycle_state!(
-                prev.thickness,
-                prev.wet_mass,
-                prev.bulk_density,
-                prev.base_mass,
-                domain;
-                backend=summary_backend,
-            )
-        end
+    time_block!(timings, :summarize_columns_initial) do
+        summarize_cycle_state!(
+            backend_cycle_summary.thickness,
+            backend_cycle_summary.wet_mass,
+            backend_cycle_summary.bulk_density,
+            backend_cycle_summary.base_mass,
+            domain;
+            backend=:kernelabstractions,
+        )
+        _copy_summary_fields!(prev, backend_cycle_summary, CYCLE_BUFFER_NAMES)
     end
     previous = (
         base_mass=_host_vector(prev.base_mass; copy_array=true),
@@ -169,38 +161,24 @@ function execute_run!(
     for cycle in 1:options.cycles
         for t in eachindex(forcing.time_values)
             month_idx = need_monthly_outputs ? (cycle - 1) * schedule.nmonth_per_cycle + schedule.step_month[t] : 0
-            time_counted_block!(timings, :model_step_wall, ncol; synchronize=synchronize) do
-                step!(domain, step_fields, t, workspaces)
+            time_counted_block!(timings, :model_step_wall, ncol) do
+                step!(domain, step_fields, t, workspace)
             end
             if need_step_diagnostics
-                time_counted_block!(timings, :step_diagnostics, ncol; synchronize=synchronize) do
-                    if summary_backend == :kernelabstractions
-                        device_step_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-                        summarize_domain_state!(
-                            device_step_summary.thickness,
-                            device_step_summary.wet_mass,
-                            device_step_summary.bulk_density,
-                            device_step_summary.base_mass,
-                            device_step_summary.smb_ice,
-                            device_step_summary.liquid_water,
-                            device_step_summary.runoff,
-                            domain;
-                            backend=summary_backend,
-                        )
-                        _copy_summary_fields!(step_summary, device_step_summary, SUMMARY_BUFFER_NAMES)
-                    else
-                        summarize_domain_state!(
-                            step_summary.thickness,
-                            step_summary.wet_mass,
-                            step_summary.bulk_density,
-                            step_summary.base_mass,
-                            step_summary.smb_ice,
-                            step_summary.liquid_water,
-                            step_summary.runoff,
-                            domain;
-                            backend=summary_backend,
-                        )
-                    end
+                time_counted_block!(timings, :step_diagnostics, ncol) do
+                    backend_step_summary === nothing && error("Missing backend summary buffers.")
+                    summarize_domain_state!(
+                        backend_step_summary.thickness,
+                        backend_step_summary.wet_mass,
+                        backend_step_summary.bulk_density,
+                        backend_step_summary.base_mass,
+                        backend_step_summary.smb_ice,
+                        backend_step_summary.liquid_water,
+                        backend_step_summary.runoff,
+                        domain;
+                        backend=:kernelabstractions,
+                    )
+                    _copy_summary_fields!(step_summary, backend_step_summary, SUMMARY_BUFFER_NAMES)
                     _accumulate_step_diagnostics!(step_summary, previous, monthly_sums, step_vectors, month_idx, need_monthly_outputs, need_step_outputs)
                 end
                 need_monthly_outputs && (monthly_count[month_idx] += 1)
@@ -221,31 +199,19 @@ function execute_run!(
             end
         end
 
-        time_block!(timings, :summarize_columns_cycle; synchronize=synchronize) do
-            if summary_backend == :kernelabstractions
-                device_cycle_summary === nothing && error("`device_summary` must be provided for `backend=:kernelabstractions`.")
-                summarize_cycle_state!(
-                    device_cycle_summary.thickness,
-                    device_cycle_summary.wet_mass,
-                    device_cycle_summary.bulk_density,
-                    device_cycle_summary.base_mass,
-                    domain;
-                    backend=summary_backend,
-                )
-                _copy_summary_fields!(final, device_cycle_summary, CYCLE_BUFFER_NAMES)
-            else
-                summarize_cycle_state!(
-                    final.thickness,
-                    final.wet_mass,
-                    final.bulk_density,
-                    final.base_mass,
-                    domain;
-                    backend=summary_backend,
-                )
-            end
+        time_block!(timings, :summarize_columns_cycle) do
+            summarize_cycle_state!(
+                backend_cycle_summary.thickness,
+                backend_cycle_summary.wet_mass,
+                backend_cycle_summary.bulk_density,
+                backend_cycle_summary.base_mass,
+                domain;
+                backend=:kernelabstractions,
+            )
+            _copy_summary_fields!(final, backend_cycle_summary, CYCLE_BUFFER_NAMES)
         end
         if should_record_cycle_metrics(cycle, options.cycles, options.history_stride)
-            record = time_block!(timings, :cycle_metrics; synchronize=synchronize) do
+            record = time_block!(timings, :cycle_metrics) do
                 make_cycle_record_and_deltas!(cycle, deltas.thickness, deltas.wet_mass, deltas.base_mass, final.thickness, final.wet_mass, final.bulk_density, final.base_mass, prev.thickness, prev.wet_mass, prev.base_mass)
             end
             push!(history, record)
@@ -254,7 +220,7 @@ function execute_run!(
             end
         end
         if need_last_cycle_smb_delta
-            time_block!(timings, :cycle_state_deltas; synchronize=synchronize) do
+            time_block!(timings, :cycle_state_deltas) do
                 _update_cycle_smb_delta!(deltas.ice_sheet_smb, previous_cycle_smb_ice, domain)
             end
         end

@@ -1,5 +1,5 @@
 """
-Batch stepping over forcing fields on CPU and GPU.
+Batch stepping over forcing fields through a single KernelAbstractions path.
 """
 
 """
@@ -133,35 +133,11 @@ return the KernelAbstractions event.
 end
 
 """
-    step!(domain, forcing, time_index, workspaces; update_snow_cover=true)
-
-Advance all columns for one time step on the CPU using Julia threads. Each
-thread reuses one entry from `workspaces`.
-"""
-function step!(
-    domain::AbstractSnowpackDomain,
-    forcing::SnowpackStepFields,
-    time_index::Int,
-    workspaces::AbstractVector{<:StepWorkspace};
-    update_snow_cover::Bool=true,
-)
-    Threads.@threads for idx in 1:column_count(domain)
-        step!(
-            domain,
-            idx,
-            _step_forcing_from_fields(forcing, idx, time_index),
-            workspaces[Threads.threadid()];
-            update_snow_cover=update_snow_cover,
-        )
-    end
-    return nothing
-end
-
-"""
     step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace; update_snow_cover=true)
 
-Advance all columns for one time step using the backend associated with
-`domain.mass`, typically a GPU kernel for device arrays.
+Advance all columns for one time step using the KernelAbstractions backend
+associated with `domain.mass`. The same kernel runs on CPU or GPU depending on
+the storage backend of the domain and workspace arrays.
 """
 function step!(
     domain::AbstractSnowpackDomain,
@@ -175,16 +151,16 @@ function step!(
 end
 
 """
-    step!(domain, forcing, workspace; update_snow_cover=true)
+    step!(domain, forcing, workspace::ColumnarStepWorkspace; update_snow_cover=true)
 
 Advance all columns through the full forcing sequence in `forcing`. The outer
-time loop runs in Julia, while per-time-step execution dispatches to the CPU
-or GPU batch method based on `workspace`.
+time loop runs in Julia, while each time step is advanced by the same
+KernelAbstractions batch kernel on the storage backend of `workspace`.
 """
 function step!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackStepFields,
-    workspace;
+    workspace::ColumnarStepWorkspace;
     update_snow_cover::Bool=true,
 )
     for time_index in 1:_step_time_count(forcing)

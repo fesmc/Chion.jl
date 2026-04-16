@@ -67,55 +67,10 @@ EnergyWorkspace(domain::AbstractSnowpackDomain) =
     EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
 
 """
-    StepWorkspace
-
-Per-column scratch storage reused by [`step!`](@ref), including temporary
-liquid-water buffers and the energy-solver workspace.
-"""
-struct StepWorkspace{LWT,ET}
-    liquid_water_before_energy::LWT
-    energy::ET
-end
-
-"""
-    StepWorkspace(::Type{NF}, Ntot)
-
-Allocate per-column scratch arrays for one `step!` call on CPU storage.
-"""
-function StepWorkspace(::Type{NF}, Ntot::Int) where {NF <: AbstractFloat}
-    return StepWorkspace(
-        _workspace_array(NF, Ntot),
-        EnergyWorkspace(NF, Ntot),
-    )
-end
-
-"""
-    StepWorkspace(domain)
-
-Allocate per-column stepping scratch compatible with `domain`'s storage
-backend.
-"""
-function StepWorkspace(domain::AbstractSnowpackDomain)
-    NF = number_type(domain.c)
-    return StepWorkspace(
-        _workspace_array(domain.mass, NF, domain.Ntot),
-        EnergyWorkspace(domain.mass, NF, domain.Ntot),
-    )
-end
-
-"""
-    threaded_workspaces(domain)
-
-Allocate one `StepWorkspace` per Julia thread for threaded batch stepping.
-Each workspace is intended to be reused in-place by a single thread.
-"""
-threaded_workspaces(domain::AbstractSnowpackDomain) = [StepWorkspace(domain) for _ in 1:Threads.maxthreadid()]
-
-"""
     ColumnarStepWorkspace
 
 Column-major scratch storage that holds temporary state for every column in a
-batch run.
+batch run, regardless of whether the backing arrays live on CPU or GPU.
 """
 struct ColumnarStepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
@@ -150,5 +105,4 @@ function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
 end
 
 Adapt.@adapt_structure EnergyWorkspace
-Adapt.@adapt_structure StepWorkspace
 Adapt.@adapt_structure ColumnarStepWorkspace

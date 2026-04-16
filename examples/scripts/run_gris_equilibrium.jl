@@ -8,10 +8,11 @@ using Printf
 using Statistics
 using Base.Threads
 using CUDA
+import Libdl
+using NCDatasets
 using Chion
 
-include("run_gris_one_step.jl")
-
+const SM = Chion
 const DEFAULT_OUT_DIR_EQUIL = joinpath(@__DIR__, "..", "plots", "gris_equilibrium")
 const NC_NOERR = 0
 const NC_CLOBBER = 0x0000
@@ -22,7 +23,102 @@ const NC_DOUBLE = 6
 const NC_INT = 4
 const NC_UNLIMITED = 0
 
-const LIBNETCDF = Chion.resolve_libnetcdf()
+function resolve_libnetcdf()
+    haskey(ENV, "NETCDF_LIB") && return ENV["NETCDF_LIB"]
+    lib = Libdl.find_library(["netcdf", "libnetcdf"])
+    isempty(lib) || return lib
+    isdefined(NCDatasets, :libnetcdf) && return String(getproperty(NCDatasets, :libnetcdf))
+    error("Could not locate libnetcdf. Set NETCDF_LIB to the shared library path.")
+end
+
+const LIBNETCDF = resolve_libnetcdf()
+
+function _summarize_column_state(
+    n::Int,
+    mass::AbstractVector{<:Real},
+    mass_w::AbstractVector{<:Real},
+    density::AbstractVector{<:Real},
+    temperature::AbstractVector{<:Real},
+    mass_base::Float64,
+    smb_ice::Float64,
+    runoff::Float64,
+    T0::Float64,
+)
+    if n <= 0
+        return (
+            snow_mass=0.0,
+            liquid_mass=0.0,
+            wet_mass=0.0,
+            thickness=0.0,
+            bulk_density=NaN,
+            base_mass=mass_base,
+            smb_ice=smb_ice,
+            runoff=runoff,
+            snow_cover=0.0,
+            surface_temperature_c=NaN,
+        )
+    end
+
+    snow_mass = 0.0
+    liquid_mass = 0.0
+    thickness = 0.0
+    @inbounds for k in 1:n
+        m = max(Float64(mass[k]), 0.0)
+        mw = max(Float64(mass_w[k]), 0.0)
+        rho = Float64(density[k])
+        snow_mass += m
+        liquid_mass += mw
+        if m > 0.0 && rho > 0.0
+            thickness += m / rho
+        end
+    end
+
+    wet_mass = snow_mass + liquid_mass
+    bulk_density = thickness > 0.0 ? snow_mass / thickness : NaN
+    snow_cover = if wet_mass <= 0.0 || !isfinite(bulk_density) || bulk_density <= 0.0
+        0.0
+    else
+        min(1.0, (wet_mass / bulk_density) / 0.1)
+    end
+
+    return (
+        snow_mass=snow_mass,
+        liquid_mass=liquid_mass,
+        wet_mass=wet_mass,
+        thickness=thickness,
+        bulk_density=bulk_density,
+        base_mass=mass_base,
+        smb_ice=smb_ice,
+        runoff=runoff,
+        snow_cover=snow_cover,
+        surface_temperature_c=Float64(temperature[1]) - T0,
+    )
+end
+
+function summarize_column(domain::SM.SnowpackDomain, idx::Int)
+    n = domain.N[idx]
+    return _summarize_column_state(
+        n,
+        @view(domain.mass[:, idx]),
+        @view(domain.mass_w[:, idx]),
+        @view(domain.density[:, idx]),
+        @view(domain.temperature[:, idx]),
+        Float64(domain.mass_base[idx]),
+        Float64(domain.smb_ice[idx]),
+        Float64(domain.runoff[idx]),
+        Float64(domain.c.T0),
+    )
+end
+
+function masked_field(field::AbstractMatrix{<:Real}, valid_mask::BitMatrix)
+    out = fill(NaN, size(field))
+    @inbounds for I in eachindex(field)
+        if valid_mask[I] && isfinite(field[I])
+            out[I] = Float64(field[I])
+        end
+    end
+    return out
+end
 
 mutable struct TimingStats
     totals::Dict{Symbol, Float64}
@@ -577,16 +673,16 @@ function cycle_log_line(record)
     )
 end
 
-function run_spinup_cycles_threads_no_netcdf!(
+function run_spinup_cycles_no_netcdf!(
     timings::TimingStats,
     config,
     domain::SM.SnowpackDomain,
-    workspaces::AbstractVector{<:SM.StepWorkspace},
+    workspace::SM.ColumnarStepWorkspace,
     step_fields::SM.SnowpackStepFields,
     nvalid::Int,
 )
-    config.backend == :threads || error("Threaded fast path requires `--backend=threads`.")
-    !config.write_netcdf || error("Threaded fast path only applies when NetCDF output is disabled.")
+    config.backend == :threads || error("CPU fast path requires `--backend=threads`.")
+    !config.write_netcdf || error("CPU fast path only applies when NetCDF output is disabled.")
 
     ntime = size(step_fields.air_temperature, 2)
     ncol = SM.column_count(domain)
@@ -607,7 +703,7 @@ function run_spinup_cycles_threads_no_netcdf!(
 
     for cycle in 1:config.max_cycles
         time_counted_block!(timings, :model_step_wall, ncol * ntime) do
-            SM.step!(domain, step_fields, workspaces)
+            SM.step!(domain, step_fields, workspace)
         end
 
         time_block!(timings, :summarize_columns_cycle) do
@@ -1448,14 +1544,14 @@ function main(args::Vector{String})
     )
 
     if config.backend == :threads && !config.write_outputs && !config.write_netcdf
-        workspaces = time_block!(timings, :create_workspaces) do
-            SM.threaded_workspaces(domain)
+        workspace = time_block!(timings, :create_workspaces) do
+            SM.ColumnarStepWorkspace(domain)
         end
-        sim = run_spinup_cycles_threads_no_netcdf!(
+        sim = run_spinup_cycles_no_netcdf!(
             timings,
             config,
             domain,
-            workspaces,
+            workspace,
             step_fields,
             nvalid,
         )
@@ -1492,7 +1588,7 @@ function main(args::Vector{String})
         end
     else
         workspaces = time_block!(timings, :create_workspaces) do
-            SM.threaded_workspaces(domain)
+            SM.ColumnarStepWorkspace(domain)
         end
     end
 
