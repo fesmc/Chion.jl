@@ -9,7 +9,7 @@ end
 
 @inline _write_nc_var!(ds::NCDataset, name, dims, spec, value) = (_def_nc_var(ds, name, dims, spec)[:] = value)
 
-const CASE_NC_SPECS = (
+const NC_SPECS = (
     (key=:final_thickness,        name="final_thickness",        dims=("x", "y"),       long_name="Final snow thickness", units="m", integer=false),
     (key=:final_wet_mass,         name="final_wet_mass",         dims=("x", "y"),       long_name="Final snow wet mass", units="mmWE", integer=false),
     (key=:final_bulk_density,     name="final_bulk_density",     dims=("x", "y"),       long_name="Final bulk snow density", units="kg m-3", integer=false),
@@ -45,18 +45,28 @@ const CASE_NC_SPECS = (
     (key=:step_ice_sheet_smb,          name="step_ice_sheet_smb",          dims=("step", "x", "y"), long_name="Annual net mass forcing to the ice sheet for each written output interval", units="mmWE", integer=false),
 )
 
+const HISTORY_OUTPUT_SPECS = (
+    (output=:history_mean_thickness, record=:mean_thickness),
+    (output=:history_mean_wet_mass, record=:mean_wet_mass),
+    (output=:history_mean_bulk_density, record=:mean_bulk_density),
+    (output=:history_mean_base_mass, record=:mean_base_mass),
+    (output=:history_mean_abs_delta_thickness, record=:mean_abs_delta_thickness),
+    (output=:history_mean_abs_delta_wet_mass, record=:mean_abs_delta_wet_mass),
+    (output=:history_mean_abs_delta_base_mass, record=:mean_abs_delta_base_mass),
+)
+
 function _define_selected_nc_variables!(ds::NCDataset, selected::Set{Symbol})
     vars = Dict{Symbol, Any}()
-    for spec in CASE_NC_SPECS
+    for spec in NC_SPECS
         spec.key in selected || continue
         vars[spec.key] = _def_nc_var(ds, spec.name, spec.dims, spec)
     end
     return vars
 end
 
-function init_case_netcdf(
+function init_netcdf(
     netcdf_path::AbstractString,
-    options::RunConfig,
+    options::RunOptions,
     time_values::Vector{DateTime},
     nlayer::Int,
     layout::GridLayout,
@@ -106,7 +116,7 @@ function init_case_netcdf(
     end
 
     vars = _define_selected_nc_variables!(ds, selected)
-    any(key -> key in selected, CASE_OUTPUT_GROUPS.step) && (vars[:step_valid] = _def_nc_var(ds, "step_valid", ("step",), (key=:step_valid, long_name="1 where a yearly output record was completed and written, 0 for unused trailing slots", units="", integer=true)))
+    any(key -> key in selected, OUTPUT_GROUPS.step) && (vars[:step_valid] = _def_nc_var(ds, "step_valid", ("step",), (key=:step_valid, long_name="1 where a yearly output record was completed and written, 0 for unused trailing slots", units="", integer=true)))
 
     ds.attrib["title"] = options.name
     ds.attrib["source_model"] = "Chion"
@@ -116,17 +126,17 @@ function init_case_netcdf(
     ds.attrib["cycles_completed"] = "pending"
     ds.attrib["status"] = "pending"
     ds.attrib["created"] = string(now())
-    return CaseNetCDFWriter(ds, vars, max_steps, options.cycles)
+    return NetCDFWriter(ds, vars, max_steps, options.cycles)
 end
 
 @inline _write_dataset_var!(var, data::AbstractVector) = (var[:] = eltype(var) <: Integer ? data : Float32.(data))
 @inline _write_dataset_var!(var, data::AbstractMatrix) = (var[:, :] = eltype(var) <: Integer ? permutedims(data, (2, 1)) : Float32.(permutedims(data, (2, 1))))
 @inline _write_dataset_var!(var, data::Array{Float64, 3}) = (var[:, :, :] = Float32.(permutedims(data, (1, 3, 2))))
 
-maybe_write_step_output!(writer::CaseNetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
+maybe_write_step_output!(writer::NetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
     (haskey(writer.vars, key) && (writer.vars[key][step_index, :, :] = Float32.(permutedims(data, (2, 1))); nothing))
 
-maybe_write_output!(writer::CaseNetCDFWriter, key::Symbol, data) = (haskey(writer.vars, key) && (_write_dataset_var!(writer.vars[key], data); nothing))
+maybe_write_output!(writer::NetCDFWriter, key::Symbol, data) = (haskey(writer.vars, key) && (_write_dataset_var!(writer.vars[key], data); nothing))
 
 function _history_vectors(history::Vector{NamedTuple}, cycles::Int)
     out = Dict(spec.output => fill(NaN, cycles) for spec in HISTORY_OUTPUT_SPECS)
@@ -136,8 +146,8 @@ function _history_vectors(history::Vector{NamedTuple}, cycles::Int)
     return out
 end
 
-function finalize_case_netcdf!(
-    writer::CaseNetCDFWriter,
+function finalize_netcdf!(
+    writer::NetCDFWriter,
     final_grids,
     layer_grids,
     history::Vector{NamedTuple},

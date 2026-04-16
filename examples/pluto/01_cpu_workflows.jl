@@ -37,8 +37,8 @@ user-supplied forcing vectors:
 1. activate the project
 2. define `physics`
 3. define forcing vectors
-4. create a runnable `prescribed_case(...; run=RunConfig(...))`
-5. `run_case(...)`
+4. build a `domain` and `forcing`
+5. call `run!(domain, forcing; ...)`
 6. inspect the result and saved outputs
 
 The notebook runs one pass through the provided forcing with `cycles=1`.
@@ -104,31 +104,53 @@ single_forcing_vectors = let
 end
 
 # ╔═╡ 2c9d12d4-0c79-11ef-9f26-6b694f0c1009
-single_case = Chion.prescribed_case(
-	physics=physics,
-	ntot=5,
-	nx=1,
-	ny=1,
-	initial_surface_mass=250.0,
-	initial_density=320.0,
-	initial_temperature_c=-12.0,
-	run=Chion.RunConfig(
-		name="cpu_single_column",
-		backend=:cpu,
-		output_dir=output_dir_for("01_cpu_workflows"),
-		write_outputs=true,
-		write_netcdf=false,
-		cycles=1,
-		history_stride=1,
-	),
-	; single_forcing_vectors...,
+single_domain = seed_surface_domain!(
+	Chion.SnowpackDomain(c=physics, Ntot=5, ncol=1);
+	surface_mass=250.0,
+	density=320.0,
+	temperature_c=-12.0,
+)
+single_forcing = Chion.ForcingData(
+	dt_days=single_forcing_vectors.dt_days,
+	air_temperature_c=single_forcing_vectors.air_temperature_c,
+	snowfall_mm_day=single_forcing_vectors.snowfall_mm_day,
+	rainfall_mm_day=single_forcing_vectors.rainfall_mm_day,
+	shortwave_down=single_forcing_vectors.shortwave_down,
+	wind_speed=single_forcing_vectors.wind_speed,
+	ncol=1,
+)
+single_case = (
+	definition=(domain=single_domain, forcing=single_forcing, layout=nothing, metadata=(format=:synthetic, kind=:single_column, ncol=1, ntot=5)),
+	domain=single_domain,
+	forcing=single_forcing,
+	layout=nothing,
+	metadata=(format=:synthetic, kind=:single_column, ncol=1, ntot=5),
+	name="cpu_single_column",
+	output_dir=output_dir_for("01_cpu_workflows"),
+	write_outputs=true,
+	cycles=1,
+	history_stride=1,
+	backend=:cpu,
 )
 
 # ╔═╡ 2c9d12d4-0c79-11ef-9f26-6b694f0c1010
 single_data = single_case.definition
 
 # ╔═╡ 2c9d12d4-0c79-11ef-9f26-6b694f0c1011
-single_run = run_case_capture(single_case)
+single_run = (
+	result=Chion.run!(
+		single_case.domain,
+		single_case.forcing;
+		layout=single_case.layout,
+		save=Symbol[],
+		output_dir=single_case.output_dir,
+		write_outputs=single_case.write_outputs,
+		cycles=single_case.cycles,
+		backend=single_case.backend,
+		history_stride=single_case.history_stride,
+	),
+	log="",
+)
 
 # ╔═╡ 2c9d12d4-0c79-11ef-9f26-6b694f0c1012
 let
@@ -188,24 +210,33 @@ multi_case = let
 		220.0 + 35.0 * ((i - 1) / max(multi_grid.nx - 1, 1)) + 20.0 * ((j - 1) / max(multi_grid.ny - 1, 1))
 		for j in 1:multi_grid.ny for i in 1:multi_grid.nx
 	]
-	Chion.prescribed_case(
-		physics=physics,
-		ntot=5,
-		nx=multi_grid.nx,
-		ny=multi_grid.ny,
-		initial_surface_mass=multi_surface_mass,
-		initial_density=320.0,
-		initial_temperature_c=-12.0,
-		run=Chion.RunConfig(
-			name="cpu_multi_column",
-			backend=:cpu,
-			output_dir=output_dir_for("01_cpu_workflows"),
-			write_outputs=true,
-			write_netcdf=false,
-			cycles=1,
-			history_stride=1,
-		),
-		; single_forcing_vectors...,
+	multi_domain = seed_surface_domain!(
+		Chion.SnowpackDomain(c=physics, Ntot=5, ncol=multi_grid.nx * multi_grid.ny);
+		surface_mass=multi_surface_mass,
+		density=320.0,
+		temperature_c=-12.0,
+	)
+	multi_forcing = Chion.ForcingData(
+		dt_days=single_forcing_vectors.dt_days,
+		air_temperature_c=single_forcing_vectors.air_temperature_c,
+		snowfall_mm_day=single_forcing_vectors.snowfall_mm_day,
+		rainfall_mm_day=single_forcing_vectors.rainfall_mm_day,
+		shortwave_down=single_forcing_vectors.shortwave_down,
+		wind_speed=single_forcing_vectors.wind_speed,
+		ncol=multi_grid.nx * multi_grid.ny,
+	)
+	(
+		definition=(domain=multi_domain, forcing=multi_forcing, layout=regular_layout(multi_grid.nx, multi_grid.ny), metadata=(format=:synthetic, kind=:multi_column, ncol=multi_grid.nx * multi_grid.ny, ntot=5)),
+		domain=multi_domain,
+		forcing=multi_forcing,
+		layout=regular_layout(multi_grid.nx, multi_grid.ny),
+		metadata=(format=:synthetic, kind=:multi_column, ncol=multi_grid.nx * multi_grid.ny, ntot=5),
+		name="cpu_multi_column",
+		output_dir=output_dir_for("01_cpu_workflows"),
+		write_outputs=true,
+		cycles=1,
+		history_stride=1,
+		backend=:cpu,
 	)
 end
 
@@ -213,7 +244,20 @@ end
 multi_data = multi_case.definition
 
 # ╔═╡ 2c9d12d4-0c79-11ef-9f26-6b694f0c1017
-multi_run = run_case_capture(multi_case)
+multi_run = (
+	result=Chion.run!(
+		multi_case.domain,
+		multi_case.forcing;
+		layout=multi_case.layout,
+		save=Symbol[],
+		output_dir=multi_case.output_dir,
+		write_outputs=multi_case.write_outputs,
+		cycles=multi_case.cycles,
+		backend=multi_case.backend,
+		history_stride=multi_case.history_stride,
+	),
+	log="",
+)
 
 # ╔═╡ 6e837b58-a3bc-4d9d-b6f5-6d8c2b8d43d1
 multi_sample_indices = unique([
@@ -265,25 +309,50 @@ scheme_comparison = let
 		(label="htessel_like", kwargs=(; albedo=:constant, densification=:htessel, fresh_snow_density=:parameterized)),
 	]
 	[
-			let
-				variant_physics = Chion.physics(; variant.kwargs...)
-				case = Chion.prescribed_case(
-					physics=variant_physics,
-					ntot=5,
-					nx=1,
-					ny=1,
-					run=Chion.RunConfig(
-						name="cpu_" * variant.label,
-						backend=:cpu,
-						output_dir=output_dir_for("01_cpu_workflows"),
-						write_outputs=false,
-						write_netcdf=false,
-						cycles=1,
-						history_stride=1,
-					),
-					; single_forcing_vectors...,
-				)
-			run = run_case_capture(case)
+		let
+			variant_physics = Chion.physics(; variant.kwargs...)
+			domain = seed_surface_domain!(
+				Chion.SnowpackDomain(c=variant_physics, Ntot=5, ncol=1);
+				surface_mass=250.0,
+				density=320.0,
+				temperature_c=-12.0,
+			)
+			forcing = Chion.ForcingData(
+				dt_days=single_forcing_vectors.dt_days,
+				air_temperature_c=single_forcing_vectors.air_temperature_c,
+				snowfall_mm_day=single_forcing_vectors.snowfall_mm_day,
+				rainfall_mm_day=single_forcing_vectors.rainfall_mm_day,
+				shortwave_down=single_forcing_vectors.shortwave_down,
+				wind_speed=single_forcing_vectors.wind_speed,
+				ncol=1,
+			)
+				case = (
+					definition=(domain=domain, forcing=forcing, layout=nothing, metadata=(format=:synthetic, kind=:variant, ncol=1, ntot=5)),
+					domain=domain,
+					forcing=forcing,
+					layout=nothing,
+					metadata=(format=:synthetic, kind=:variant, ncol=1, ntot=5),
+				name="cpu_" * variant.label,
+				output_dir=output_dir_for("01_cpu_workflows"),
+				write_outputs=false,
+				cycles=1,
+				history_stride=1,
+				backend=:cpu,
+			)
+			run = (
+				result=Chion.run!(
+					case.domain,
+					case.forcing;
+					layout=case.layout,
+					save=Symbol[],
+					output_dir=case.output_dir,
+					write_outputs=case.write_outputs,
+					cycles=case.cycles,
+					backend=case.backend,
+					history_stride=case.history_stride,
+				),
+				log="",
+			)
 			(
 				label=variant.label,
 				case=case,
@@ -300,7 +369,7 @@ end
 md"""
 ## Output Inspection
 
-- `single_run.result.history` and `multi_run.result.history` each contain one summary record because these examples use `RunConfig(cycles=1)`.
+- `single_run.result.history` and `multi_run.result.history` each contain one summary record because these examples use `run!(...; cycles=1)`.
 - `single_case.definition` and `multi_case.definition` expose the parsed domain, forcing, layout, and metadata if you want lower-level inspection.
 - `single_run.result.summary_path` and `history_csv_path` point to saved text/CSV outputs.
 - `Chion.get_state(result_domain_cpu(result), idx)` gives a host-side snapshot you can inspect or plot.
@@ -341,21 +410,24 @@ md"""
 Keep the public workflow small:
 
 ```julia
-case = Chion.prescribed_case(
+domain = Chion.SnowpackDomain(c=physics, Ntot=5, ncol=1)
+seed_surface_domain!(domain; surface_mass=150.0, density=300.0, temperature_c=-12.0)
+forcing = Chion.ForcingData(
     dt_days=[1.0, 1.0],
     air_temperature_c=[-12.0, -10.0],
     snowfall_mm_day=[0.3, 0.0],
     rainfall_mm_day=[0.0, 0.1],
     shortwave_down=[120.0, 180.0],
-    run=Chion.RunConfig(cycles=1),
+    wind_speed=[4.0, 4.5],
+    ncol=1,
 )
-result = Chion.run_case(case)
+result = Chion.run!(domain, forcing; cycles=1)
 ```
 
 If your source data lives in another format, either:
 
-1. convert it to the direct `prescribed_case` keyword arrays shown above, or
-2. preprocess it into a prepared forcing file and call `prescribed_case(forcing_file=...)`.
+1. convert it to direct `domain` and `ForcingData` inputs, or
+2. preprocess it into a prepared forcing file and call `run!(domain, forcing; layout=...)`.
 
 Masking and file-format cleanup should happen before Chion loads the file.
 """

@@ -22,7 +22,7 @@ struct GridLayout
     mask::Matrix{Float64}
 end
 
-struct RunConfig
+struct RunOptions
     name::String
     input_label::String
     output_dir::String
@@ -35,7 +35,7 @@ struct RunConfig
     history_stride::Int
 end
 
-struct CaseNetCDFWriter
+struct NetCDFWriter
     dataset::NCDataset
     vars::Dict{Symbol, Any}
     max_steps::Int
@@ -52,10 +52,10 @@ struct RunResult
     summary_path::String
     history_csv_path::String
     domain
-    run::RunConfig
+    run::RunOptions
 end
 
-@inline function normalize_case_backend(backend)
+@inline function normalize_backend(backend)
     value = lowercase(strip(String(backend)))
     value == "cpu" && return :threads
     value in ("threads", "gpu") || error("Unsupported backend '$backend'. Use `threads`, `cpu`, or `gpu`.")
@@ -68,14 +68,14 @@ end
 @inline cycle_metrics_schedule_label(stride::Int) = stride == 0 ? "final cycle only" : stride == 1 ? "every cycle" : "every $(stride) cycles + final"
 @inline _looks_like_directory_path(path::AbstractString) = !isempty(path) && (endswith(path, '/') || endswith(path, '\\'))
 
-function _case_slug(name::AbstractString)
+function _slug(name::AbstractString)
     slug = strip(replace(lowercase(strip(String(name))), r"[^a-z0-9]+" => "_"), '_')
-    return isempty(slug) ? "snowpack_case" : slug
+    return isempty(slug) ? "run" : slug
 end
 
-_default_case_output_dir(name::AbstractString) = joinpath(pwd(), "case_output", _case_slug(name))
+_default_output_dir(name::AbstractString) = joinpath(pwd(), "run_output", _slug(name))
 
-function resolve_case_netcdf_path(options::RunConfig)
+function resolve_netcdf_path(options::RunOptions)
     default_name = "$(options.name)_final_state.nc"
     isempty(options.netcdf_path) && return joinpath(options.output_dir, default_name)
     return isdir(options.netcdf_path) || _looks_like_directory_path(options.netcdf_path) ?
@@ -83,27 +83,27 @@ function resolve_case_netcdf_path(options::RunConfig)
         options.netcdf_path
 end
 
-function normalize_case_netcdf_variables(spec)
+function normalize_netcdf_variables(spec)
     if spec isa AbstractVector
         tokens = String[string(x) for x in spec]
     else
         text = lowercase(strip(String(spec)))
-        isempty(text) && return copy(CASE_NETCDF_VARIABLES)
+        isempty(text) && return copy(NETCDF_VARIABLES)
         tokens = split(text, ',')
     end
     selected = Symbol[]
-    allowed_groups = String.(propertynames(CASE_OUTPUT_GROUPS))
+    allowed_groups = String.(propertynames(OUTPUT_GROUPS))
     for token in tokens
         stripped = strip(token)
         isempty(stripped) && continue
         key = Symbol(lowercase(stripped))
         if key == :all
-            append!(selected, CASE_NETCDF_VARIABLES)
+            append!(selected, NETCDF_VARIABLES)
         elseif key == :none
             continue
-        elseif hasproperty(CASE_OUTPUT_GROUPS, key)
-            append!(selected, getproperty(CASE_OUTPUT_GROUPS, key))
-        elseif key in CASE_NETCDF_VARIABLES
+        elseif hasproperty(OUTPUT_GROUPS, key)
+            append!(selected, getproperty(OUTPUT_GROUPS, key))
+        elseif key in NETCDF_VARIABLES
             push!(selected, key)
         else
             error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, a group ($(join(sort!(allowed_groups), ", "))), or an explicit variable name.")
@@ -112,30 +112,30 @@ function normalize_case_netcdf_variables(spec)
     return unique(selected)
 end
 
-function RunConfig(;
-    name::AbstractString="snowpack_case",
+function RunOptions(;
+    name::AbstractString="chion_run",
     input_label::AbstractString="",
     output_dir::AbstractString="",
     netcdf_path::AbstractString="",
     write_outputs::Bool=true,
     write_netcdf::Bool=true,
-    netcdf_variables=copy(CASE_NETCDF_VARIABLES),
+    netcdf_variables=copy(NETCDF_VARIABLES),
     cycles::Integer=10,
     backend=:threads,
     history_stride::Integer=1,
 )
     resolved_name = String(name)
-    resolved_output_dir = isempty(output_dir) ? _default_case_output_dir(resolved_name) : String(output_dir)
-    return RunConfig(
+    resolved_output_dir = isempty(output_dir) ? _default_output_dir(resolved_name) : String(output_dir)
+    return RunOptions(
         resolved_name,
         String(input_label),
         resolved_output_dir,
         String(netcdf_path),
         write_outputs,
         write_netcdf,
-        normalize_case_netcdf_variables(netcdf_variables),
+        normalize_netcdf_variables(netcdf_variables),
         Int(cycles),
-        normalize_case_backend(backend),
+        normalize_backend(backend),
         normalize_history_stride(history_stride),
     )
 end

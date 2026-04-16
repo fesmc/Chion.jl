@@ -1,11 +1,32 @@
-const _FORCING_FILE_FILL_THRESHOLD = -9.0e18
+using HDF5
 
-function _forcing_file_read_dataset_shapes(path::AbstractString)
+const FILL_THRESHOLD = -9.0e18
+
+struct LoadedProblem{D,F,L,M}
+    domain::D
+    forcing::F
+    layout::L
+    notes::Vector{String}
+    metadata::M
+end
+
+export LoadedProblem
+export read_dataset_shapes, read_hdf5_subset, read_hdf5_full
+export read_timeslice_2d, read_timeslice_3d
+export valid_or, mmwe_day_to_kgm2s
+export read_forcing_times, choose_time_index, infer_dt_days
+export extract_forcing_file_layers, populate_domain_column_from_forcing_file!
+export read_full_timeseries_3d, read_first_available_timeseries_3d
+export load_gris_forcing_file_problem
+
+function read_dataset_shapes(nc_path::AbstractString)
     shapes = Dict{String, Vector{Int}}()
-    h5open(path, "r") do file
+    h5open(nc_path, "r") do file
         for name in keys(file)
             obj = file[name]
             if obj isa HDF5.Dataset
+                # Preserve the logical dimension order used by Chion:
+                # time, optional layer, y, x.
                 shapes[String(name)] = reverse(collect(size(obj)))
             end
         end
@@ -13,17 +34,17 @@ function _forcing_file_read_dataset_shapes(path::AbstractString)
     return shapes
 end
 
-function _forcing_file_clean_fill!(A)
+function _clean_fill!(A)
     @inbounds for i in eachindex(A)
-        if A[i] <= _FORCING_FILE_FILL_THRESHOLD
+        if A[i] <= FILL_THRESHOLD
             A[i] = NaN
         end
     end
     return A
 end
 
-function _forcing_file_read_hdf5_subset(
-    path::AbstractString,
+function read_hdf5_subset(
+    nc_path::AbstractString,
     varname::AbstractString,
     full_shape::Vector{Int};
     start::Union{Nothing, Vector{Int}}=nothing,
@@ -31,10 +52,9 @@ function _forcing_file_read_hdf5_subset(
 )
     start_vec = isnothing(start) ? zeros(Int, length(full_shape)) : start
     count_vec = isnothing(count) ? copy(full_shape) : count
-    length(start_vec) == length(full_shape) || error("start rank mismatch for variable '$varname'.")
-    length(count_vec) == length(full_shape) || error("count rank mismatch for variable '$varname'.")
-    data = h5open(path, "r") do file
-        haskey(file, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
+    length(start_vec) == length(full_shape) || error("start rank mismatch for $varname")
+    length(count_vec) == length(full_shape) || error("count rank mismatch for $varname")
+    data = h5open(nc_path, "r") do file
         dataset = file[varname]
         nd = length(full_shape)
         file_ranges = ntuple(nd) do dim
@@ -47,22 +67,21 @@ function _forcing_file_read_hdf5_subset(
         logical = Float64.(raw)
         return nd > 1 ? permutedims(logical, nd:-1:1) : logical
     end
-    _forcing_file_clean_fill!(data)
+    _clean_fill!(data)
     return data
 end
 
-function _forcing_file_read_hdf5_full(path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
-    haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
-    return _forcing_file_read_hdf5_subset(path, varname, shapes[varname])
+function read_hdf5_full(nc_path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
+    haskey(shapes, varname) || error("Variable '$varname' not found in $nc_path.")
+    return read_hdf5_subset(nc_path, varname, shapes[varname])
 end
 
-function _forcing_file_read_timeslice_2d(
-    path::AbstractString,
+function read_timeslice_2d(
+    nc_path::AbstractString,
     varname::AbstractString,
     time_index::Int,
     shapes::Dict{String, Vector{Int}},
 )
-    haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
     shape = shapes[varname]
     if length(shape) == 3
         start = [time_index - 1, 0, 0]
@@ -73,42 +92,58 @@ function _forcing_file_read_timeslice_2d(
     else
         error("Variable '$varname' does not have a supported rank for 2D slicing.")
     end
-    data = _forcing_file_read_hdf5_subset(path, varname, shape; start=start, count=count)
+    data = read_hdf5_subset(nc_path, varname, shape; start=start, count=count)
     return dropdims(data; dims=Tuple(findall(==(1), size(data))))
 end
 
-function _forcing_file_read_timeslice_3d(
-    path::AbstractString,
+function read_timeslice_3d(
+    nc_path::AbstractString,
     varname::AbstractString,
     time_index::Int,
     shapes::Dict{String, Vector{Int}},
 )
-    haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
     shape = shapes[varname]
     length(shape) == 4 || error("Variable '$varname' does not have the expected 4D layout.")
     start = [time_index - 1, 0, 0, 0]
     count = [1, shape[2], shape[3], shape[4]]
-    data = _forcing_file_read_hdf5_subset(path, varname, shape; start=start, count=count)
+    data = read_hdf5_subset(nc_path, varname, shape; start=start, count=count)
     return dropdims(data; dims=(1,))
 end
 
-@inline _forcing_file_valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
-@inline _forcing_file_mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
+@inline valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
+@inline mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
 
-function _forcing_file_read_times(path::AbstractString, shapes::Dict{String, Vector{Int}})
-    yyyy = round.(Int, vec(_forcing_file_read_hdf5_full(path, "YYYY", shapes)))
-    mm = round.(Int, vec(_forcing_file_read_hdf5_full(path, "MM", shapes)))
-    dd = round.(Int, vec(_forcing_file_read_hdf5_full(path, "DD", shapes)))
-    hh = round.(Int, vec(_forcing_file_read_hdf5_full(path, "HH", shapes)))
+function read_forcing_times(nc_path::AbstractString, shapes::Dict{String, Vector{Int}})
+    yyyy = round.(Int, vec(read_hdf5_full(nc_path, "YYYY", shapes)))
+    mm = round.(Int, vec(read_hdf5_full(nc_path, "MM", shapes)))
+    dd = round.(Int, vec(read_hdf5_full(nc_path, "DD", shapes)))
+    hh = round.(Int, vec(read_hdf5_full(nc_path, "HH", shapes)))
     ntime = length(yyyy)
+    codes = Vector{String}(undef, ntime)
     times = Vector{DateTime}(undef, ntime)
     for i in 1:ntime
+        codes[i] = @sprintf("%04d%02d%02d%02d", yyyy[i], mm[i], dd[i], hh[i])
         times[i] = DateTime(yyyy[i], mm[i], dd[i], hh[i])
     end
-    return times
+    return codes, times
 end
 
-function _forcing_file_infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
+function choose_time_index(config, date_codes::Vector{String})
+    ntime = length(date_codes)
+    if !isempty(strip(config.date_code))
+        wanted = strip(config.date_code)
+        for i in eachindex(date_codes)
+            if date_codes[i] == wanted
+                return i
+            end
+        end
+        error("DATE=$(wanted) is not present in the file.")
+    end
+    1 <= config.time_index <= ntime || error("--time-index must be between 1 and $ntime.")
+    return config.time_index
+end
+
+function infer_dt_days(time_values::Vector{DateTime}, time_index::Int)
     if length(time_values) == 1
         return 1.0
     elseif time_index < length(time_values)
@@ -118,7 +153,7 @@ function _forcing_file_infer_dt_days(time_values::Vector{DateTime}, time_index::
     end
 end
 
-function _forcing_file_extract_layers(
+function extract_forcing_file_layers(
     total_height::Float64,
     density_profile::AbstractVector{<:Real},
     temperature_profile_c::AbstractVector{<:Real},
@@ -150,6 +185,7 @@ function _forcing_file_extract_layers(
         temperature::Float64,
     )
         snow_mass <= 0.0 && return
+        # Preserve the native restart layering on restart.
         push!(layer_mass, snow_mass)
         push!(layer_mass_w, liquid_mass)
         push!(layer_density, density)
@@ -197,9 +233,9 @@ function _forcing_file_extract_layers(
         layer_thickness = max(depth_cap - lower, 0.0)
         layer_thickness <= 0.0 && continue
 
-        rho = clamp(_forcing_file_valid_or(300.0, Float64(density_profile[k])), 50.0, c.rho_i)
-        temp_k = clamp(_forcing_file_valid_or(-10.0, Float64(temperature_profile_c[k])) + c.T0, 200.0, c.T0)
-        water_fraction = max(_forcing_file_valid_or(0.0, Float64(liquid_water_profile[k])), 0.0)
+        rho = clamp(valid_or(300.0, Float64(density_profile[k])), 50.0, c.rho_i)
+        temp_k = clamp(valid_or(-10.0, Float64(temperature_profile_c[k])) + c.T0, 200.0, c.T0)
+        water_fraction = max(valid_or(0.0, Float64(liquid_water_profile[k])), 0.0)
         snow_mass = rho * layer_thickness
         liquid_mass = water_fraction * snow_mass
         append_restart_layer!(snow_mass, liquid_mass, rho, temp_k)
@@ -218,7 +254,7 @@ function _forcing_file_extract_layers(
     )
 end
 
-function _forcing_file_populate_domain_column_from_restart!(
+function populate_domain_column_from_forcing_file!(
     domain::SnowpackDomain,
     idx::Int,
     total_height::Float64,
@@ -227,7 +263,7 @@ function _forcing_file_populate_domain_column_from_restart!(
     liquid_water_profile::AbstractVector{<:Real},
     outlay_bounds::AbstractMatrix{<:Real},
 )
-    extracted = _forcing_file_extract_layers(
+    layers = extract_forcing_file_layers(
         total_height,
         density_profile,
         temperature_profile_c,
@@ -237,104 +273,90 @@ function _forcing_file_populate_domain_column_from_restart!(
         c=domain.c,
         mass_split=domain.mass_split,
     )
-    domain.N[idx] = extracted.N
-    if extracted.N > 0
-        domain.mass[1:extracted.N, idx] .= extracted.mass
-        domain.mass_w[1:extracted.N, idx] .= extracted.mass_w
-        domain.density[1:extracted.N, idx] .= extracted.density
-        domain.temperature[1:extracted.N, idx] .= extracted.temperature
-        if extracted.N < domain.Ntot
-            domain.mass[(extracted.N + 1):end, idx] .= 0.0
-            domain.mass_w[(extracted.N + 1):end, idx] .= 0.0
-            domain.density[(extracted.N + 1):end, idx] .= DEFAULT_DENSITY_INIT
-            domain.temperature[(extracted.N + 1):end, idx] .= domain.c.T0 - 10.0
-        end
-        domain.Tsrf[idx] = extracted.temperature[1]
-    else
-        domain.mass[:, idx] .= 0.0
-        domain.mass_w[:, idx] .= 0.0
-        domain.density[:, idx] .= DEFAULT_DENSITY_INIT
-        domain.temperature[:, idx] .= domain.c.T0 - 10.0
-        domain.Tsrf[idx] = domain.c.T0 - 10.0
-    end
+
+    domain.N[idx] = layers.N
+    @views domain.mass[:, idx] .= 0.0
+    @views domain.mass_w[:, idx] .= 0.0
+    @views domain.density[:, idx] .= 0.0
+    @views domain.temperature[:, idx] .= domain.c.T0
     domain.mass_base[idx] = 0.0
     domain.smb_ice[idx] = 0.0
     domain.runoff[idx] = 0.0
     domain.snow_cover[idx] = 0.0
-    domain.albedo_dynamic[idx] = domain.c.alpha_dry
-    return domain
+    domain.albedo_dynamic[idx] = layers.N > 0 ? domain.c.alpha_dry : domain.c.alpha_ice
+    if layers.N > 0
+        @inbounds for k in 1:layers.N
+            domain.mass[k, idx] = layers.mass[k]
+            domain.mass_w[k, idx] = layers.mass_w[k]
+            domain.density[k, idx] = layers.density[k]
+            domain.temperature[k, idx] = layers.temperature[k]
+        end
+        domain.Tsrf[idx] = domain.temperature[1, idx]
+    else
+        domain.Tsrf[idx] = domain.c.T0
+    end
+    compute_auxiliary!(domain, idx)
+    return nothing
 end
 
-function _forcing_file_read_full_timeseries_3d(
-    path::AbstractString,
-    varname::AbstractString,
-    shapes::Dict{String, Vector{Int}},
-)
-    haskey(shapes, varname) || error("Variable '$varname' was not found in $(abspath(path)).")
-    shape = shapes[varname]
-    if length(shape) == 4
-        data = _forcing_file_read_hdf5_full(path, varname, shapes)
+function read_full_timeseries_3d(nc_path::AbstractString, varname::AbstractString, shapes::Dict{String, Vector{Int}})
+    data = read_hdf5_full(nc_path, varname, shapes)
+    if ndims(data) == 4
         size(data, 2) == 1 || error("Variable '$varname' has an unexpected non-singleton vertical dimension.")
         return dropdims(data; dims=(2,))
-    elseif length(shape) == 3
-        return _forcing_file_read_hdf5_full(path, varname, shapes)
+    elseif ndims(data) == 3
+        return data
     end
     error("Variable '$varname' does not have a supported timeseries layout.")
 end
 
-function _forcing_file_read_first_available_timeseries_3d(
-    path::AbstractString,
+function read_first_available_timeseries_3d(
+    nc_path::AbstractString,
     candidate_names::Vector{String},
     shapes::Dict{String, Vector{Int}},
 )
     for name in candidate_names
         if haskey(shapes, name)
-            return (name=name, data=_forcing_file_read_full_timeseries_3d(path, name, shapes))
+            return (name=name, data=read_full_timeseries_3d(nc_path, name, shapes))
         end
     end
     return nothing
 end
 
-"""
-    _prescribed_definition_from_forcing_file(forcing_file; physics=physics(), ntot=20)
-
-Load a reusable [`CaseDefinition`](@ref) from a prepared external forcing file.
-"""
-function _prescribed_definition_from_forcing_file(
-    forcing_file::AbstractString;
-    physics::SnowpackPhysicalConstants{Float64}=physics(),
+function load_gris_forcing_file_problem(
+    nc_path::AbstractString;
+    mask_threshold::Union{Nothing, Float64}=50.0,
     ntot::Integer=20,
+    physics::SnowpackPhysicalConstants{Float64}=physics(),
 )
-    Int(ntot) > 0 || error("`ntot` must be positive.")
-    isempty(strip(forcing_file)) && error("`forcing_file` must point to a prepared forcing file.")
-    source_path = abspath(String(forcing_file))
+    source_path = abspath(String(nc_path))
     isfile(source_path) || error("Forcing file was not found: $(source_path)")
 
-    shapes = _forcing_file_read_dataset_shapes(source_path)
+    shapes = read_dataset_shapes(source_path)
     required_variables = ("x", "y", "MSK", "OUTLAY_bnds", "TT", "SF", "RF", "SWD", "LWD", "SHF", "LHF", "ZN3", "RO1", "TI1", "WA1", "YYYY", "MM", "DD", "HH")
     missing = String[var for var in required_variables if !haskey(shapes, var)]
     isempty(missing) || error(
         "Forcing file $(abspath(source_path)) is missing required variables: $(join(missing, ", "))."
     )
 
-    time_values = _forcing_file_read_times(source_path, shapes)
-    dt_days = [_forcing_file_infer_dt_days(time_values, t) for t in eachindex(time_values)]
+    time_values = read_forcing_times(source_path, shapes)[2]
+    dt_days = [infer_dt_days(time_values, t) for t in eachindex(time_values)]
 
-    x = vec(_forcing_file_read_hdf5_full(source_path, "x", shapes))
-    y = vec(_forcing_file_read_hdf5_full(source_path, "y", shapes))
-    mask = _forcing_file_read_hdf5_full(source_path, "MSK", shapes)
-    outlay_bounds = _forcing_file_read_hdf5_full(source_path, "OUTLAY_bnds", shapes)
+    x = vec(read_hdf5_full(source_path, "x", shapes))
+    y = vec(read_hdf5_full(source_path, "y", shapes))
+    mask = read_hdf5_full(source_path, "MSK", shapes)
+    outlay_bounds = read_hdf5_full(source_path, "OUTLAY_bnds", shapes)
 
-    tt_full = _forcing_file_read_full_timeseries_3d(source_path, "TT", shapes)
-    sf_full = _forcing_file_read_full_timeseries_3d(source_path, "SF", shapes)
-    rf_full = _forcing_file_read_full_timeseries_3d(source_path, "RF", shapes)
-    swd_full = _forcing_file_read_full_timeseries_3d(source_path, "SWD", shapes)
-    lwd_full = _forcing_file_read_full_timeseries_3d(source_path, "LWD", shapes)
-    shf_full = _forcing_file_read_full_timeseries_3d(source_path, "SHF", shapes)
-    lhf_full = _forcing_file_read_full_timeseries_3d(source_path, "LHF", shapes)
+    tt_full = read_full_timeseries_3d(source_path, "TT", shapes)
+    sf_full = read_full_timeseries_3d(source_path, "SF", shapes)
+    rf_full = read_full_timeseries_3d(source_path, "RF", shapes)
+    swd_full = read_full_timeseries_3d(source_path, "SWD", shapes)
+    lwd_full = read_full_timeseries_3d(source_path, "LWD", shapes)
+    shf_full = read_full_timeseries_3d(source_path, "SHF", shapes)
+    lhf_full = read_full_timeseries_3d(source_path, "LHF", shapes)
 
-    u_wind_info = _forcing_file_read_first_available_timeseries_3d(source_path, ["UU", "U10"], shapes)
-    v_wind_info = _forcing_file_read_first_available_timeseries_3d(source_path, ["VV", "V10"], shapes)
+    u_wind_info = read_first_available_timeseries_3d(source_path, ["UU", "U10"], shapes)
+    v_wind_info = read_first_available_timeseries_3d(source_path, ["VV", "V10"], shapes)
     wind_full = if !isnothing(u_wind_info) && !isnothing(v_wind_info)
         hypot.(u_wind_info.data, v_wind_info.data)
     else
@@ -350,23 +372,25 @@ function _prescribed_definition_from_forcing_file(
         )
     end
 
-    zn3_init = _forcing_file_read_timeslice_2d(source_path, "ZN3", 1, shapes)
-    ro1_init = _forcing_file_read_timeslice_3d(source_path, "RO1", 1, shapes)
-    ti1_init = _forcing_file_read_timeslice_3d(source_path, "TI1", 1, shapes)
-    wa1_init = _forcing_file_read_timeslice_3d(source_path, "WA1", 1, shapes)
+    zn3_init = read_timeslice_2d(source_path, "ZN3", 1, shapes)
+    ro1_init = read_timeslice_3d(source_path, "RO1", 1, shapes)
+    ti1_init = read_timeslice_3d(source_path, "TI1", 1, shapes)
+    wa1_init = read_timeslice_3d(source_path, "WA1", 1, shapes)
 
     ny, nx = size(mask)
+    threshold = isnothing(mask_threshold) ? -Inf : Float64(mask_threshold)
     valid_mask = falses(ny, nx)
     @inbounds for j in 1:ny, i in 1:nx
         valid_mask[j, i] =
-            all(isfinite, @view(tt_full[:, j, i])) &&
-            all(isfinite, @view(sf_full[:, j, i])) &&
-            all(isfinite, @view(rf_full[:, j, i])) &&
-            all(isfinite, @view(swd_full[:, j, i]))
+            isfinite(mask[j, i]) &&
+            mask[j, i] >= threshold &&
+            isfinite(tt_full[1, j, i])
     end
     valid_indices = findall(valid_mask)
     nvalid = length(valid_indices)
-    nvalid > 0 || error("No valid forcing-file grid cells remain after filtering for finite required prescribed forcing.")
+    nvalid > 0 || error(
+        "No valid forcing-file grid cells remain after applying `mask_threshold=$(threshold)`."
+    )
     ntime = length(time_values)
 
     js = Vector{Int}(undef, nvalid)
@@ -388,7 +412,7 @@ function _prescribed_definition_from_forcing_file(
         j, i = Tuple(valid_indices[idx])
         js[idx] = j
         is[idx] = i
-        _forcing_file_populate_domain_column_from_restart!(
+        populate_domain_column_from_forcing_file!(
             domain,
             idx,
             Float64(zn3_init[j, i]),
@@ -398,10 +422,10 @@ function _prescribed_definition_from_forcing_file(
             outlay_bounds,
         )
         for t in 1:ntime
-            tair_k[idx, t] = _forcing_file_valid_or(-15.0, Float64(tt_full[t, j, i])) + domain.c.T0
-            snow_rate[idx, t] = _forcing_file_mmwe_day_to_kgm2s(Float64(sf_full[t, j, i]))
-            rain_rate[idx, t] = _forcing_file_mmwe_day_to_kgm2s(Float64(rf_full[t, j, i]))
-            s_boa[idx, t] = _forcing_file_valid_or(0.0, Float64(swd_full[t, j, i]))
+            tair_k[idx, t] = valid_or(-15.0, Float64(tt_full[t, j, i])) + domain.c.T0
+            snow_rate[idx, t] = mmwe_day_to_kgm2s(Float64(sf_full[t, j, i]))
+            rain_rate[idx, t] = mmwe_day_to_kgm2s(Float64(rf_full[t, j, i]))
+            s_boa[idx, t] = valid_or(0.0, Float64(swd_full[t, j, i]))
             q_lw_ij = Float64(lwd_full[t, j, i])
             q_sh_ij = Float64(shf_full[t, j, i])
             q_lh_ij = Float64(lhf_full[t, j, i])
@@ -411,7 +435,7 @@ function _prescribed_definition_from_forcing_file(
             q_lw[idx, t] = has_q_lw[idx, t] ? q_lw_ij : 0.0
             q_sh[idx, t] = has_q_sh[idx, t] ? q_sh_ij : 0.0
             q_lh[idx, t] = has_q_lh[idx, t] ? q_lh_ij : 0.0
-            wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : _forcing_file_valid_or(5.0, Float64(wind_full[t, j, i]))
+            wind_speed[idx, t] = isnothing(wind_full) ? 5.0 : valid_or(5.0, Float64(wind_full[t, j, i]))
         end
     end
 
@@ -438,13 +462,15 @@ function _prescribed_definition_from_forcing_file(
         ncol=nvalid,
         ntime=ntime,
         ntot=Int(ntot),
+        masked_by_script=true,
+        mask_threshold=isnothing(mask_threshold) ? nothing : Float64(mask_threshold),
     )
-    return CaseDefinition(
+    notes = [wind_note]
+    return LoadedProblem(
         domain,
-        forcing;
-        layout=layout,
-        input_label=source_path,
-        notes=[wind_note],
-        metadata=metadata,
+        forcing,
+        layout,
+        notes,
+        metadata,
     )
 end

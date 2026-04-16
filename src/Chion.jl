@@ -2,11 +2,9 @@ module Chion
 
 using Printf
 using Dates
-using HDF5
 using Base.Threads: @threads
 using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
-using Enzyme
 using KernelAbstractions
 
 include("model_constants.jl")
@@ -31,21 +29,26 @@ include("step_timing.jl")
 include("step.jl")
 include("step_field_batches.jl")
 include("state_access.jl")
-include("case_runtime.jl")
-include("cases/definitions.jl")
-include("cases/forcing_file_definition.jl")
-include("cases/api.jl")
+include("dataloaders.jl")
+include("grid.jl")
+include("simulation.jl")
+include("api.jl")
 
 export step!
 export SnowpackDomain
 export SnowpackStepForcing
 export SnowpackStepFields
 export SnowpackPhysicalConstants
-export RunConfig, RunResult
-export SnowpackCase
-export CASE_NETCDF_VARIABLE_GROUPS, CASE_NETCDF_VARIABLES
+export RunResult
 export StepTimingStats, physics
-export prescribed_case, synthetic_case, run_case
+export run!
+export LoadedProblem, load_gris_forcing_file_problem
+export read_dataset_shapes, read_hdf5_subset, read_hdf5_full
+export read_timeslice_2d, read_timeslice_3d
+export valid_or, mmwe_day_to_kgm2s
+export read_forcing_times, choose_time_index, infer_dt_days
+export extract_forcing_file_layers, populate_domain_column_from_forcing_file!
+export read_full_timeseries_3d, read_first_available_timeseries_3d
 export StepWorkspace, threaded_workspaces
 export ColumnarStepWorkspace
 export continuous_bottom_deplete!

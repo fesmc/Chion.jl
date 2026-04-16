@@ -157,6 +157,25 @@ end
 @inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
     c.low_density_densification == LOW_DENSIFICATION_HTESSEL
 
+@inline _scheme_symbol(value::Symbol) = value
+@inline _scheme_symbol(value) = Symbol(lowercase(strip(String(value))))
+
+"""
+    physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
+
+Convenience constructor for `SnowpackPhysicalConstants{Float64}` using the
+named model-scheme keywords that users typically adjust.
+"""
+function physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
+    return SnowpackPhysicalConstants(
+        Float64;
+        albedo_scheme=_scheme_symbol(albedo),
+        low_density_densification=_scheme_symbol(densification),
+        fresh_snow_density_scheme=_scheme_symbol(fresh_snow_density),
+        kwargs...,
+    )
+end
+
 """
     SnowpackPhysicalConstants(::Type{NF}; kwargs...)
 

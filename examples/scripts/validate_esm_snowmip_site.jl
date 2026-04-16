@@ -167,32 +167,49 @@ function make_case(inp, cfg, physics)
     lw = replace(copy(inp.lw), NaN => 0.0)
     dt_days = [i < length(inp.dates) ? Dates.value(inp.dates[i + 1] - inp.dates[i]) / 86_400_000.0 : Dates.value(inp.dates[i] - inp.dates[i - 1]) / 86_400_000.0 for i in eachindex(inp.dates)]
     init_mass = (!cfg.no_init_from_obs && isfinite(inp.obs_depth[1]) && inp.obs_depth[1] > 0) ? cfg.initial_density * inp.obs_depth[1] : 0.0
-    return Chion.prescribed_case(
-        physics = physics,
-        ntot = cfg.ntot,
-        nx = 1,
-        ny = 1,
-        dt_days = dt_days,
-        air_temperature_c = tair .- 273.15,
-        snowfall_mm_day = snow .* 86_400.0,
-        rainfall_mm_day = rain .* 86_400.0,
-        shortwave_down = sw,
-        wind_speed = wind,
-        q_lw_down = lw,
-        has_q_lw_down = isfinite.(inp.lw),
-        time_values = inp.dates,
-        initial_surface_mass = init_mass,
-        initial_density = cfg.initial_density,
-        initial_temperature_c = tair[1] - 273.15,
-        run = Chion.RunConfig(
-            name = "ESM-SnowMIP validation",
-            input_label = inp.met_path,
-            backend = :cpu,
-            write_outputs = false,
-            write_netcdf = false,
-            cycles = 1,
-        ),
+    domain = Chion.SnowpackDomain(c=physics, Ntot=cfg.ntot, ncol=1)
+    fill!(domain.N, init_mass > 0 ? 1 : 0)
+    fill!(domain.mass, 0.0)
+    fill!(domain.mass_w, 0.0)
+    fill!(domain.density, 0.0)
+    fill!(domain.temperature, domain.c.T0)
+    fill!(domain.mass_base, 0.0)
+    fill!(domain.smb_ice, 0.0)
+    fill!(domain.runoff, 0.0)
+    fill!(domain.snow_cover, 0.0)
+    fill!(domain.albedo_dynamic, domain.c.alpha_dry)
+    if init_mass > 0
+        domain.N[1] = 1
+        domain.mass[1, 1] = init_mass
+        domain.density[1, 1] = cfg.initial_density
+        domain.temperature[1, 1] = tair[1]
+        domain.Tsrf[1] = tair[1]
+    else
+        domain.Tsrf[1] = domain.c.T0
+    end
+    Chion.compute_auxiliary!(domain)
+
+    forcing = Chion.ForcingData(
+        dt_days=dt_days,
+        air_temperature_c=tair .- 273.15,
+        snowfall_mm_day=snow .* 86_400.0,
+        rainfall_mm_day=rain .* 86_400.0,
+        shortwave_down=sw,
+        wind_speed=wind,
+        q_lw_down=lw,
+        has_q_lw_down=isfinite.(inp.lw),
+        time_values=inp.dates,
+        ncol=1,
     )
+    definition = (
+        domain=domain,
+        forcing=forcing,
+        layout=nothing,
+        input_label=inp.met_path,
+        notes=["Validation run built directly from domain + forcing."],
+        metadata=(format=:validation, source=:timeseries, ntot=cfg.ntot, initial_density=cfg.initial_density),
+    )
+    return (definition=definition, domain=domain, forcing=forcing, layout=nothing, input_label=inp.met_path, notes=definition.notes, metadata=definition.metadata)
 end
 
 function current_state(domain)
@@ -295,7 +312,7 @@ function write_outputs(out_dir, slug, dates, obs_depth, sim_depth, obs_swe, sim_
         end
     end
     open(txt, "w") do io
-        println(io, "General API  : prescribed_case + step!")
+        println(io, "General API  : domain + forcing + step!")
         println(io, @sprintf("Snow depth : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.depth.n, metrics.depth.bias, metrics.depth.mae, metrics.depth.rmse, metrics.depth.corr))
         println(io, @sprintf("Snow SWE   : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.swe.n, metrics.swe.bias, metrics.swe.mae, metrics.swe.rmse, metrics.swe.corr))
     end
@@ -341,7 +358,7 @@ function main(args)
     out = write_outputs(arg_value(args, "out-dir", DEFAULT_OUT_DIR), slug, inp.dates, inp.obs_depth, sim.depth, inp.obs_swe, sim.swe, sim, metrics; plot_on=!has_flag(args, "no-plot"))
 
     println("Validation complete.")
-    println("General API : prescribed_case + step!")
+    println("General API : domain + forcing + step!")
     println("Met file    : $(abspath(inp.met_path))")
     println("Obs file    : $(abspath(inp.obs_path))")
     println("CSV output  : $(abspath(out.csv))")

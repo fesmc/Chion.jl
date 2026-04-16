@@ -14,9 +14,10 @@ const SM = Chion
 
 export pkg_root
 export result_domain_cpu, summarize_column, output_dir_for
-export cuda_preflight, device_report, run_case_capture
+export cuda_preflight, device_report
 export plots_available, forcing_timeseries_plot, history_plot
 export column_profile_plot, domain_metric_values, layout_heatmap_plot
+export seed_surface_domain!, regular_layout
 
 pkg_root() = normpath(joinpath(@__DIR__, "..", ".."))
 
@@ -26,16 +27,66 @@ function output_dir_for(slug::AbstractString)
     return out_dir
 end
 
-function run_case_capture(case::Chion.SnowpackCase; copy_domain::Bool=true)
-    return mktemp() do _, io
-        result = Chion.run_case(case; io=io, copy_domain=copy_domain)
-        flush(io)
-        seekstart(io)
-        return (
-            result=result,
-            log=read(io, String),
-        )
+function seed_surface_domain!(
+    domain::Chion.SnowpackDomain;
+    surface_mass,
+    density::Real=domain.c.rho_s,
+    temperature_c::Real=-10.0,
+)
+    fill!(domain.N, 0)
+    fill!(domain.mass, 0.0)
+    fill!(domain.mass_w, 0.0)
+    fill!(domain.density, 0.0)
+    fill!(domain.temperature, domain.c.T0)
+    fill!(domain.mass_base, 0.0)
+    fill!(domain.smb_ice, 0.0)
+    fill!(domain.runoff, 0.0)
+    fill!(domain.snow_cover, 0.0)
+    fill!(domain.albedo_dynamic, domain.c.alpha_dry)
+
+    if surface_mass isa AbstractVector
+        length(surface_mass) == domain.ncol || error("`surface_mass` must match the domain column count.")
+        @inbounds for idx in eachindex(surface_mass)
+            if surface_mass[idx] > 0
+                domain.N[idx] = 1
+                domain.mass[1, idx] = Float64(surface_mass[idx])
+                domain.density[1, idx] = Float64(density)
+                domain.temperature[1, idx] = domain.c.T0 + Float64(temperature_c)
+                domain.Tsrf[idx] = domain.temperature[1, idx]
+            else
+                domain.Tsrf[idx] = domain.c.T0
+            end
+        end
+    else
+        fill!(domain.N, surface_mass > 0 ? 1 : 0)
+        @inbounds for idx in 1:domain.ncol
+            if surface_mass > 0
+                domain.N[idx] = 1
+                domain.mass[1, idx] = Float64(surface_mass)
+                domain.density[1, idx] = Float64(density)
+                domain.temperature[1, idx] = domain.c.T0 + Float64(temperature_c)
+                domain.Tsrf[idx] = domain.temperature[1, idx]
+            else
+                domain.Tsrf[idx] = domain.c.T0
+            end
+        end
     end
+
+    Chion.compute_auxiliary!(domain)
+    return domain
+end
+
+function regular_layout(nx::Integer, ny::Integer; x=collect(1:nx), y=collect(1:ny))
+    nx > 0 || error("`nx` must be positive.")
+    ny > 0 || error("`ny` must be positive.")
+    xvals = Float64.(collect(x))
+    yvals = Float64.(collect(y))
+    length(xvals) == nx || error("`x` must have length `nx`.")
+    length(yvals) == ny || error("`y` must have length `ny`.")
+    js = [j for j in 1:ny for _ in 1:nx]
+    is = [i for _ in 1:ny for i in 1:nx]
+    mask = ones(Float64, ny, nx)
+    return Chion.GridLayout(xvals, yvals, js, is, mask)
 end
 
 plots_available() = HAS_PLOTS
@@ -53,7 +104,7 @@ end
 result_domain_cpu(result::Chion.RunResult) = result_domain_cpu(result.domain)
 
 function result_domain_cpu(domain::SM.SnowpackDomain)
-    return domain.mass isa Array ? domain : SM.cpu_domain(domain)
+    return domain.mass isa Array ? domain : Chion.cpu_domain(domain)
 end
 
 function summarize_column(result_or_domain, idx::Integer=1)

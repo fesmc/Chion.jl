@@ -29,7 +29,7 @@ end
 md"""
 # Chion External Forcing-File Scaffold
 
-This notebook is optional. It reuses the same public case workflow as the synthetic notebooks, but the domain and forcing come from an external prepared HDF5/NetCDF forcing file.
+This notebook is optional. It reuses the same public `domain + forcing -> run!` workflow as the synthetic notebooks, but the domain and forcing come from an external prepared HDF5/NetCDF forcing file.
 """
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4004
@@ -46,7 +46,7 @@ md"""
   - `module load cuda/13.1.0` only if you want GPU execution
 - Point `forcing_file_path` below at a readable prepared forcing file.
 - Keep `enable_netcdf=false` unless `NETCDF_LIB` is set and you want file output beyond the text summary/history CSV.
-- The file-backed case is large. This notebook uses explicit `load_case_data` and `run_case_now` gates so Pluto does not automatically load and run the whole dataset on open.
+- The file-backed problem is large. This notebook uses explicit `load_problem_data` and `run_problem_now` gates so Pluto does not automatically load and run the whole dataset on open.
 """
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4006
@@ -68,16 +68,20 @@ end
 forcing_file_path = default_forcing_file_path
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4007
-backend_choice = :gpu
+backend_choice = try
+	Chion.cuda_available() ? :gpu : :threads
+catch
+	:threads
+end
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4008
 enable_netcdf = false
 
 # ╔═╡ 4ad0f4a4-c267-4551-a9f3-6e3996fcd65e
-load_case_data = true
+load_problem_data = false
 
 # ╔═╡ 8cfefc4a-aa0d-4211-ba99-d516f37603a4
-run_case_now = true
+run_problem_now = false
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4009
 physics = Chion.physics(
@@ -102,10 +106,10 @@ elseif enable_netcdf && isempty(strip(get(ENV, "NETCDF_LIB", "")))
 		ready=false,
 		message="NetCDF output was requested, but `NETCDF_LIB` is not set. Disable NetCDF or configure the library path first.",
 	)
-elseif !load_case_data
+elseif !load_problem_data
 	(
 		ready=false,
-		message="Path looks valid. Set `load_case_data=true` when you want to read the forcing file into memory.",
+		message="Path looks valid. Set `load_problem_data=true` when you want to read the forcing file into memory.",
 	)
 else
 	(
@@ -123,49 +127,48 @@ md"""
 forcing_file_status
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4013
-forcing_file_case = forcing_file_status.ready ? Chion.prescribed_case(
-	forcing_file=strip(forcing_file_path),
-	physics=physics,
+forcing_file_problem = forcing_file_status.ready ? load_gris_forcing_file_problem(
+	strip(forcing_file_path);
+	mask_threshold=50.0,
 	ntot=15,
-	run=Chion.RunConfig(
-		name="forcing_file_scaffold",
-		backend=backend_choice,
-		output_dir=output_dir_for("90_forcing_file_external_scaffold"),
-		write_outputs=true,
-		write_netcdf=enable_netcdf,
-		cycles=100,
-		history_stride=1,
-	),
+	physics=physics,
 ) : nothing
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4014
-forcing_file_data = isnothing(forcing_file_case) ? nothing : forcing_file_case.definition
+forcing_file_data = forcing_file_problem
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4015
-forcing_file_run = if isnothing(forcing_file_case)
+forcing_file_run = if isnothing(forcing_file_problem)
 	nothing
-elseif !run_case_now
+elseif !run_problem_now
 	nothing
 else
-	run_case_capture(forcing_file_case)
+	Chion.run!(
+		forcing_file_problem;
+		output_dir=output_dir_for("90_forcing_file_external_scaffold"),
+		save=enable_netcdf ? "all" : Symbol[],
+		write_outputs=true,
+		cycles=100,
+		backend=backend_choice,
+	)
 end
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4016
 forcing_file_summary = isnothing(forcing_file_run) ? (
-	message=isnothing(forcing_file_case) ? forcing_file_status.message : "Case is loaded. Set `run_case_now=true` to execute one equilibrium cycle.",
-	case=isnothing(forcing_file_case) ? nothing : forcing_file_case,
+	message=isnothing(forcing_file_problem) ? forcing_file_status.message : "Problem is loaded. Set `run_problem_now=true` to execute one equilibrium cycle.",
+	problem=isnothing(forcing_file_problem) ? nothing : forcing_file_problem,
 	metadata=isnothing(forcing_file_data) ? nothing : forcing_file_data.metadata,
 	loader_notes=isnothing(forcing_file_data) ? nothing : forcing_file_data.notes,
 ) : (
-	case=forcing_file_case,
+	problem=forcing_file_problem,
 	metadata=forcing_file_data.metadata,
 	loader_notes=forcing_file_data.notes,
-	status=forcing_file_run.result.status,
-	cycles_completed=length(forcing_file_run.result.history),
-	summary_path=forcing_file_run.result.summary_path,
-	history_csv_path=forcing_file_run.result.history_csv_path,
-	nc_path=forcing_file_run.result.nc_path,
-	column_1=summarize_column(forcing_file_run.result, 1),
+	status=forcing_file_run.status,
+	cycles_completed=length(forcing_file_run.history),
+	summary_path=forcing_file_run.summary_path,
+	history_csv_path=forcing_file_run.history_csv_path,
+	netcdf_path=forcing_file_run.netcdf_path,
+	column_1=summarize_column(forcing_file_run, 1),
 )
 
 # ╔═╡ c5ed28d4-e3e6-43bc-a48e-28fc42be111c
@@ -205,7 +208,7 @@ md"""
 # ╔═╡ 8cdb0f3c-4f3a-4108-99f1-49f54b985462
 forcing_file_history_plot = isnothing(forcing_file_run) ? forcing_file_summary.message :
 	plots_available() ?
-	history_plot(forcing_file_run.result.history; title="Equilibrium cycle history") :
+	history_plot(forcing_file_run.history; title="Equilibrium cycle history") :
 	"Plots.jl is not available in this Pluto session."
 
 # ╔═╡ d27e0310-0bfe-4889-8397-1d7891dc004e
@@ -213,7 +216,7 @@ forcing_file_final_thickness_plot = isnothing(forcing_file_run) ? forcing_file_s
 	plots_available() ?
 	layout_heatmap_plot(
 		forcing_file_data.layout,
-		domain_metric_values(forcing_file_run.result, :thickness);
+		domain_metric_values(forcing_file_run, :thickness);
 		title="Final snow thickness",
 		unit="m",
 		color=:ice,
@@ -225,7 +228,7 @@ forcing_file_delta_thickness_plot = isnothing(forcing_file_run) ? forcing_file_s
 	plots_available() ?
 	layout_heatmap_plot(
 		forcing_file_data.layout,
-		domain_metric_values(forcing_file_run.result, :thickness) .- domain_metric_values(forcing_file_data.domain, :thickness);
+		domain_metric_values(forcing_file_run, :thickness) .- domain_metric_values(forcing_file_data.domain, :thickness);
 		title="Thickness change after run",
 		unit="m",
 		symmetric=true,
@@ -237,9 +240,9 @@ md"""
 ## Notes
 
 - This notebook is intentionally not the primary onboarding path; use the synthetic notebooks first.
-- `prescribed_case(; forcing_file=...)` expects a prepared forcing file; do any spatial masking outside Chion before loading.
-- `load_case_data=true` reads the full external forcing into memory.
-- `run_case_now=true` executes the model after the case is loaded.
+- `run!(domain, forcing; layout=...)` expects a prepared forcing file; do any spatial masking outside Chion before loading.
+- `load_problem_data=true` reads the full external forcing into memory.
+- `run_problem_now=true` executes the model after the problem is loaded.
 - Keep `write_netcdf=false` unless you explicitly need NetCDF output and have a valid `NETCDF_LIB`.
 - If you switch `backend_choice` to `:gpu`, make sure `CUDA.functional()` is true first.
 """

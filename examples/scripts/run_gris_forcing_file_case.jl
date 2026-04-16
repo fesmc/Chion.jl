@@ -3,7 +3,32 @@
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
-include("gris_forcing_file_case_backend.jl")
+using Chion
+
+const DEFAULT_GRIS_FORCING_FILE_OUTPUT_DIR = joinpath(@__DIR__, "..", "plots", "gris_forcing_file_case")
+
+function default_gris_forcing_file_path()
+    for candidate in (
+        "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2025.nc",
+        "/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-2026.nc",
+    )
+        isfile(candidate) && return candidate
+    end
+    return ""
+end
+
+function arg_value(args::Vector{String}, name::String, default::String)
+    prefix = "--" * name * "="
+    for arg in args
+        startswith(arg, prefix) && return arg[length(prefix)+1:end]
+    end
+    return default
+end
+
+function has_flag(args::Vector{String}, name::String)
+    needle = "--" * name
+    return any(arg -> arg == needle, args)
+end
 
 function print_gris_api_help()
     println("Usage:")
@@ -30,7 +55,7 @@ function print_gris_api_help()
     println("  final, layers, history, monthly, step")
     println()
     println("Examples:")
-    println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl --forcing-file=$(DEFAULT_GRIS_FORCING_FILE_PATH) --backend=threads --cycles=2 --no-output --no-nc")
+    println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl --forcing-file=$(default_gris_forcing_file_path()) --backend=threads --cycles=2 --no-output --no-nc")
     println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl --backend=gpu --no-output --netcdf-vars=final,history")
 end
 
@@ -40,8 +65,9 @@ function main(args::Vector{String})
         return
     end
 
-    forcing_file = arg_value(args, "forcing-file", DEFAULT_GRIS_FORCING_FILE_PATH)
-    isempty(forcing_file) && error("Pass --forcing-file=PATH or place the prepared forcing file at $(DEFAULT_GRIS_FORCING_FILE_PATH).")
+    default_forcing_file = default_gris_forcing_file_path()
+    forcing_file = arg_value(args, "forcing-file", default_forcing_file)
+    isempty(forcing_file) && error("Pass --forcing-file=PATH or place the prepared forcing file at $(default_forcing_file).")
 
     physics = Chion.physics(
         albedo=Symbol(lowercase(arg_value(args, "albedo", "dynamic"))),
@@ -49,24 +75,26 @@ function main(args::Vector{String})
         fresh_snow_density=Symbol(lowercase(arg_value(args, "fresh-snow-density", "constant"))),
     )
 
-    run = Chion.RunConfig(
-        name="GrIS forcing file case",
+    problem = Chion.load_gris_forcing_file_problem(
+        forcing_file;
+        mask_threshold=parse(Float64, arg_value(args, "mask-threshold", "50.0")),
+        ntot=parse(Int, arg_value(args, "ntot", "20")),
+        physics=physics,
+    )
+    for note in problem.notes
+        println(note)
+    end
+
+    Chion.run!(
+        problem;
+        save=has_flag(args, "no-nc") ? Symbol[] : arg_value(args, "netcdf-vars", "all"),
         output_dir=arg_value(args, "output-dir", DEFAULT_GRIS_FORCING_FILE_OUTPUT_DIR),
         netcdf_path=arg_value(args, "netcdf-path", ""),
         write_outputs=!has_flag(args, "no-output"),
-        write_netcdf=!has_flag(args, "no-nc"),
-        netcdf_variables=arg_value(args, "netcdf-vars", "all"),
         cycles=parse(Int, arg_value(args, "cycles", "10")),
         backend=arg_value(args, "backend", "threads"),
-    )
-
-    run_gris_forcing_file_case(
-        forcing_file;
+        history_stride=1,
         io=stdout,
-        mask_threshold=parse(Float64, arg_value(args, "mask-threshold", "50.0")),
-        ntot=parse(Int, arg_value(args, "ntot", "20")),
-        run=run,
-        physics=physics,
     )
     return
 end

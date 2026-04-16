@@ -13,79 +13,80 @@ function _captured_exception(f::Function)
     end
 end
 
-function _write_forcing_file_fixture(path::AbstractString)
-    ntime = 3
-    nlayer = 2
-    ny = 2
+function _sample_domain_forcing_layout()
+    physics = Chion.physics()
+    domain = Chion.SnowpackDomain(c=physics, Ntot=4, ncol=4)
+    forcing = Chion.ForcingData(
+        dt_days=[1.0, 1.0, 1.0],
+        ncol=4,
+        air_temperature_c=[-15.0, -14.0, -13.0],
+        snowfall_mm_day=1.0,
+        rainfall_mm_day=0.0,
+        shortwave_down=[120.0, 140.0, 160.0],
+        wind_speed=3.0,
+        time_values=[DateTime(2001, 1, 15, 12), DateTime(2001, 2, 15, 12), DateTime(2001, 3, 15, 12)],
+    )
+    layout = Chion.GridLayout(
+        [0.0, 10_000.0],
+        [0.0, 10_000.0],
+        [1, 1, 2, 2],
+        [1, 2, 1, 2],
+        ones(2, 2),
+    )
+    return domain, forcing, layout
+end
+
+function _write_sample_gris_forcing_file(path::AbstractString)
     nx = 2
-    fill_value = -1.0e19
-
-    x = [0.0, 10_000.0]
-    y = [0.0, 10_000.0]
-    mask = fill(1.0, ny, nx)
-    outlay_bounds = [
-        0.0 0.4
-        0.4 0.8
-    ]
-
-    tt = Array{Float64}(undef, ntime, ny, nx)
-    sf = fill(0.5, ntime, ny, nx)
-    rf = fill(0.0, ntime, ny, nx)
-    swd = Array{Float64}(undef, ntime, ny, nx)
-    lwd = fill(250.0, ntime, ny, nx)
-    shf = fill(0.0, ntime, ny, nx)
-    lhf = fill(0.0, ntime, ny, nx)
-    zn3 = fill(0.8, ntime, ny, nx)
-    ro1 = fill(0.0, ntime, nlayer, ny, nx)
-    ti1 = fill(0.0, ntime, nlayer, ny, nx)
-    wa1 = fill(0.0, ntime, nlayer, ny, nx)
-
-    for t in 1:ntime, j in 1:ny, i in 1:nx
-        tt[t, j, i] = -16.0 + 1.5 * (t - 1) + 0.4 * (i - 1) - 0.3 * (j - 1)
-        swd[t, j, i] = 100.0 + 20.0 * (t - 1) + 5.0 * (i - 1)
-    end
-    rf[3, :, :] .= 0.2
-    tt[:, 2, 1] .= fill_value
-    sf[:, 2, 1] .= fill_value
-    rf[:, 2, 1] .= fill_value
-    swd[:, 2, 1] .= fill_value
-    ro1[:, 1, :, :] .= 320.0
-    ro1[:, 2, :, :] .= 450.0
-    ti1[:, 1, :, :] .= -8.0
-    ti1[:, 2, :, :] .= -12.0
-    wa1[:, 2, :, :] .= 0.02
-
-    yyyy = [2025, 2025, 2025]
-    mm = [1, 1, 1]
-    dd = [1, 2, 3]
-    hh = [12, 12, 12]
-
+    ny = 2
+    nlayer = 2
+    ntime = 2
     h5open(path, "w") do file
-        write(file, "x", x)
-        write(file, "y", y)
-        write(file, "MSK", permutedims(mask, (2, 1)))
-        write(file, "OUTLAY_bnds", permutedims(outlay_bounds, (2, 1)))
-        write(file, "TT", permutedims(tt, (3, 2, 1)))
-        write(file, "SF", permutedims(sf, (3, 2, 1)))
-        write(file, "RF", permutedims(rf, (3, 2, 1)))
-        write(file, "SWD", permutedims(swd, (3, 2, 1)))
-        write(file, "LWD", permutedims(lwd, (3, 2, 1)))
-        write(file, "SHF", permutedims(shf, (3, 2, 1)))
-        write(file, "LHF", permutedims(lhf, (3, 2, 1)))
-        write(file, "ZN3", permutedims(zn3, (3, 2, 1)))
-        write(file, "RO1", permutedims(ro1, (4, 3, 2, 1)))
-        write(file, "TI1", permutedims(ti1, (4, 3, 2, 1)))
-        write(file, "WA1", permutedims(wa1, (4, 3, 2, 1)))
-        write(file, "YYYY", yyyy)
-        write(file, "MM", mm)
-        write(file, "DD", dd)
-        write(file, "HH", hh)
-    end
+        file["x"] = [0.0, 10_000.0]
+        file["y"] = [0.0, 10_000.0]
+        file["MSK"] = fill(1.0, nx, ny)
+        file["OUTLAY_bnds"] = [0.0 0.5; 0.5 1.0]
 
+        tt = fill(-15.0, nx, ny, ntime)
+        tt[:, :, 2] .= -14.0
+        file["TT"] = tt
+        file["SF"] = fill(0.0, nx, ny, ntime)
+        file["RF"] = fill(0.0, nx, ny, ntime)
+        file["SWD"] = fill(100.0, nx, ny, ntime)
+        file["LWD"] = fill(250.0, nx, ny, ntime)
+        file["SHF"] = fill(0.0, nx, ny, ntime)
+        file["LHF"] = fill(0.0, nx, ny, ntime)
+
+        zn3 = fill(1.0, nx, ny, ntime)
+        file["ZN3"] = zn3
+
+        ro1 = fill(0.0, nx, ny, nlayer, ntime)
+        ro1[:, :, 1, :] .= 300.0
+        ro1[:, :, 2, :] .= 340.0
+        file["RO1"] = ro1
+
+        ti1 = fill(0.0, nx, ny, nlayer, ntime)
+        ti1[:, :, 1, :] .= -12.0
+        ti1[:, :, 2, :] .= -8.0
+        file["TI1"] = ti1
+
+        wa1 = fill(0.0, nx, ny, nlayer, ntime)
+        file["WA1"] = wa1
+
+        yyyy = fill(2001, ntime)
+        mm = fill(1, ntime)
+        dd = fill(1, ntime)
+        dd[2] = 2
+        hh = fill(12, ntime)
+        file["YYYY"] = yyyy
+        file["MM"] = mm
+        file["DD"] = dd
+        file["HH"] = hh
+    end
     return path
 end
 
-@testset "Case API" begin
+@testset "Run API" begin
     @testset "physics helper" begin
         actual = Chion.physics(
             albedo=:constant,
@@ -139,185 +140,136 @@ end
         @test occursin("air_temperature_c", sprint(showerror, err))
     end
 
-    @testset "prescribed_case returns a runnable case from direct inputs" begin
-        case = Chion.prescribed_case(
-            physics=Chion.physics(),
-            ntot=4,
-            nx=2,
-            ny=2,
-            dt_days=[1.0, 1.0, 1.0],
-            air_temperature_c=[-15.0, -14.0, -13.0],
-            snowfall_mm_day=1.0,
-            rainfall_mm_day=0.0,
-            shortwave_down=[120.0, 140.0, 160.0],
-            initial_surface_mass=[120.0, 0.0, 180.0, 60.0],
-            initial_density=330.0,
-            initial_temperature_c=-11.0,
-            run=Chion.RunConfig(
-                name="prescribed_demo",
-                write_outputs=false,
-                write_netcdf=false,
-                cycles=1,
-            ),
-        )
-        definition = case.definition
-
-        @test case isa Chion.SnowpackCase
-        @test definition.metadata.format == :prescribed
-        @test definition.metadata.source == :direct
-        @test definition.metadata.ncol == 4
-        @test definition.input_label == "prescribed_forcing"
-        @test size(definition.forcing.air_temperature) == (4, 3)
-        @test length(definition.layout.js) == 4
-        @test Chion.get_state(definition.domain, 1)["n_active"] == 1
-        @test Chion.get_state(definition.domain, 2)["n_active"] == 0
-
-        result = Chion.run_case(case; io=devnull)
-        @test result.status == :cycles
-        @test result.run.name == "prescribed_demo"
-    end
-
-    @testset "synthetic_case returns a runnable case" begin
-        case = Chion.synthetic_case(
-            variant=:multi_column,
-            ntot=4,
-            ntime=4,
-            nx=2,
-            ny=2,
-            run=Chion.RunConfig(
-                name="synthetic_smoke",
+    @testset "run! saves an exact symbol" begin
+        mktempdir() do dir
+            domain, forcing, layout = _sample_domain_forcing_layout()
+            result = Chion.run!(
+                domain,
+                forcing;
+                layout=layout,
+                save=:final_thickness,
+                output_dir=dir,
+                netcdf_path=joinpath(dir, "save_exact.nc"),
                 backend=:cpu,
                 write_outputs=false,
-                write_netcdf=false,
                 cycles=1,
-            ),
-        )
-        result = Chion.run_case(case; io=devnull)
-
-        @test result.status == :cycles
-        @test length(result.history) == 1
-        @test result.summary_path == ""
-        @test result.history_csv_path == ""
-        @test result.run.backend == :threads
-        @test case.definition.metadata.format == :synthetic
-    end
-
-    @testset "file-backed prescribed_case loads and runs" begin
-        mktempdir() do dir
-            fixture_path = _write_forcing_file_fixture(joinpath(dir, "forcing_fixture.h5"))
-            case = Chion.prescribed_case(
-                forcing_file=fixture_path,
-                ntot=4,
-                physics=Chion.physics(),
-                run=Chion.RunConfig(
-                    name="forcing_fixture_smoke",
-                    backend=:cpu,
-                    write_outputs=false,
-                    write_netcdf=false,
-                    cycles=1,
-                ),
+                history_stride=1,
             )
-            definition = case.definition
-
-            @test case isa Chion.SnowpackCase
-            @test definition.metadata.format == :prescribed
-            @test definition.metadata.source == :file
-            @test definition.metadata.ncol == 3
-            @test definition.metadata.ntime == 3
-            @test definition.input_label == fixture_path
-            @test size(definition.forcing.air_temperature) == (3, 3)
-            @test length(definition.layout.js) == 3
-            @test all(definition.forcing.wind_speed .== 5.0)
-            @test occursin("default 5.0 m s^-1", only(definition.notes))
-
-            result = Chion.run_case(case; io=devnull)
 
             @test result.status == :cycles
-            @test length(result.history) == 1
             @test result.run.backend == :threads
-        end
-    end
-
-    @testset "direct prescribed_case writes compact NetCDF outputs" begin
-        mktempdir() do dir
-            case = Chion.prescribed_case(
-                physics=Chion.physics(),
-                ntot=4,
-                nx=3,
-                ny=2,
-                dt_days=[1.0, 1.0, 1.0],
-                air_temperature_c=[-12.0, -11.5, -11.0],
-                snowfall_mm_day=[0.2, 0.0, 0.4],
-                rainfall_mm_day=[0.0, 0.1, 0.0],
-                shortwave_down=[100.0, 130.0, 160.0],
-                wind_speed=[3.0, 4.0, 5.0],
-                initial_surface_mass=[120.0, 0.0, 180.0, 60.0, 90.0, 30.0],
-                initial_density=330.0,
-                initial_temperature_c=-11.0,
-                run=Chion.RunConfig(
-                    name="netcdf_smoke",
-                    backend=:cpu,
-                    output_dir=dir,
-                    write_outputs=false,
-                    write_netcdf=true,
-                    netcdf_variables="final,history",
-                    cycles=1,
-                ),
-            )
-            result = Chion.run_case(case; io=devnull)
-
-            @test result.status == :cycles
             @test isfile(result.netcdf_path)
-            @test endswith(result.netcdf_path, ".nc")
+
             ds = NCDataset(result.netcdf_path)
-            @test dimnames(ds["final_thickness"]) == ("x", "y")
-            @test size(ds["final_thickness"]) == (3, 2)
-            @test ds["x"][:] == [0.0, 1.0, 2.0]
-            @test ds["y"][:] == [0.0, 1.0]
+            @test haskey(ds, "final_thickness")
+            @test !haskey(ds, "history_mean_thickness")
+            @test size(ds["final_thickness"]) == (2, 2)
             close(ds)
         end
     end
 
-    @testset "forcing_file mode rejects direct forcing keywords" begin
-        err = _captured_exception() do
-            Chion.prescribed_case(
-                forcing_file="prepared.nc",
-                dt_days=[1.0],
-                air_temperature_c=[-10.0],
-                snowfall_mm_day=[0.0],
-                rainfall_mm_day=[0.0],
-                shortwave_down=[100.0],
+    @testset "run! saves a group" begin
+        mktempdir() do dir
+            domain, forcing, layout = _sample_domain_forcing_layout()
+            result = Chion.run!(
+                domain,
+                forcing;
+                layout=layout,
+                save=:history,
+                output_dir=dir,
+                netcdf_path=joinpath(dir, "save_group.nc"),
+                backend=:threads,
+                write_outputs=false,
+                cycles=1,
+                history_stride=1,
             )
+
+            @test result.status == :cycles
+            ds = NCDataset(result.netcdf_path)
+            @test haskey(ds, "history_mean_thickness")
+            @test haskey(ds, "history_mean_base_mass")
+            @test !haskey(ds, "final_thickness")
+            close(ds)
         end
-        @test err isa Exception
-        @test occursin("forcing_file", sprint(showerror, err))
     end
 
-    @testset "Optional real forcing-file smoke" begin
-        real_forcing_file = get(
-            ENV,
-            "CHION_REAL_FORCING_FILE",
-            "/p/projects/ou/labs/ai/Nils/MARv3.14.3-10km-daily-ERA5-2025.nc",
-        )
-        enabled = get(ENV, "CHION_RUN_REAL_FORCING_FILE_SMOKE", "0") == "1"
-        if enabled && isfile(real_forcing_file)
-            case = Chion.prescribed_case(
-                forcing_file=real_forcing_file,
-                ntot=10,
-                physics=Chion.physics(),
-                run=Chion.RunConfig(
-                    name="real_forcing_file_smoke",
-                    backend=:cpu,
-                    write_outputs=false,
-                    write_netcdf=false,
-                    cycles=1,
-                ),
+    @testset "run! saves mixed fields" begin
+        mktempdir() do dir
+            domain, forcing, layout = _sample_domain_forcing_layout()
+            result = Chion.run!(
+                domain,
+                forcing;
+                layout=layout,
+                save=[:final_thickness, :history],
+                output_dir=dir,
+                netcdf_path=joinpath(dir, "save_mixed.nc"),
+                backend=:threads,
+                write_outputs=false,
+                cycles=1,
+                history_stride=1,
             )
-            result = Chion.run_case(case; io=devnull)
+
             @test result.status == :cycles
-        else
-            @info "Skipping optional real forcing-file smoke test" enabled=enabled path=real_forcing_file
-            @test true
+            ds = NCDataset(result.netcdf_path)
+            @test haskey(ds, "final_thickness")
+            @test haskey(ds, "history_mean_thickness")
+            close(ds)
+        end
+    end
+
+    @testset "run! can skip NetCDF entirely" begin
+        domain, forcing, _ = _sample_domain_forcing_layout()
+        result = Chion.run!(
+            domain,
+            forcing;
+            save=:none,
+            backend=:threads,
+            write_outputs=false,
+            cycles=1,
+        )
+
+        @test result.status == :cycles
+        @test result.netcdf_path == ""
+        @test result.summary_path == ""
+        @test result.history_csv_path == ""
+    end
+
+    @testset "load_gris_forcing_file_problem and run!(problem)" begin
+        mktempdir() do dir
+            forcing_path = _write_sample_gris_forcing_file(joinpath(dir, "gris_sample.nc"))
+            problem = Chion.load_gris_forcing_file_problem(
+                forcing_path;
+                mask_threshold=0.0,
+                ntot=4,
+                physics=Chion.physics(),
+            )
+
+            @test problem isa Chion.LoadedProblem
+            @test length(problem.notes) >= 1
+            @test problem.metadata.path == forcing_path
+
+            result_problem = Chion.run!(
+                problem;
+                save=:none,
+                backend=:threads,
+                write_outputs=false,
+                cycles=1,
+            )
+
+            @test result_problem.status == :cycles
+            @test result_problem.netcdf_path == ""
+
+            result_direct = Chion.run!(
+                deepcopy(problem.domain),
+                problem.forcing;
+                layout=problem.layout,
+                save=:none,
+                backend=:threads,
+                write_outputs=false,
+                cycles=1,
+            )
+
+            @test result_direct.status == :cycles
         end
     end
 end
