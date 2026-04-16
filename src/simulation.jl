@@ -23,7 +23,6 @@ time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
 
 using Dates
 using NCDatasets
-import CUDA
 import Libdl
 
 include("runtime_core.jl")
@@ -38,7 +37,7 @@ function _prepare_backend!(timings::StepTimingStats, domain::SnowpackDomain, for
             gpu_domain(domain)
         end
         step_fields = time_block!(timings, :gpu_transfer) do
-            adapt(CUDA.CuArray, step_fields)
+            adapt(gpu_storage_type(), step_fields)
         end
         workspace = time_block!(timings, :gpu_transfer) do
             ColumnarStepWorkspace(domain)
