@@ -20,6 +20,14 @@ not allocate any device arrays; it only checks backend availability.
 @inline cuda_available() = CUDA.functional()
 
 """
+    gpu_storage_type()
+
+Return the default array storage type used for GPU adaptation in the current
+build.
+"""
+@inline gpu_storage_type() = CUDA.CuArray
+
+"""
     _ka_backend(array)
 
 Return the KernelAbstractions backend associated with `array`. The result is
