@@ -7,7 +7,7 @@ using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
 using KernelAbstractions
 
-include("model_constants.jl")
+include("constants.jl")
 include("domain_interfaces.jl")
 include("execution_backends.jl")
 include("snowpack_domain.jl")
