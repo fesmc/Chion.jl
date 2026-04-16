@@ -1,47 +1,37 @@
 """
-Core snowpack constants and domain state containers.
+Snowpack domain state container.
 """
 
-const FRESH_SNOW_DENSITY_CONSTANT = UInt8(1)
-const FRESH_SNOW_DENSITY_PARAMETERIZED = UInt8(2)
-const ALBEDO_CONSTANT = UInt8(1)
-const ALBEDO_DYNAMIC = UInt8(2)
-const LOW_DENSIFICATION_BESSI = UInt8(1)
-const LOW_DENSIFICATION_HTESSEL = UInt8(2)
+Base.eltype(::AbstractSnowpackDomain{NF}) where {NF} = NF
 
 """
-    SnowpackPhysicalConstants{NF}
+    column_count(domain)
 
-Container for physical constants, empirical coefficients, and scheme flags
-used by the snowpack model.
+Return the number of snow columns stored in `domain`.
 """
-struct SnowpackPhysicalConstants{NF <: AbstractFloat}
-    rho_s::NF
-    rho_i::NF
-    rho_w::NF
-    rho_s_a::NF
-    rho_s_b::NF
-    rho_s_c::NF
-    fresh_snow_density_scheme::UInt8
-    Ki::NF
-    ci::NF
-    cw::NF
-    Lm::NF
-    D_sh::NF
-    alpha_dry::NF
-    alpha_wet::NF
-    alpha_ice::NF
-    max_lwc_albedo::NF
-    albedo_scheme::UInt8
-    ϵ_air::NF
-    ϵ_snow::NF
-    σ::NF
-    R::NF
-    T0::NF
-    seconds_per_day::NF
-    seconds_per_month::NF
-    seconds_per_year::NF
-    low_density_densification::UInt8
+@inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
+
+"""
+    _validate_mass_partition(mass_max, mass_split, mass_min)
+
+Check that the layer split thresholds are ordered consistently for the layer
+management routines.
+"""
+@inline function _validate_mass_partition(mass_max, mass_split, mass_min)
+    mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
+    mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
+    mass_split / mass_max >= 0.5 || error("`mass_split / mass_max` must be at least 0.5.")
+    return nothing
+end
+
+"""
+    _validate_domain_vector(name, values, ncol)
+
+Validate that a vector-valued state field has one entry per column.
+"""
+@inline function _validate_domain_vector(name::AbstractString, values, ncol::Int)
+    length(values) == ncol || error("`$name` must match `N`.")
+    return nothing
 end
 
 """
@@ -75,199 +65,6 @@ mutable struct SnowpackDomain{
     Tsrf::VT
     snow_cover::VT
     albedo_dynamic::VT
-end
-
-Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
-Base.eltype(::AbstractSnowpackDomain{NF}) where {NF} = NF
-
-"""
-    number_type(c)
-
-Return the floating-point element type used by the physical constants set `c`.
-"""
-@inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
-
-"""
-    column_count(domain)
-
-Return the number of snow columns stored in `domain`.
-"""
-@inline column_count(domain::AbstractSnowpackDomain) = domain.ncol
-
-"""
-    _normalize_low_density_densification(scheme)
-
-Normalize a densification-scheme symbol into the internal UInt8 flag used by
-`SnowpackPhysicalConstants`.
-"""
-@inline function _normalize_low_density_densification(scheme::Symbol)
-    scheme in (:bessi, :htessel) ||
-        error("Unsupported low-density densification scheme '$scheme'. Use :bessi or :htessel.")
-    return scheme == :htessel ? LOW_DENSIFICATION_HTESSEL : LOW_DENSIFICATION_BESSI
-end
-
-"""
-    _normalize_fresh_snow_density_scheme(scheme)
-
-Normalize a fresh-snow density scheme symbol into the internal UInt8 flag,
-including support for legacy aliases.
-"""
-@inline function _normalize_fresh_snow_density_scheme(scheme::Symbol)
-    normalized_scheme = if scheme == :bessi
-        :constant
-    elseif scheme == :htessel
-        :parameterized
-    else
-        scheme
-    end
-    normalized_scheme in (:constant, :parameterized) ||
-        error(
-            "Unsupported fresh-snow density scheme '$scheme'. " *
-            "Use :constant, :parameterized, or the aliases :bessi / :htessel.",
-        )
-    return normalized_scheme == :constant ? FRESH_SNOW_DENSITY_CONSTANT : FRESH_SNOW_DENSITY_PARAMETERIZED
-end
-
-"""
-    _normalize_albedo_scheme(scheme)
-
-Normalize an albedo scheme symbol into the internal UInt8 flag, including
-legacy aliases.
-"""
-@inline function _normalize_albedo_scheme(scheme::Symbol)
-    normalized_scheme = if scheme in (:bessi, :legacy)
-        :constant
-    else
-        scheme
-    end
-    normalized_scheme in (:constant, :dynamic) ||
-        error(
-            "Unsupported albedo scheme '$scheme'. " *
-            "Use :constant, :dynamic, or the aliases :legacy / :bessi.",
-        )
-    return normalized_scheme == :constant ? ALBEDO_CONSTANT : ALBEDO_DYNAMIC
-end
-
-@inline _uses_constant_fresh_snow_density(c::SnowpackPhysicalConstants) =
-    c.fresh_snow_density_scheme == FRESH_SNOW_DENSITY_CONSTANT
-
-@inline _uses_constant_albedo(c::SnowpackPhysicalConstants) =
-    c.albedo_scheme == ALBEDO_CONSTANT
-
-@inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
-    c.low_density_densification == LOW_DENSIFICATION_HTESSEL
-
-@inline _scheme_symbol(value::Symbol) = value
-@inline _scheme_symbol(value) = Symbol(lowercase(strip(String(value))))
-
-"""
-    physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
-
-Convenience constructor for `SnowpackPhysicalConstants{Float64}` using the
-named model-scheme keywords that users typically adjust.
-"""
-function physics(; albedo=:dynamic, densification=:bessi, fresh_snow_density=:constant, kwargs...)
-    return SnowpackPhysicalConstants(
-        Float64;
-        albedo_scheme=_scheme_symbol(albedo),
-        low_density_densification=_scheme_symbol(densification),
-        fresh_snow_density_scheme=_scheme_symbol(fresh_snow_density),
-        kwargs...,
-    )
-end
-
-"""
-    SnowpackPhysicalConstants(::Type{NF}; kwargs...)
-
-Construct a self-consistent set of physical constants and scheme flags using
-floating-point type `NF`.
-"""
-function SnowpackPhysicalConstants(::Type{NF};
-    rho_s::Real=315.0,
-    rho_i::Real=917.0,
-    rho_w::Real=1000.0,
-    rho_s_a::Real=109.0,
-    rho_s_b::Real=6.0,
-    rho_s_c::Real=26.0,
-    fresh_snow_density_scheme::Symbol=:constant,
-    Ki::Real=2.1,
-    ci::Real=2110.0,
-    cw::Real=4181.0,
-    Lm::Real=334000.0,
-    D_sh::Real=10.0,
-    alpha_dry::Real=0.85,
-    alpha_wet::Real=0.72,
-    alpha_ice::Real=0.3,
-    max_lwc_albedo::Real=0.1,
-    albedo_scheme::Symbol=:dynamic,
-    ϵ_air::Real=0.75,
-    ϵ_snow::Real=0.98,
-    σ::Real=5.670373e-8,
-    R::Real=8.314,
-    T0::Real=273.15,
-    seconds_per_day::Real=DEFAULT_SECONDS_PER_DAY,
-    seconds_per_month::Real=DEFAULT_SECONDS_PER_MONTH,
-    seconds_per_year::Real=DEFAULT_SECONDS_PER_YEAR,
-    low_density_densification::Symbol=:bessi,
-) where {NF <: AbstractFloat}
-    return SnowpackPhysicalConstants(
-        convert(NF, rho_s),
-        convert(NF, rho_i),
-        convert(NF, rho_w),
-        convert(NF, rho_s_a),
-        convert(NF, rho_s_b),
-        convert(NF, rho_s_c),
-        _normalize_fresh_snow_density_scheme(fresh_snow_density_scheme),
-        convert(NF, Ki),
-        convert(NF, ci),
-        convert(NF, cw),
-        convert(NF, Lm),
-        convert(NF, D_sh),
-        convert(NF, alpha_dry),
-        convert(NF, alpha_wet),
-        convert(NF, alpha_ice),
-        convert(NF, max_lwc_albedo),
-        _normalize_albedo_scheme(albedo_scheme),
-        convert(NF, ϵ_air),
-        convert(NF, ϵ_snow),
-        convert(NF, σ),
-        convert(NF, R),
-        convert(NF, T0),
-        convert(NF, seconds_per_day),
-        convert(NF, seconds_per_month),
-        convert(NF, seconds_per_year),
-        _normalize_low_density_densification(low_density_densification),
-    )
-end
-
-"""
-    SnowpackPhysicalConstants(; kwargs...)
-
-Convenience constructor for `SnowpackPhysicalConstants{Float64}`.
-"""
-SnowpackPhysicalConstants(; kwargs...) = SnowpackPhysicalConstants(Float64; kwargs...)
-
-"""
-    _validate_mass_partition(mass_max, mass_split, mass_min)
-
-Check that the layer split thresholds are ordered consistently for the layer
-management routines.
-"""
-@inline function _validate_mass_partition(mass_max, mass_split, mass_min)
-    mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")
-    mass_min < mass_split || error("`mass_min` must be smaller than `mass_split`.")
-    mass_split / mass_max >= 0.5 || error("`mass_split / mass_max` must be at least 0.5.")
-    return nothing
-end
-
-"""
-    _validate_domain_vector(name, values, ncol)
-
-Validate that a vector-valued state field has one entry per column.
-"""
-@inline function _validate_domain_vector(name::AbstractString, values, ncol::Int)
-    length(values) == ncol || error("`$name` must match `N`.")
-    return nothing
 end
 
 """
@@ -383,12 +180,12 @@ cpu_domain(domain::SnowpackDomain) = adapt(Array, domain)
 """
     gpu_domain(domain)
 
-Return a copy of `domain` adapted to `CUDA.CuArray` storage. Throws if CUDA is
-not functional in the current session.
+Return a copy of `domain` adapted to the default GPU storage type. Throws if
+CUDA is not functional in the current session.
 """
-function gpu_domain(domain::SnowpackDomain)
+function gpu_domain(domain::SnowpackDomain, storage_type=gpu_storage_type())
     cuda_available() || error("CUDA is not functional in the current environment.")
-    return adapt(CUDA.CuArray, domain)
+    return adapt(storage_type, domain)
 end
 
 """
@@ -406,5 +203,4 @@ variables(::AbstractSnowpackDomain) = (
     AuxiliaryVariable{:albedo_dynamic}("Surface albedo used for radiative forcing."),
 )
 
-@adapt_structure SnowpackPhysicalConstants
 @adapt_structure SnowpackDomain
