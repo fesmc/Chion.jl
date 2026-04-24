@@ -23,6 +23,7 @@ time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
 
 using Dates
 using NCDatasets
+using ProgressMeter: Progress, next!
 import Libdl
 
 include("runtime_core.jl")
@@ -157,6 +158,7 @@ function execute_run!(
     steps_written = 0
 
     simulation_wall_t0 = time_ns()
+    progress = Progress(options.cycles; desc="Running cycles: ", output=io, showspeed=true)
     for cycle in 1:options.cycles
         for t in eachindex(forcing.time_values)
             month_idx = need_monthly_outputs ? (cycle - 1) * schedule.nmonth_per_cycle + schedule.step_month[t] : 0
@@ -224,6 +226,7 @@ function execute_run!(
             end
         end
         prev, final = final, prev
+        next!(progress)
     end
     simulation_wall_sec = (time_ns() - simulation_wall_t0) * 1.0e-9
 

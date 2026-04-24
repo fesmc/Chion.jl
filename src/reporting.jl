@@ -1,6 +1,9 @@
 using Dates
 using Printf
 using Base.Threads: nthreads
+using TimerOutputs: TimerOutputs
+using Statistics: mean
+using CSV
 
 const HISTORY_CSV_SPECS = (
     (key=:cycle, label="cycle", integer=true),
@@ -40,33 +43,18 @@ const SUMMARY_REPORT_SPECS = (
 )
 
 @inline function _finite_mean(data)
-    total = 0.0
-    count = 0
-    for value in data
-        isfinite(value) || continue
-        total += value
-        count += 1
-    end
-    return count == 0 ? NaN : total / count
+    finite = filter(isfinite, data)
+    return isempty(finite) ? NaN : mean(finite)
 end
 
 function _delta_stats(data)
-    signed_total = 0.0
-    abs_total = 0.0
-    max_abs = 0.0
-    count = 0
-    for value in data
-        isfinite(value) || continue
-        abs_value = abs(value)
-        signed_total += value
-        abs_total += abs_value
-        max_abs = max(max_abs, abs_value)
-        count += 1
-    end
+    finite = filter(isfinite, data)
+    isempty(finite) && return (mean_signed=NaN, mean_abs=NaN, max_abs=NaN)
+    abs_vals = abs.(finite)
     return (
-        mean_signed=count == 0 ? NaN : signed_total / count,
-        mean_abs=count == 0 ? NaN : abs_total / count,
-        max_abs=count == 0 ? NaN : max_abs,
+        mean_signed=mean(finite),
+        mean_abs=mean(abs_vals),
+        max_abs=maximum(abs_vals),
     )
 end
 
@@ -129,17 +117,11 @@ end
 
 function write_run_history_csv(out_path::AbstractString, history::Vector{NamedTuple})
     mkpath(dirname(out_path))
-    open(out_path, "w") do io
-        println(io, join((spec.label for spec in HISTORY_CSV_SPECS), ","))
-        for rec in history
-            values = String[]
-            for spec in HISTORY_CSV_SPECS
-                value = getfield(rec, spec.key)
-                push!(values, spec.integer ? string(value) : @sprintf("%.10f", value))
-            end
-            println(io, join(values, ","))
-        end
-    end
+    # Build a NamedTuple with the published column labels from the history records.
+    cols = NamedTuple{Tuple(Symbol(spec.label) for spec in HISTORY_CSV_SPECS)}(
+        Tuple(getfield.(history, spec.key) for spec in HISTORY_CSV_SPECS)
+    )
+    CSV.write(out_path, cols)
 end
 
 function write_run_summary(
@@ -204,7 +186,7 @@ function print_run_report(
     println(io, "Cycle metrics   : ", cycle_metrics_schedule_label(options.history_stride))
     println(io, @sprintf("Simulation wall : %.3f s", simulation_wall_sec))
     println(io, @sprintf("Run wall total  : %.3f s", run_wall_sec))
-    haskey(timings.totals, :model_step_wall) && println(io, @sprintf("Model step wall : %.3f s", timings.totals[:model_step_wall]))
+    haskey(timings.to.inner_timers, "model_step_wall") && println(io, @sprintf("Model step wall : %.3f s", TimerOutputs.time(timings.to.inner_timers["model_step_wall"]) * 1e-9))
     println(io, "Output NetCDF   : ", options.write_netcdf ? abspath(nc_path) : "skipped (--no-nc)")
     if options.write_outputs
         println(io, "History CSV     : $(abspath(history_csv_path))")

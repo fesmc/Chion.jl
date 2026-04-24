@@ -67,6 +67,45 @@ end
 empty_final_grids() = NamedTuple{FINAL_GRID_KEYS}(ntuple(_ -> Matrix{Float64}(undef, 0, 0), length(FINAL_GRID_KEYS)))
 empty_monthly_grids() = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(_ -> Array{Float64}(undef, 0, 0, 0), length(MONTHLY_GRID_KEYS)))
 
+function collect_final_layer_grids(
+    domain::SnowpackDomain,
+    js::Vector{Int},
+    is::Vector{Int},
+    grid_shape::Tuple{Int, Int},
+    nlayer::Int,
+)
+    ny, nx = grid_shape
+    ncol = length(js)
+    n_active = fill(Int32(0), ny, nx)
+    layer_density     = fill(NaN, nlayer, ny, nx)
+    layer_thickness   = fill(NaN, nlayer, ny, nx)
+    layer_snow_mass   = fill(NaN, nlayer, ny, nx)
+    layer_liquid_mass = fill(NaN, nlayer, ny, nx)
+    layer_temperature_c = fill(NaN, nlayer, ny, nx)
+    c = domain.c
+    @inbounds for col in 1:ncol
+        j, i = js[col], is[col]
+        n_active[j, i] = Int32(domain.N[col])
+        for k in 1:nlayer
+            rho = domain.density[k, col]
+            m   = domain.mass[k, col]
+            layer_density[k, j, i]       = rho
+            layer_snow_mass[k, j, i]     = m
+            layer_liquid_mass[k, j, i]   = domain.mass_w[k, col]
+            layer_temperature_c[k, j, i] = domain.temperature[k, col] - c.T0
+            layer_thickness[k, j, i]     = rho > 0 ? m / rho : 0.0
+        end
+    end
+    return (
+        n_active=n_active,
+        layer_density=layer_density,
+        layer_thickness=layer_thickness,
+        layer_snow_mass=layer_snow_mass,
+        layer_liquid_mass=layer_liquid_mass,
+        layer_temperature_c=layer_temperature_c,
+    )
+end
+
 function _empty_layer_grids()
     return (
         n_active=Matrix{Int32}(undef, 0, 0),
