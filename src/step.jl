@@ -1,4 +1,317 @@
 """
+Timing helpers for profiling the major stages of `step!`.
+Backed by TimerOutputs.jl.
+"""
+
+using TimerOutputs: TimerOutput, TimerOutputs
+
+"""
+    StepTimingStats
+
+Accumulator for profiling the major internal stages of [`step!`](@ref).
+Wraps a `TimerOutputs.TimerOutput` and a per-key item count (separate from
+call count, used when a single timed block covers work on many columns).
+"""
+mutable struct StepTimingStats
+    to::TimerOutput
+    item_counts::Dict{Symbol, Int}
+end
+
+"""
+    StepTimingStats()
+
+Create an empty accumulator for `step!` stage timings.
+"""
+StepTimingStats() = StepTimingStats(TimerOutput(), Dict{Symbol, Int}())
+
+"""
+    add_timing!(stats, key, dt_sec, count=1)
+
+Record `dt_sec` seconds under `key` and increment the item count by `count`.
+"""
+function add_timing!(stats::StepTimingStats, key::Symbol, dt_sec::Float64, count::Int=1)
+    name = String(key)
+    dt_ns = round(Int64, dt_sec * 1e9)
+    # Get or create the child timer
+    child = get!(stats.to.inner_timers, name) do
+        to = TimerOutput()
+        to.name = name
+        to
+    end
+    # Accumulate directly into the child's accumulated_data
+    d = child.accumulated_data
+    child.accumulated_data = TimerOutputs.TimeData(
+        d.ncalls + 1,
+        d.time + dt_ns,
+        d.allocs,
+        d.firstexec == 0 ? time_ns() : d.firstexec,
+    )
+    stats.item_counts[key] = get(stats.item_counts, key, 0) + count
+    return dt_sec
+end
+
+"""
+    timing_rows(stats)
+
+Return `(rows, total)` where `rows` is a vector of per-stage NamedTuples and
+`total` is the sum of all recorded times in seconds.
+"""
+function timing_rows(stats::StepTimingStats)
+    rows = NamedTuple[]
+    total = sum(TimerOutputs.time(t) for t in values(stats.to.inner_timers); init=Int64(0)) * 1e-9
+    for (name, timer) in stats.to.inner_timers
+        dt = TimerOutputs.time(timer) * 1e-9
+        ncalls = TimerOutputs.ncalls(timer)
+        key = Symbol(name)
+        item_count = get(stats.item_counts, key, ncalls)
+        share_pct = total > 0.0 ? 100.0 * dt / total : 0.0
+        push!(rows, (
+            key=key,
+            total_sec=dt,
+            count=item_count,
+            mean_sec=ncalls > 0 ? dt / ncalls : NaN,
+            share_pct=share_pct,
+        ))
+    end
+    sort!(rows; by=row -> row.total_sec, rev=true)
+    return rows, total
+end
+
+"""
+    _time_block!(stats, key, f)
+
+Execute `f()` and record its wall-clock runtime under `key` when `stats` is a
+`StepTimingStats`. When `stats === nothing`, the call is forwarded without
+measurement.
+"""
+@inline _time_block!(::Nothing, ::Symbol, f::F) where {F <: Function} = f()
+
+@inline function _time_block!(stats::StepTimingStats, key::Symbol, f::F) where {F <: Function}
+    t0 = time_ns()
+    value = f()
+    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
+    return value
+end
+
+@inline _time_block!(f::F, stats, key::Symbol) where {F <: Function} = _time_block!(stats, key, f)
+
+"""
+    _time_call!(stats, key, f, args...)
+
+Call `f(args...)` and record its runtime under `key` when `stats` is a
+`StepTimingStats`. When `stats === nothing`, the call is forwarded directly.
+"""
+@inline _time_call!(::Nothing, ::Symbol, f, args...) = f(args...)
+
+@inline function _time_call!(stats::StepTimingStats, key::Symbol, f, args...)
+    t0 = time_ns()
+    value = f(args...)
+    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
+    return value
+end
+
+"""
+    print_timing_summary(io, stats; total_wall_sec=nothing)
+
+Write a human-readable table of accumulated stage timings to `io`.
+"""
+function print_timing_summary(
+    io::IO,
+    stats::StepTimingStats;
+    total_wall_sec::Union{Nothing, Float64}=nothing,
+)
+    show(io, stats.to; sortby=:time)
+    println(io)
+    if !isnothing(total_wall_sec)
+        _, total = timing_rows(stats)
+        unaccounted = max(total_wall_sec - total, 0.0)
+        println(io, @sprintf("  %-24s %12.3f", "unaccounted", unaccounted))
+        println(io, @sprintf("  %-24s %12.3f", "run_wall_total", total_wall_sec))
+    end
+end
+
+"""
+Scratch storage for stepping and energy-flux solves.
+"""
+
+"""
+    _workspace_array(storage, ::Type{NF}, dims...)
+
+Allocate scratch storage compatible with `storage`, preserving the active
+backend while changing element type and shape.
+"""
+@inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
+    similar(storage, NF, dims...)
+
+"""
+    EnergyWorkspace
+
+Scratch arrays reused by the implicit temperature solver in
+[`go_energy_flux!`](@ref).
+"""
+struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
+    lower::LT
+    diag::DT
+    upper::UT
+    rhs::RT
+    interface_conductance::IT
+    previous_temperature::PT
+    layer_thickness::TT
+    thermal_conductivity::KT
+end
+
+"""
+    EnergyWorkspace(storage, ::Type{NF}, dims...)
+
+Allocate energy-solver scratch arrays on the same backend as `storage`.
+Returns an `EnergyWorkspace` whose fields are mutated by the energy-flux
+solver.
+"""
+function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
+    allocate() = _workspace_array(storage, NF, dims...)
+    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
+end
+
+"""
+    EnergyWorkspace(domain)
+
+Allocate energy-flux scratch storage sized for `domain`.
+"""
+EnergyWorkspace(domain::AbstractSnowpackDomain) =
+    EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
+
+"""
+    ColumnarStepWorkspace
+
+Column-major scratch storage that holds temporary state for every column in a
+batch run, regardless of whether the backing arrays live on CPU or GPU.
+"""
+struct ColumnarStepWorkspace{LWT,ET}
+    liquid_water_before_energy::LWT
+    energy::ET
+end
+
+"""
+    ColumnarStepWorkspace(storage, ::Type{NF}, Ntot, ncol)
+
+Allocate column-major scratch arrays that hold per-layer temporary state for
+every column in a batch on the same backend as `storage`.
+"""
+function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
+    return ColumnarStepWorkspace(
+        _workspace_array(storage, NF, Ntot, ncol),
+        EnergyWorkspace(storage, NF, Ntot, ncol),
+    )
+end
+
+"""
+    ColumnarStepWorkspace(domain)
+
+Allocate batch stepping scratch compatible with `domain`'s backend and sized
+for all columns.
+"""
+function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
+    NF = number_type(domain.c)
+    return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, column_count(domain))
+end
+
+Adapt.@adapt_structure EnergyWorkspace
+Adapt.@adapt_structure ColumnarStepWorkspace
+
+"""
+Step-forcing container types and field-to-forcing conversion helpers.
+"""
+
+"""
+    SnowpackStepForcing{NF}
+
+Per-column forcing bundle consumed by [`step!`](@ref). It stores temperatures,
+mass fluxes, optional prescribed surface-flux terms, and metadata needed by
+the optional diurnal shortwave adjustment.
+"""
+struct SnowpackStepForcing{NF <: AbstractFloat}
+    air_temperature::NF
+    precipitation_rate::NF
+    dt_days::NF
+    snowfall_rate::NF
+    rainfall_rate::NF
+    shortwave_down::NF
+    wind_speed::NF
+    q_sw_net::NF
+    q_lw_down::NF
+    q_sh::NF
+    q_lh::NF
+    has_q_sw_net::Bool
+    has_q_lw_down::Bool
+    has_q_sh::Bool
+    has_q_lh::Bool
+    diurnal_shortwave::Bool
+    latitude::NF
+    day_of_year::NF
+end
+
+"""
+    _step_time_count(fields)
+
+Return the number of forcing time steps stored in `fields`.
+"""
+@inline _step_time_count(fields) = size(fields.air_temperature, 2)
+
+"""
+    _step_dt(dt_days, time_index)
+
+Resolve the step duration in days for `time_index`, supporting both scalar and
+vector-valued `dt_days` storage.
+"""
+@inline _step_dt(dt_days::Number, ::Int) = dt_days
+@inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
+
+"""
+    _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh)
+
+Build a single-column `SnowpackStepForcing` from already-indexed forcing
+values. The returned forcing disables optional fluxes that are not present and
+sets precipitation rate to snowfall plus rainfall.
+"""
+@inline function _step_forcing_from_fields(
+    air_temperature,
+    snowfall_rate,
+    rainfall_rate,
+    dt_days,
+    shortwave_down,
+    wind_speed,
+    q_lw_down,
+    has_q_lw_down::Bool,
+    q_sh,
+    has_q_sh::Bool,
+    q_lh,
+    has_q_lh::Bool,
+)
+    return SnowpackStepForcing(
+        air_temperature,
+        snowfall_rate + rainfall_rate,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        zero(air_temperature),
+        q_lw_down,
+        q_sh,
+        q_lh,
+        false,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        false,
+        zero(air_temperature),
+        zero(air_temperature),
+    )
+end
+
+@adapt_structure SnowpackStepForcing
+
+"""
 Core stepping flow shared by batch stepping kernels.
 """
 
@@ -281,5 +594,176 @@ function _step_state_resolved!(
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
 
+    return nothing
+end
+
+"""
+Batch stepping over forcing fields through a single KernelAbstractions path.
+"""
+
+"""
+    _step_columns_kernel!(...)
+
+KernelAbstractions kernel that extracts one time slice of the full forcing
+and advances each column independently in-place.
+"""
+@kernel function _step_columns_kernel!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    Tsrf,
+    snow_cover,
+    albedo_dynamic,
+    c::SnowpackPhysicalConstants,
+    Ntot::Int,
+    mass_max,
+    mass_split,
+    mass_min,
+    workspace::ColumnarStepWorkspace,
+    air_temperature,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed,
+    q_lw_down,
+    has_q_lw_down,
+    q_sh,
+    has_q_sh,
+    q_lh,
+    has_q_lh,
+    time_index::Int,
+    dt_days,
+    update_snow_cover::Bool,
+)
+    idx = @index(Global)
+    if idx <= length(N_storage)
+        forcing = _step_forcing_from_fields(
+            air_temperature[idx, time_index],
+            snowfall_rate[idx, time_index],
+            rainfall_rate[idx, time_index],
+            dt_days,
+            shortwave_down[idx, time_index],
+            wind_speed[idx, time_index],
+            q_lw_down[idx, time_index],
+            has_q_lw_down[idx, time_index],
+            q_sh[idx, time_index],
+            has_q_sh[idx, time_index],
+            q_lh[idx, time_index],
+            has_q_lh[idx, time_index],
+        )
+        _step_state_resolved!(
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            temperature,
+            mass_base,
+            smb_ice,
+            runoff,
+            Tsrf,
+            snow_cover,
+            albedo_dynamic,
+            idx,
+            c,
+            Ntot,
+            mass_max,
+            mass_split,
+            mass_min,
+            forcing,
+            workspace,
+            update_snow_cover,
+        )
+    end
+end
+
+"""
+    _launch_step_columns_kernel!(domain, forcing, time_index, workspace, update_snow_cover)
+
+Launch the backend-specific batch stepping kernel for one forcing time step and
+return the KernelAbstractions event.
+"""
+@inline function _launch_step_columns_kernel!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    workspace::ColumnarStepWorkspace,
+    update_snow_cover::Bool,
+)
+    kernel! = _step_columns_kernel!(_ka_backend(domain.mass))
+    return kernel!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.temperature,
+        domain.mass_base,
+        domain.smb_ice,
+        domain.runoff,
+        domain.Tsrf,
+        domain.snow_cover,
+        domain.albedo_dynamic,
+        domain.c,
+        domain.Ntot,
+        domain.mass_max,
+        domain.mass_split,
+        domain.mass_min,
+        workspace,
+        forcing.air_temperature,
+        forcing.snowfall_rate,
+        forcing.rainfall_rate,
+        forcing.shortwave_down,
+        forcing.wind_speed,
+        forcing.q_lw_down,
+        forcing.has_q_lw_down,
+        forcing.q_sh,
+        forcing.has_q_sh,
+        forcing.q_lh,
+        forcing.has_q_lh,
+        time_index,
+        _step_dt(forcing.dt_days, time_index),
+        update_snow_cover;
+        ndrange=column_count(domain),
+    )
+end
+
+"""
+    step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace; update_snow_cover=true)
+
+Advance all columns for one time step using the KernelAbstractions backend
+associated with `domain.mass`. The same kernel runs on CPU or GPU depending on
+the storage backend of the domain and workspace arrays.
+"""
+function step!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    workspace::ColumnarStepWorkspace;
+    update_snow_cover::Bool=true,
+)
+    _wait_kernel(_launch_step_columns_kernel!(domain, forcing, time_index, workspace, update_snow_cover))
+    return nothing
+end
+
+"""
+    step!(domain, forcing, workspace::ColumnarStepWorkspace; update_snow_cover=true)
+
+Advance all columns through the full forcing sequence in `forcing`. The outer
+time loop runs in Julia, while each time step is advanced by the same
+KernelAbstractions batch kernel on the storage backend of `workspace`.
+"""
+function step!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    workspace::ColumnarStepWorkspace;
+    update_snow_cover::Bool=true,
+)
+    for time_index in 1:_step_time_count(forcing)
+        step!(domain, forcing, time_index, workspace; update_snow_cover=update_snow_cover)
+    end
     return nothing
 end
