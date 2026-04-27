@@ -4,6 +4,7 @@ import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 using Chion
+using NCDatasets
 include(joinpath(@__DIR__, "..", "shared", "script_helpers.jl"))
 using .ChionExampleScriptHelpers
 
@@ -19,12 +20,72 @@ function default_gris_forcing_file_path()
     return ""
 end
 
+function apply_gris_mask(loaded, forcing_file::AbstractString; threshold::Float64=50.0)
+    mask = NCDataset(forcing_file) do ds
+        Float64.(ds["MSK"][:])
+    end
+
+    ny = length(loaded.grid.y)
+    nx = length(loaded.grid.x)
+    if length(mask) == nx * ny && ndims(mask) == 1
+        mask = reshape(mask, nx, ny)
+    end
+    if size(mask) == (nx, ny)
+        mask = permutedims(mask, (2, 1))
+    end
+    size(mask) == (ny, nx) || error("Unexpected MSK shape $(size(mask)); expected ($ny, $nx).")
+
+    rows = Int[]
+    js = Int[]
+    is = Int[]
+    for j in 1:ny, i in 1:nx
+        row = i + (j - 1) * nx
+        if isfinite(mask[j, i]) &&
+           mask[j, i] >= threshold &&
+           isfinite(loaded.forcing.air_temperature[row, 1])
+            push!(rows, row)
+            push!(js, j)
+            push!(is, i)
+        end
+    end
+
+    f = loaded.forcing
+    forcing = SnowpackForcing(
+        time_values=f.time_values,
+        dt_days=f.dt_days,
+        air_temperature=f.air_temperature[rows, :],
+        snowfall_rate=f.snowfall_rate[rows, :],
+        rainfall_rate=f.rainfall_rate[rows, :],
+        shortwave_down=f.shortwave_down[rows, :],
+        wind_speed=f.wind_speed[rows, :],
+        q_lw_down=f.q_lw_down[rows, :],
+        has_q_lw_down=f.has_q_lw_down[rows, :],
+        q_sh=f.q_sh[rows, :],
+        has_q_sh=f.has_q_sh[rows, :],
+        q_lh=f.q_lh[rows, :],
+        has_q_lh=f.has_q_lh[rows, :],
+    )
+    grid = SnowpackGrid(
+        loaded.grid.device,
+        length(rows);
+        x=loaded.grid.x,
+        y=loaded.grid.y,
+        js=js,
+        is=is,
+        mask=mask,
+    )
+
+    println("Applied GrIS mask: kept $(length(rows)) / $(nx * ny) columns")
+    return (grid=grid, forcing=forcing)
+end
+
 function print_gris_api_help()
     println("Usage:")
     println("  julia --project=. examples/scripts/run_gris_forcing_file_case.jl [options]")
     println()
     println("Core options:")
     println("  --forcing-file=PATH          Prepared NetCDF forcing file")
+    println("  --mask-threshold=VALUE       Apply MAR-style MSK threshold before running (default: 50)")
     println("  --output-dir=PATH            Output directory (default: examples/plots/gris_forcing_file_simulation)")
     println("  --netcdf-path=PATH           Output NetCDF path")
     println("  --no-output                  Skip summary/CSV file output")
@@ -54,6 +115,11 @@ function main(args::Vector{String})
     isempty(forcing_file) && error("Pass --forcing-file=PATH or place the prepared forcing file at $(default_forcing_file).")
 
     loaded = load_forcing_file(forcing_file)
+    loaded = apply_gris_mask(
+        loaded,
+        forcing_file;
+        threshold=parse(Float64, arg_value(args, "mask-threshold", "50.0")),
+    )
     model = BESSIModel(
         loaded.grid;
         Ntot=parse(Int, arg_value(args, "ntot", "20")),
