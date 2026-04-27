@@ -9,13 +9,12 @@ import Plots
 using Printf
 using Statistics
 using Chion
+include(joinpath(@__DIR__, "..", "shared", "script_helpers.jl"))
+using .ChionExampleScriptHelpers
 
 const DEFAULT_DATA_DIR = joinpath(@__DIR__, "..", "..", "data", "ESM-SnowMIP_all")
 const DEFAULT_OUT_DIR = joinpath(@__DIR__, "..", "plots")
 
-arg_value(args, name, default="") = something(findfirst(a -> startswith(a, "--$name="), args), 0) > 0 ?
-    split(args[findfirst(a -> startswith(a, "--$name="), args)], "=", limit=2)[2] : default
-has_flag(args, name) = any(==("--$name"), args)
 fmtf(x) = isfinite(x) ? @sprintf("%.6f", x) : "NaN"
 
 function print_help()
@@ -152,64 +151,59 @@ function load_inputs(cfg)
     )
 end
 
-parse_densification(text) = begin
-    scheme = Symbol(lowercase(strip(String(text))))
-    scheme in (:bessi, :htessel) || error("Unsupported densification scheme '$text'.")
-    scheme
-end
-
-function make_case(inp, cfg, physics)
+function make_case(inp, cfg, albedo, densification, fresh_snow_density)
     tair = carry_forward(inp.tair, 268.0)
     wind = carry_forward(inp.wind, 5.0; nonnegative=true)
     snow = max.(replace(copy(inp.snow), NaN => 0.0), 0.0)
     rain = max.(replace(copy(inp.rain), NaN => 0.0), 0.0)
-    sw = max.(replace(copy(inp.sw), NaN => 0.0), 0.0)
-    lw = replace(copy(inp.lw), NaN => 0.0)
-    dt_days = [i < length(inp.dates) ? Dates.value(inp.dates[i + 1] - inp.dates[i]) / 86_400_000.0 : Dates.value(inp.dates[i] - inp.dates[i - 1]) / 86_400_000.0 for i in eachindex(inp.dates)]
-    init_mass = (!cfg.no_init_from_obs && isfinite(inp.obs_depth[1]) && inp.obs_depth[1] > 0) ? cfg.initial_density * inp.obs_depth[1] : 0.0
-    domain = Chion.SnowpackDomain(c=physics, Ntot=cfg.ntot, ncol=1)
+    sw   = max.(replace(copy(inp.sw),   NaN => 0.0), 0.0)
+    lw   = replace(copy(inp.lw), NaN => 0.0)
+    dt_days = [
+        i < length(inp.dates) ?
+            Dates.value(inp.dates[i + 1] - inp.dates[i]) / 86_400_000.0 :
+            Dates.value(inp.dates[i] - inp.dates[i - 1]) / 86_400_000.0
+        for i in eachindex(inp.dates)
+    ]
+    init_mass = (!cfg.no_init_from_obs && isfinite(inp.obs_depth[1]) && inp.obs_depth[1] > 0) ?
+        cfg.initial_density * inp.obs_depth[1] : 0.0
+
+    grid  = Chion.SnowpackGrid(Chion.CPU(), 1)
+    model = Chion.BESSIModel(grid;
+        albedo             = albedo,
+        densification      = densification,
+        fresh_snow_density = fresh_snow_density,
+        Ntot               = cfg.ntot,
+    )
+    domain = model.domain
     fill!(domain.N, init_mass > 0 ? 1 : 0)
-    fill!(domain.mass, 0.0)
-    fill!(domain.mass_w, 0.0)
-    fill!(domain.density, 0.0)
+    fill!(domain.mass, 0.0); fill!(domain.mass_w, 0.0); fill!(domain.density, 0.0)
     fill!(domain.temperature, domain.c.T0)
-    fill!(domain.mass_base, 0.0)
-    fill!(domain.smb_ice, 0.0)
-    fill!(domain.runoff, 0.0)
-    fill!(domain.snow_cover, 0.0)
-    fill!(domain.albedo_dynamic, domain.c.alpha_dry)
+    fill!(domain.mass_base, 0.0); fill!(domain.smb_ice, 0.0); fill!(domain.runoff, 0.0)
+    fill!(domain.snow_cover, 0.0); fill!(domain.albedo_dynamic, domain.c.alpha_dry)
     if init_mass > 0
         domain.N[1] = 1
-        domain.mass[1, 1] = init_mass
-        domain.density[1, 1] = cfg.initial_density
+        domain.mass[1, 1]        = init_mass
+        domain.density[1, 1]     = cfg.initial_density
         domain.temperature[1, 1] = tair[1]
-        domain.Tsrf[1] = tair[1]
+        domain.Tsrf[1]           = tair[1]
     else
         domain.Tsrf[1] = domain.c.T0
     end
     Chion.compute_auxiliary!(domain)
 
-    forcing = Chion.ForcingData(
-        dt_days=dt_days,
-        air_temperature_c=tair .- 273.15,
-        snowfall_mm_day=snow .* 86_400.0,
-        rainfall_mm_day=rain .* 86_400.0,
-        shortwave_down=sw,
-        wind_speed=wind,
-        q_lw_down=lw,
-        has_q_lw_down=isfinite.(inp.lw),
-        time_values=inp.dates,
-        ncol=1,
+    forcing = Chion.SnowpackForcing(
+        dt_days          = dt_days,
+        air_temperature_c = tair .- 273.15,
+        snowfall_mm_day  = snow .* 86_400.0,
+        rainfall_mm_day  = rain .* 86_400.0,
+        shortwave_down   = sw,
+        wind_speed       = wind,
+        q_lw_down        = lw,
+        has_q_lw_down    = isfinite.(inp.lw),
+        time_values      = inp.dates,
+        ncol             = 1,
     )
-    definition = (
-        domain=domain,
-        forcing=forcing,
-        layout=nothing,
-        input_label=inp.met_path,
-        notes=["Validation run built directly from domain + forcing."],
-        metadata=(format=:validation, source=:timeseries, ntot=cfg.ntot, initial_density=cfg.initial_density),
-    )
-    return (definition=definition, domain=domain, forcing=forcing, layout=nothing, input_label=inp.met_path, notes=definition.notes, metadata=definition.metadata)
+    return (domain=domain, forcing=forcing)
 end
 
 function current_state(domain)
@@ -224,8 +218,8 @@ function current_state(domain)
 end
 
 function run_timeseries(case; use_radiation=true)
-    domain = deepcopy(case.definition.domain)
-    forcing = case.definition.forcing
+    domain = deepcopy(case.domain)
+    forcing = case.forcing
     n = length(forcing.time_values)
     sanitized = (
         air_temperature=similar(forcing.air_temperature),
@@ -281,7 +275,7 @@ function run_timeseries(case; use_radiation=true)
         dt = forcing.dt_days[i - 1]
         sim.cum_snow[i] = sim.cum_snow[i - 1] + S * dt * 86_400.0
     end
-    step_fields = Chion.SnowpackStepFields(
+    step_fields = Chion.SnowpackForcing(
         dt_days=forcing.dt_days,
         air_temperature=sanitized.air_temperature,
         snowfall_rate=sanitized.snowfall_rate,
@@ -294,6 +288,7 @@ function run_timeseries(case; use_radiation=true)
         has_q_sh=sanitized.has_q_sh,
         q_lh=sanitized.q_lh,
         has_q_lh=sanitized.has_q_lh,
+        time_values=forcing.time_values,
     )
     for i in 2:n
         Chion.step!(domain, step_fields, i - 1, workspace)
@@ -385,13 +380,12 @@ function main(args)
     )
     xor(isempty(cfg.met_nc), isempty(cfg.obs_nc)) && error("Pass both --met-nc and --obs-nc, or neither.")
 
-    physics = Chion.physics(
-        albedo = Symbol(lowercase(arg_value(args, "albedo", "dynamic"))),
-        densification = parse_densification(arg_value(args, "densification", arg_value(args, "low-density-densification", "bessi"))),
-        fresh_snow_density = Symbol(lowercase(arg_value(args, "fresh-snow-density", "constant"))),
-    )
+    albedo_scheme      = _albedo_scheme(arg_value(args, "albedo", "dynamic"))
+    densif_scheme      = _densification_scheme(arg_value(args, "densification",
+                             arg_value(args, "low-density-densification", "bessi")))
+    fresh_snow_scheme  = _fresh_snow_scheme(arg_value(args, "fresh-snow-density", "constant"))
     inp = load_inputs(cfg)
-    case = make_case(inp, cfg, physics)
+    case = make_case(inp, cfg, albedo_scheme, densif_scheme, fresh_snow_scheme)
     sim = run_timeseries(case; use_radiation=!cfg.no_radiation)
     metrics = (depth=metric(inp.obs_depth, sim.depth), swe=metric(inp.obs_swe, sim.swe))
     slug = arg_value(args, "slug", isempty(cfg.met_nc) ? "$(cfg.site)_$(cfg.forcing)" : splitext(basename(cfg.met_nc))[1])

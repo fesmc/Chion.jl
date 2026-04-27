@@ -83,13 +83,6 @@ load_problem_data = false
 # ╔═╡ 8cfefc4a-aa0d-4211-ba99-d516f37603a4
 run_problem_now = false
 
-# ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4009
-physics = Chion.physics(
-	albedo=:dynamic,
-	densification=:bessi,
-	fresh_snow_density=:constant,
-)
-
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4010
 forcing_file_status = if isempty(strip(forcing_file_path))
 	(
@@ -127,12 +120,11 @@ md"""
 forcing_file_status
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4013
-forcing_file_problem = forcing_file_status.ready ? load_gris_forcing_file_problem(
-	strip(forcing_file_path);
-	mask_threshold=50.0,
-	ntot=15,
-	physics=physics,
-) : nothing
+forcing_file_problem = forcing_file_status.ready ? let
+	loaded = load_forcing_file(strip(forcing_file_path))
+	model = BESSIModel(loaded.grid; Ntot=15)
+	Simulation(model; forcing=loaded.forcing)
+end : nothing
 
 # ╔═╡ a41f2b9a-0c79-11ef-9f26-f7ea663b4014
 forcing_file_data = forcing_file_problem
@@ -143,13 +135,17 @@ forcing_file_run = if isnothing(forcing_file_problem)
 elseif !run_problem_now
 	nothing
 else
-	Chion.run!(
+	run!(
 		forcing_file_problem;
-		output_dir=output_dir_for("90_forcing_file_external_scaffold"),
-		save=enable_netcdf ? "all" : Symbol[],
-		write_outputs=true,
-		cycles=100,
-		backend=backend_choice,
+		output=OutputOptions(
+			output_dir=output_dir_for("90_forcing_file_external_scaffold"),
+			save=enable_netcdf ? "all" : Symbol[],
+			write_outputs=true,
+		),
+		options=SimulationOptions(
+			cycles=100,
+			backend=backend_choice,
+		),
 	)
 end
 
@@ -157,18 +153,18 @@ end
 forcing_file_summary = isnothing(forcing_file_run) ? (
 	message=isnothing(forcing_file_problem) ? forcing_file_status.message : "Problem is loaded. Set `run_problem_now=true` to execute one equilibrium cycle.",
 	problem=isnothing(forcing_file_problem) ? nothing : forcing_file_problem,
-	metadata=isnothing(forcing_file_data) ? nothing : forcing_file_data.metadata,
-	loader_notes=isnothing(forcing_file_data) ? nothing : forcing_file_data.notes,
+	metadata=nothing,
+	loader_notes=nothing,
 ) : (
 	problem=forcing_file_problem,
-	metadata=forcing_file_data.metadata,
-	loader_notes=forcing_file_data.notes,
+	metadata=nothing,
+	loader_notes=nothing,
 	status=forcing_file_run.status,
 	cycles_completed=length(forcing_file_run.history),
 	summary_path=forcing_file_run.summary_path,
 	history_csv_path=forcing_file_run.history_csv_path,
 	netcdf_path=forcing_file_run.netcdf_path,
-	column_1=summarize_column(forcing_file_run, 1),
+	column_1=summarize_column(forcing_file_problem.model, 1),
 )
 
 # ╔═╡ c5ed28d4-e3e6-43bc-a48e-28fc42be111c
@@ -180,8 +176,8 @@ md"""
 forcing_file_initial_thickness_plot = isnothing(forcing_file_data) ? forcing_file_status.message :
 	plots_available() ?
 	layout_heatmap_plot(
-		forcing_file_data.layout,
-		domain_metric_values(forcing_file_data.domain, :thickness);
+		forcing_file_data.model.grid,
+		domain_metric_values(forcing_file_data.model, :thickness);
 		title="Initial snow thickness",
 		unit="m",
 		color=:ice,
@@ -192,8 +188,8 @@ forcing_file_initial_thickness_plot = isnothing(forcing_file_data) ? forcing_fil
 forcing_file_initial_density_plot = isnothing(forcing_file_data) ? forcing_file_status.message :
 	plots_available() ?
 	layout_heatmap_plot(
-		forcing_file_data.layout,
-		domain_metric_values(forcing_file_data.domain, :bulk_density);
+		forcing_file_data.model.grid,
+		domain_metric_values(forcing_file_data.model, :bulk_density);
 		title="Initial bulk density",
 		unit="kg/m^3",
 		color=:dense,
@@ -215,8 +211,8 @@ forcing_file_history_plot = isnothing(forcing_file_run) ? forcing_file_summary.m
 forcing_file_final_thickness_plot = isnothing(forcing_file_run) ? forcing_file_summary.message :
 	plots_available() ?
 	layout_heatmap_plot(
-		forcing_file_data.layout,
-		domain_metric_values(forcing_file_run, :thickness);
+		forcing_file_data.model.grid,
+		domain_metric_values(forcing_file_problem.model, :thickness);
 		title="Final snow thickness",
 		unit="m",
 		color=:ice,
@@ -227,8 +223,8 @@ forcing_file_final_thickness_plot = isnothing(forcing_file_run) ? forcing_file_s
 forcing_file_delta_thickness_plot = isnothing(forcing_file_run) ? forcing_file_summary.message :
 	plots_available() ?
 	layout_heatmap_plot(
-		forcing_file_data.layout,
-		domain_metric_values(forcing_file_run, :thickness) .- domain_metric_values(forcing_file_data.domain, :thickness);
+		forcing_file_data.model.grid,
+		domain_metric_values(forcing_file_problem.model, :thickness) .- domain_metric_values(forcing_file_data.model, :thickness);
 		title="Thickness change after run",
 		unit="m",
 		symmetric=true,
@@ -240,8 +236,8 @@ md"""
 ## Notes
 
 - This notebook is intentionally not the primary onboarding path; use the synthetic notebooks first.
-- `run!(domain, forcing; layout=...)` expects a prepared forcing file; do any spatial masking outside Chion before loading.
-- `load_problem_data=true` reads the full external forcing into memory.
+- `load_forcing_file(path)` expects a prepared forcing file; do any spatial masking outside Chion before loading.
+- `load_problem_data=true` reads the full external forcing into memory as a `Simulation`.
 - `run_problem_now=true` executes the model after the problem is loaded.
 - Keep `write_netcdf=false` unless you explicitly need NetCDF output and have a valid `NETCDF_LIB`.
 - If you switch `backend_choice` to `:gpu`, make sure `CUDA.functional()` is true first.
@@ -259,7 +255,6 @@ md"""
 # ╠═a41f2b9a-0c79-11ef-9f26-f7ea663b4008
 # ╠═4ad0f4a4-c267-4551-a9f3-6e3996fcd65e
 # ╠═8cfefc4a-aa0d-4211-ba99-d516f37603a4
-# ╠═a41f2b9a-0c79-11ef-9f26-f7ea663b4009
 # ╠═a41f2b9a-0c79-11ef-9f26-f7ea663b4010
 # ╟─a41f2b9a-0c79-11ef-9f26-f7ea663b4011
 # ╠═a41f2b9a-0c79-11ef-9f26-f7ea663b4012

@@ -23,6 +23,9 @@ const NC_DOUBLE = 6
 const NC_INT = 4
 const NC_UNLIMITED = 0
 
+@inline valid_or(default::Float64, x::Float64) = isfinite(x) ? x : default
+@inline mmwe_day_to_kgm2s(x::Float64) = isfinite(x) ? max(x, 0.0) / 86_400.0 : 0.0
+
 function resolve_libnetcdf()
     haskey(ENV, "NETCDF_LIB") && return ENV["NETCDF_LIB"]
     lib = Libdl.find_library(["netcdf", "libnetcdf"])
@@ -518,9 +521,8 @@ function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=
             device_summary.smb_ice,
             device_summary.liquid_water,
             device_summary.runoff,
-            domain;
-            backend=backend,
-        )
+            domain
+            )
         copyto!(summary.thickness, device_summary.thickness)
         copyto!(summary.wet_mass, device_summary.wet_mass)
         copyto!(summary.bulk_density, device_summary.bulk_density)
@@ -537,9 +539,8 @@ function summarize_columns!(summary, domain::SM.SnowpackDomain; backend::Symbol=
             summary.smb_ice,
             summary.liquid_water,
             summary.runoff,
-            domain;
-            backend=backend,
-        )
+            domain
+            )
     end
     return summary
 end
@@ -554,9 +555,8 @@ function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::S
             device_summary.wet_mass,
             device_summary.bulk_density,
             device_summary.base_mass,
-            domain;
-            backend=backend,
-        )
+            domain
+            )
         copyto!(summary.thickness, device_summary.thickness)
         copyto!(summary.wet_mass, device_summary.wet_mass)
         copyto!(summary.bulk_density, device_summary.bulk_density)
@@ -567,9 +567,8 @@ function summarize_cycle_columns!(summary, domain::SM.SnowpackDomain; backend::S
             summary.wet_mass,
             summary.bulk_density,
             summary.base_mass,
-            domain;
-            backend=backend,
-        )
+            domain
+            )
     end
     return summary
 end
@@ -678,7 +677,7 @@ function run_spinup_cycles_no_netcdf!(
     config,
     domain::SM.SnowpackDomain,
     workspace::SM.ColumnarStepWorkspace,
-    step_fields::SM.SnowpackStepFields,
+    step_fields::SM.SnowpackForcing,
     nvalid::Int,
 )
     config.backend == :threads || error("CPU fast path requires `--backend=threads`.")
@@ -1528,7 +1527,7 @@ function main(args::Vector{String})
         end
     end
 
-    step_fields = SM.SnowpackStepFields(
+    step_fields = SM.SnowpackForcing(
         dt_days=dt_days,
         air_temperature=tair_k,
         snowfall_rate=snow_rate,
@@ -1541,6 +1540,7 @@ function main(args::Vector{String})
         has_q_sh=has_q_sh,
         q_lh=q_lh,
         has_q_lh=has_q_lh,
+        time_values=time_values,
     )
 
     if config.backend == :threads && !config.write_outputs && !config.write_netcdf
@@ -1618,8 +1618,7 @@ function main(args::Vector{String})
                 prev.wet_mass,
                 prev.bulk_density,
                 prev.base_mass,
-                domain;
-                backend=:kernelabstractions,
+                domain
             )
         else
             summarize_cycle_columns!(prev, domain; backend=:threads)
@@ -1800,9 +1799,8 @@ function main(args::Vector{String})
                             device_step_summary.smb_ice,
                             device_step_summary.liquid_water,
                             device_step_summary.runoff,
-                            domain;
-                            backend=:kernelabstractions,
-                        )
+                            domain
+            )
                         current_base = device_step_summary.base_mass
                         current_smb_ice = device_step_summary.smb_ice
                         current_runoff = device_step_summary.runoff
@@ -1899,9 +1897,8 @@ function main(args::Vector{String})
                     final.wet_mass,
                     final.bulk_density,
                     final.base_mass,
-                    domain;
-                    backend=:kernelabstractions,
-                )
+                    domain
+            )
             end
             time_block!(timings, :cycle_state_deltas) do
                 last_delta_thickness_vec .= final.thickness .- prev.thickness
