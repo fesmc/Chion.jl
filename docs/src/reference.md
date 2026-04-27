@@ -2,38 +2,28 @@
 CurrentModule = Chion
 ```
 
-# Reference Utilities
+# Advanced Reference
 
-These helpers are useful when inspecting state, preparing execution scratch
-space, moving between CPU/GPU storage, or summarizing a domain after a run.
+These helpers are available for advanced workflows that inspect state directly,
+manage device storage, or call low-level stepping APIs.
 
 ## State Inspection
 
 ```@docs
-AbstractSnowpackDomain
+SnowpackState
 get_state
 print_state
-compute_auxiliary!
-variables
-column_count
 ```
 
-## Domain Summaries And Backends
+## Backends
 
 ```@docs
-summarize_domain_state
-summarize_domain_state!
-cpu_domain
-gpu_domain
 cuda_available
-kernelabstractions_available
 ```
 
 ## Workspaces And Timing
 
 ```@docs
-StepWorkspace
-threaded_workspaces
 ColumnarStepWorkspace
 StepTimingStats
 add_timing!

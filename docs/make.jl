@@ -20,7 +20,7 @@ makedocs(
             "Percolation" => "processes/percolation.md",
             "Refreezing" => "processes/refreezing.md",
         ],
-        "Case API And Outputs" => "case_api.md",
+        "Simulation API And Outputs" => "case_api.md",
         "Reference Utilities" => "reference.md",
         "Validation And Audit" => [
             "Formula Audit" => "validation.md",

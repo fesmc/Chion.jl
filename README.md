@@ -1,33 +1,28 @@
 # Chion.jl
 
-
-## This model is still work in progress! Not everything is validated yet and many things still change. 
-
 Chion is a fast, intermediate-complexity snowpack mass and energy balance model.
-It supports single-column and gridded runs, threaded CPU execution, single-GPU execution through `CUDA.jl`, and high-level case builders for synthetic and prescribed forcings.
+It supports single-column and gridded snowpack runs, threaded CPU execution,
+single-GPU execution through `CUDA.jl`, and optional summary, CSV, and NetCDF
+outputs.
 
 The current public workflow is:
 
-1. Choose physics with `physics(...)`
-2. Create a runnable case with `prescribed_case(...)` or `synthetic_case(...)`
-3. Execute with `run_case(...)`
+1. Build a `SnowpackGrid`.
+2. Build a `BESSIModel`.
+3. Build a `SnowpackForcing`, or load one with `load_forcing_file`.
+4. Build a `Simulation`.
+5. Execute it with `run!`.
+
+This model is still work in progress. Not everything is validated yet, and the
+API may still change.
 
 ## Features
 
 - Snowpack mass and energy balance core with layer-based state
-- High-level case API for synthetic and prescribed forcing inputs
+- Simulation-first public API for manual and file-backed forcing workflows
 - Threaded CPU and single-GPU execution backends
 - Optional summary, history CSV, and NetCDF outputs
 - Pluto notebooks and script entry points for demos and larger runs
-
-## Repository Layout
-
-- `src/`: package code and public API
-- `examples/scripts/`: command-line runners for runs
-- `examples/pluto/`: Pluto notebooks for CPU, GPU scaffolding
-- `examples/shared/`: helper utilities used by the notebooks and scripts
-- `test/`: case API smoke tests
-- `docs/`: documentation sources and generated site artifacts
 
 ## Installation
 
@@ -45,62 +40,97 @@ Then load the package with:
 using Chion
 ```
 
-### Optional Runtime Dependencies
-
-- GPU runs require a working CUDA environment that `CUDA.jl` can use.
-- File-backed prescribed workflows require prepared HDF5/NetCDF forcing files.
-- If `libnetcdf` is not on the default library path, set `NETCDF_LIB` explicitly.
-
-The existing launch scripts assume modules such as `julia`, `hdf5`, `netcdf-c`, and optionally `cuda`.
+GPU runs require a working CUDA environment that `CUDA.jl` can use. NetCDF
+loading and output use `NCDatasets.jl`.
 
 ## Quick Start
 
-This is the smallest supported end-to-end workflow using prescribed forcing arrays.
+This is the smallest supported end-to-end workflow using forcing arrays.
 High-level forcing inputs use Celsius and `mmWE/day`.
 
 ```julia
-using Pkg
-Pkg.activate(".")
 using Chion
 
-case = Chion.prescribed_case(
-    physics=Chion.physics(
-        albedo=:dynamic,
-        densification=:bessi,
-        fresh_snow_density=:constant,
-    ),
-    ntot=5,
-    nx=1,
-    ny=1,
+grid = SnowpackGrid(CPU(), 1)
+
+model = BESSIModel(grid;
+    albedo=DynamicAlbedo(),
+    densification=BESSIDensification(),
+    fresh_snow_density=ConstantFreshSnowDensity(),
+    Ntot=5,
+)
+
+forcing = SnowpackForcing(
     dt_days=[1.0, 1.0, 1.0],
     air_temperature_c=[-15.0, -12.0, -10.0],
     snowfall_mm_day=[2.0, 0.0, 0.0],
     rainfall_mm_day=0.0,
     shortwave_down=[80.0, 150.0, 220.0],
-    run=Chion.RunConfig(
-        name="demo",
-        backend=:threads,
-        cycles=1,
-        write_outputs=false,
-        write_netcdf=false,
-    ),
 )
 
-result = Chion.run_case(case)
-state = Chion.get_state(result.domain, 1)
+simulation = Simulation(model;
+    forcing=forcing,
+    cycles=1,
+    backend=:threads,
+    save=:none,
+    write_outputs=false,
+)
+
+result = run!(simulation)
+state = SnowpackState(simulation.model.domain)
 ```
+
+## File-Backed Forcing
+
+`load_forcing_file` reads a NetCDF forcing file and returns a named tuple with a
+`SnowpackGrid` and `SnowpackForcing`.
+
+```julia
+loaded = load_forcing_file("forcing.nc")
+
+simulation = Simulation(BESSIModel(loaded.grid);
+    forcing=loaded.forcing,
+    cycles=1,
+    save=:final,
+)
+
+result = run!(simulation)
+```
+
+The generic loader accepts common `(time, y, x)` layouts and MAR-style
+`(x, y, TIME)` fields, including singleton layer dimensions such as
+`(x, y, ATMLAY, TIME)`.
+
+## Running Scripts
+
+The script entry points in `examples/scripts/` are the fastest way to run the
+packaged workflows.
+
+```bash
+julia --project=. examples/scripts/run_synthetic_simulation.jl \
+  --backend=threads \
+  --cycles=3 \
+  --nx=2 \
+  --ny=2 \
+  --no-nc
+```
+
+```bash
+julia --project=. examples/scripts/run_gris_forcing_file_case.jl \
+  --forcing-file=/path/to/forcing.nc \
+  --backend=gpu \
+  --cycles=2 \
+  --no-output \
+  --no-nc
+```
+
+`examples/scripts/run_gris_equilibrium.jl` is still available as a
+performance-oriented Greenland script while the public examples move to the
+simulation API.
 
 ## Documentation
 
-Detailed documentation lives in `docs/src/` and the rendered site groups the
-material into:
-
-- model state and stepping flow
-- process documentation for albedo, accumulation/melt, layer structure, densification, energy, percolation, and refreezing
-- the high-level case API and runtime outputs
-- reference utilities and validation notes
-
-Build the docs locally with:
+Detailed documentation lives in `docs/src/`. Build it locally with:
 
 ```bash
 julia --project=docs docs/make.jl
@@ -110,77 +140,17 @@ Useful return values:
 
 - `result.status`: run termination status
 - `result.history`: per-cycle summary records
-- `result.domain`: final domain state
 - `result.summary_path`, `result.history_csv_path`, `result.netcdf_path`: output paths when enabled
-
-## Case Builders
-
-### `prescribed_case(...)`
-
-Build a runnable case directly from user-supplied forcing arrays, or from a
-prepared external forcing file via `forcing_file=...`.
-Use this for experiments, notebooks, and file-backed forcing pipelines.
-
-### `synthetic_case(...)`
-
-Generate a runnable case with built-in synthetic forcing for smoke tests and demos.
-Supports `variant=:single_column` and `variant=:multi_column`, with `nx` and `ny` controlling the grid size.
-
-## Running Scripts
-
-The script entry points in `examples/scripts/` are the fastest way to run the packaged workflows.
-
-### Synthetic Case
-
-```bash
-julia --project=. examples/scripts/run_synthetic_case.jl \
-  --backend=threads \
-  --cycles=3 \
-  --nx=2 \
-  --ny=2 \
-  --no-nc
-```
-
-### Prepared Forcing File
-
-```bash
-julia --project=. examples/scripts/run_gris_forcing_file_case.jl \
-  --forcing-file=/path/to/prepared_forcing.nc \
-  --backend=gpu \
-  --cycles=2 \
-  --no-output \
-  --no-nc
-```
-
-There is also a configuration-driven variant:
-
-```bash
-julia --project=. examples/scripts/run_gris_forcing_file_case_configured.jl
-```
-
-Its defaults can be overridden with environment variables such as `FORCING_PATH`, `BACKEND`, `CYCLES`, `WRITE_OUTPUTS`, `WRITE_NETCDF`, and `NETCDF_VARIABLES`.
-
-## Pluto Notebooks
-
-Interactive examples live in [`examples/pluto/README.md`](examples/pluto/README.md).
-The current notebook set includes:
-
-- `01_cpu_workflows.jl`: CPU workflows using the public case API
-- `02_gpu_single_device.jl`: single-device GPU workflow
-- `90_forcing_file_external_scaffold.jl`: optional external forcing-file scaffold
-
-For cluster launches, `pluto.sh` starts a Pluto server with a dedicated runtime depot.
 
 ## Outputs And Backends
 
-- `RunConfig(backend=:threads)` runs on CPU with threading
-- `RunConfig(backend=:gpu)` runs on a CUDA device
-- `backend=:cpu` is accepted and normalized to `:threads`
-- `write_outputs=false` and `write_netcdf=false` are useful for smoke tests and timing runs
-- `history_stride` controls how often cycle metrics are recorded
-- `netcdf_variables` accepts `all`, `none`, group names, or explicit variable names
-
-NetCDF output requires a grid layout, so it is available for gridded synthetic and prescribed cases.
+- `backend=:threads` runs on CPU with threading.
+- `backend=:cpu` runs the same CPU path without threaded column stepping.
+- `backend=:gpu` runs on a CUDA device when available.
+- `save=:none` skips NetCDF entirely.
+- NetCDF output requires spatial grid coordinates.
+- `write_outputs=false` skips summary and history CSV files.
+- `history_stride` controls how often cycle metrics are recorded.
 
 ## Tests
 
@@ -190,4 +160,5 @@ Run the test suite with:
 julia --project=. test/runtests.jl
 ```
 
-The tests cover the high-level case API, including direct prescribed, synthetic, and file-backed prescribed smoke cases.
+The tests cover the public simulation workflow, file-backed forcing, NetCDF
+output behavior, and cleanup checks for removed legacy API names.

@@ -25,10 +25,9 @@ arrays for:
 | `snow_cover` | diagnosed snow-cover fraction | `1` |
 | `albedo_dynamic` | surface albedo used by the energy solver | `1` |
 
-`SnowpackStepForcing` uses model-native units (`K`, `kg m^-2 s^-1`, `W m^-2`).
-The higher-level case API accepts user-facing forcing in Celsius and
-`mmWE day^-1`, then converts it into the native forcing arrays stored in
-the case definition.
+`SnowpackForcing` stores one forcing matrix per field in model-native units
+(`K`, `kg m^-2 s^-1`, `W m^-2`). Its constructor also accepts user-facing
+temperature and precipitation fields in Celsius and `mmWE day^-1`.
 
 ## Step Ordering
 
@@ -58,12 +57,13 @@ converted directly into SMB loss, and the snow-column process chain is skipped.
 - `rho_s = 315 kg m^-3` for the constant fresh-snow-density scheme
 - `T0 = 273.15 K`
 
-## Public Entry Points
+## Advanced Entry Points
+
+Most users should run through `Simulation` and `run!`. The low-level `step!`
+API is available for advanced workflows that manage domains, forcing slices,
+and workspaces directly.
 
 ```@docs
-SnowpackPhysicalConstants
-SnowpackDomain
 SnowpackStepForcing
-SnowpackStepFields
 step!
 ```

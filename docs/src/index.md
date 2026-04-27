@@ -6,9 +6,8 @@ CurrentModule = Chion
 
 Chion is an intermediate-complexity snowpack mass and energy balance model
 with layered solid mass, liquid water, density, temperature, and surface
-diagnostics. The current implementation supports single-column and gridded
-cases, threaded CPU execution, single-device GPU execution through `CUDA.jl`,
-and a higher-level case API for prescribed and synthetic runs.
+diagnostics. The public workflow is simulation-first: build a grid, choose a
+model, provide forcing, construct a `Simulation`, and call `run!`.
 
 This documentation treats the current Julia implementation as the source of
 truth. The process pages below summarize the formulas and defaults that are
@@ -17,7 +16,7 @@ actually implemented in `src/`.
 
 1. [Model State And Step Flow](model_state.md)
 2. [Process documentation](processes/albedo.md)
-3. [Case API And Outputs](case_api.md)
+3. [Simulation API And Outputs](case_api.md)
 4. [Reference Utilities](reference.md)
 5. [Validation And Audit](validation.md)
 
@@ -25,9 +24,21 @@ actually implemented in `src/`.
 
 The smallest end-to-end workflow is:
 
-1. Choose physics with `physics(...)`
-2. Create a runnable case with `prescribed_case(...)` or `synthetic_case(...)`
-3. Execute with `run_case(...)`
+```julia
+using Chion
+
+grid = SnowpackGrid(CPU(), 1)
+model = BESSIModel(grid)
+forcing = SnowpackForcing(
+    dt_days=[1.0, 1.0],
+    air_temperature_c=[-12.0, -10.0],
+    snowfall_mm_day=[1.0, 0.0],
+    rainfall_mm_day=[0.0, 0.0],
+    shortwave_down=[120.0, 160.0],
+)
+simulation = Simulation(model; forcing=forcing, cycles=1, save=:none)
+result = run!(simulation)
+```
 
 ## Process Pages
 

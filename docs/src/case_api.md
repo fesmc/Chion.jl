@@ -2,42 +2,58 @@
 CurrentModule = Chion
 ```
 
-# Case API And Outputs
+# Simulation API And Outputs
 
-The public case API is intentionally small:
+The supported public workflow is:
 
-1. create a runnable `SnowpackCase` with `prescribed_case` or `synthetic_case`
-2. execute it with `run_case`
-3. inspect the returned `RunResult`
+1. build a `SnowpackGrid`
+2. build a model, usually `BESSIModel`
+3. build `SnowpackForcing`
+4. build `Simulation`
+5. call `run!`
 
-## Input Units And Normalization
+`PDDModel` and `ITMModel` can be constructed, but their `run!` methods are
+placeholders until those physics paths are implemented.
 
-- `prescribed_case(...)` accepts air temperature in Celsius and snowfall /
-  rainfall in `mmWE day^-1`
-- `prescribed_case(...; forcing_file=...)` loads a prepared external forcing
-  file and assumes any spatial masking has already been done outside Chion
-- the internal forcing arrays and runtime kernels always operate in native
-  units such as `K`, `kg m^-2 s^-1`, and `W m^-2`
+## Input Units
+
+`SnowpackForcing` accepts either model-native fields or user-facing fields:
+
+- `air_temperature`, `snowfall_rate`, and `rainfall_rate` use native units
+  (`K`, `kg m^-2 s^-1`, `kg m^-2 s^-1`).
+- `air_temperature_c`, `snowfall_mm_day`, and `rainfall_mm_day` are converted
+  to native units.
+- `shortwave_down` is always `W m^-2`.
+- scalar and time-vector forcing values are broadcast over columns.
 
 ## Outputs
 
-`RunResult` stores the final domain, cycle history, run status, timing
-diagnostics, and the output paths that were produced when file writing was
-enabled. NetCDF variable selection is controlled with
-`CASE_NETCDF_VARIABLE_GROUPS` and `CASE_NETCDF_VARIABLES`.
+`OutputOptions(save=...)` controls NetCDF output. Use `:none` or an empty
+symbol vector to skip NetCDF, a variable symbol such as `:final_thickness`, a
+group such as `:final`, or `"all"`.
 
-## Public Surface
-
-- `physics(...)` selects the process parameterization bundle.
-- `prescribed_case(...)` creates a runnable case from direct forcing arrays or a prepared forcing file.
-- `synthetic_case(...)` creates a runnable case from built-in synthetic forcing.
-- `run_case(case)` executes a case and returns a `RunResult`.
-- `RunConfig(...)` controls backend, output writing, cycle count, and history stride.
+Text summary and history CSV output are controlled separately with
+`write_outputs=true`. NetCDF output requires a `SnowpackGrid` with spatial
+coordinates.
 
 ## Reference
 
 ```@docs
-prescribed_case
-synthetic_case
-run_case
+SnowpackGrid
+SnowpackForcing
+BESSIModel
+PDDModel
+ITMModel
+DynamicAlbedo
+ConstantAlbedo
+BESSIDensification
+HTESSELDensification
+ConstantFreshSnowDensity
+ParameterizedFreshSnowDensity
+Simulation
+SimulationOptions
+OutputOptions
+SimulationResult
+run!
+load_forcing_file
 ```
