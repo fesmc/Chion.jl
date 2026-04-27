@@ -84,7 +84,17 @@ function main(args::Vector{String})
     for note in problem.notes
         println(note)
     end
-
+    fill!(problem.domain.N, 0)
+    fill!(problem.domain.mass, 0.0)
+    fill!(problem.domain.mass_w, 0.0)
+    fill!(problem.domain.density, 0.0)
+    fill!(problem.domain.temperature, problem.domain.c.T0)
+    fill!(problem.domain.mass_base, 0.0)
+    fill!(problem.domain.smb_ice, 0.0)
+    fill!(problem.domain.runoff, 0.0)
+    fill!(problem.domain.snow_cover, 0.0)
+    fill!(problem.domain.albedo_dynamic, problem.domain.c.alpha_ice)
+    fill!(problem.domain.Tsrf, problem.domain.c.T0)
     Chion.run!(
         problem;
         save=has_flag(args, "no-nc") ? Symbol[] : arg_value(args, "netcdf-vars", "all"),
