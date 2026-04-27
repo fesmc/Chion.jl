@@ -87,6 +87,8 @@ include("processes/percolation.jl")
 include("processes/refreezing.jl")
 include("dataloaders.jl")
 include("models.jl")
+include("processes/pdd.jl")
+include("output.jl")
 include("simulation.jl")
 
 @inline _normalize_run_save(save) = begin
@@ -103,6 +105,7 @@ export SnowpackGrid, CPU, GPU
 
 # Models
 export BESSIModel, PDDModel, ITMModel
+export build_model
 export DynamicAlbedo, ConstantAlbedo
 export BESSIDensification, HTESSELDensification
 export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity

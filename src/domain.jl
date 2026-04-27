@@ -124,6 +124,16 @@ management routines.
     return nothing
 end
 
+@inline function _domain_thresholds(::Type{NF}, mass_max, mass_split, mass_min, rho_max) where {NF}
+    _validate_mass_partition(mass_max, mass_split, mass_min)
+    return (
+        convert(NF, mass_max),
+        convert(NF, mass_split),
+        convert(NF, mass_min),
+        convert(NF, rho_max),
+    )
+end
+
 """
     _validate_domain_vector(name, values, ncol)
 
@@ -131,6 +141,20 @@ Validate that a vector-valued state field has one entry per column.
 """
 @inline function _validate_domain_vector(name::AbstractString, values, ncol::Int)
     length(values) == ncol || error("`$name` must match `N`.")
+    return nothing
+end
+
+@inline function _validate_matching_domain_matrices(reference::Tuple{Int,Int}, matrices...)
+    for (name, values) in matrices
+        size(values) == reference || error("`$name` must match `mass`.")
+    end
+    return nothing
+end
+
+@inline function _validate_domain_vectors(ncol::Int, vectors...)
+    for (name, values) in vectors
+        _validate_domain_vector(name, values, ncol)
+    end
     return nothing
 end
 
@@ -186,17 +210,17 @@ function SnowpackDomain(;
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
 )
     ncol > 0 || error("`ncol` must be positive.")
-    _validate_mass_partition(mass_max, mass_split, mass_min)
-
     NF = number_type(c)
+    mass_max, mass_split, mass_min, rho_max =
+        _domain_thresholds(NF, mass_max, mass_split, mass_min, rho_max)
     return SnowpackDomain(
         c,
         Ntot,
         ncol,
-        convert(NF, mass_max),
-        convert(NF, mass_split),
-        convert(NF, mass_min),
-        convert(NF, rho_max),
+        mass_max,
+        mass_split,
+        mass_min,
+        rho_max,
         zeros(Int, ncol),
         zeros(NF, Ntot, ncol),
         zeros(NF, Ntot, ncol),
@@ -237,25 +261,32 @@ function SnowpackDomain(
 ) where {NF <: AbstractFloat}
     ncol = length(N)
     size(mass, 2) == ncol || error("`mass` must have one column per entry of `N`.")
-    size(mass_w) == size(mass) || error("`mass_w` must match `mass`.")
-    size(density) == size(mass) || error("`density` must match `mass`.")
-    size(temperature) == size(mass) || error("`temperature` must match `mass`.")
-    _validate_domain_vector("mass_base", mass_base, ncol)
-    _validate_domain_vector("smb_ice", smb_ice, ncol)
-    _validate_domain_vector("runoff", runoff, ncol)
-    _validate_domain_vector("Tsrf", Tsrf, ncol)
-    _validate_domain_vector("snow_cover", snow_cover, ncol)
-    _validate_domain_vector("albedo_dynamic", albedo_dynamic, ncol)
-    _validate_mass_partition(mass_max, mass_split, mass_min)
+    _validate_matching_domain_matrices(
+        size(mass),
+        ("mass_w", mass_w),
+        ("density", density),
+        ("temperature", temperature),
+    )
+    _validate_domain_vectors(
+        ncol,
+        ("mass_base", mass_base),
+        ("smb_ice", smb_ice),
+        ("runoff", runoff),
+        ("Tsrf", Tsrf),
+        ("snow_cover", snow_cover),
+        ("albedo_dynamic", albedo_dynamic),
+    )
+    mass_max, mass_split, mass_min, rho_max =
+        _domain_thresholds(NF, mass_max, mass_split, mass_min, rho_max)
 
     return SnowpackDomain(
         c,
         size(mass, 1),
         ncol,
-        convert(NF, mass_max),
-        convert(NF, mass_split),
-        convert(NF, mass_min),
-        convert(NF, rho_max),
+        mass_max,
+        mass_split,
+        mass_min,
+        rho_max,
         N,
         mass,
         mass_w,
@@ -323,6 +354,26 @@ end
 State accessors and formatted state output.
 """
 
+const _STATE_ALIASES = (
+    "n_active" => "N",
+    "solid_mass" => "mass",
+    "liquid_water_mass" => "mass_w",
+    "surface_albedo" => "albedo_dynamic",
+    "ice_sheet_smb" => "smb_ice",
+)
+
+@inline function _active_column_profile(values, n::Int, idx::Int)
+    n == 0 && return Float64[]
+    return [@inbounds _get_layer(values, layer_index, idx) for layer_index in 1:n]
+end
+
+function _with_state_aliases!(state::Dict)
+    for (alias, key) in _STATE_ALIASES
+        state[alias] = state[key]
+    end
+    return state
+end
+
 """
     _state_dict(N_storage, mass, mass_w, density, temperature, smb_ice, albedo_dynamic, idx, c)
 
@@ -343,54 +394,28 @@ function _state_dict(
 )
     snow_cover = _snow_cover_fraction(N_storage, mass, mass_w, density, idx)
     n = _n_active(N_storage, idx)
-    if n == 0
-        return Dict(
-            "N" => 0,
-            "n_active" => 0,
-            "mass" => Float64[],
-            "solid_mass" => Float64[],
-            "mass_w" => Float64[],
-            "liquid_water_mass" => Float64[],
-            "density" => Float64[],
-            "total_mass" => 0.0,
-            "total_liquid_water" => 0.0,
-            "total_wet_mass" => 0.0,
-            "thickness" => Float64[],
-            "total_thickness" => 0.0,
-            "surface_temperature" => c.T0,
-            "snow_cover" => snow_cover,
-            "surface_albedo" => _get_scalar(albedo_dynamic, idx),
-            "albedo_dynamic" => _get_scalar(albedo_dynamic, idx),
-            "smb_ice" => _get_scalar(smb_ice, idx),
-            "ice_sheet_smb" => _get_scalar(smb_ice, idx),
-        )
-    end
-
-    active_solid_mass = [@inbounds _get_layer(mass, layer_index, idx) for layer_index in 1:n]
-    active_liquid_water_mass = [@inbounds _get_layer(mass_w, layer_index, idx) for layer_index in 1:n]
-    active_density = [@inbounds _get_layer(density, layer_index, idx) for layer_index in 1:n]
+    active_solid_mass = _active_column_profile(mass, n, idx)
+    active_liquid_water_mass = _active_column_profile(mass_w, n, idx)
+    active_density = _active_column_profile(density, n, idx)
     thickness = active_solid_mass ./ active_density
+    total_mass = sum(active_solid_mass)
+    total_liquid_water = sum(active_liquid_water_mass)
 
-    return Dict(
+    return _with_state_aliases!(Dict(
         "N" => n,
-        "n_active" => n,
         "mass" => active_solid_mass,
-        "solid_mass" => active_solid_mass,
         "mass_w" => active_liquid_water_mass,
-        "liquid_water_mass" => active_liquid_water_mass,
         "density" => active_density,
-        "total_mass" => sum(active_solid_mass),
-        "total_liquid_water" => sum(active_liquid_water_mass),
-        "total_wet_mass" => sum(active_solid_mass) + sum(active_liquid_water_mass),
+        "total_mass" => total_mass,
+        "total_liquid_water" => total_liquid_water,
+        "total_wet_mass" => total_mass + total_liquid_water,
         "thickness" => thickness,
         "total_thickness" => sum(thickness),
-        "surface_temperature" => _get_layer(temperature, 1, idx),
+        "surface_temperature" => n == 0 ? c.T0 : _get_layer(temperature, 1, idx),
         "snow_cover" => snow_cover,
-        "surface_albedo" => _get_scalar(albedo_dynamic, idx),
         "albedo_dynamic" => _get_scalar(albedo_dynamic, idx),
         "smb_ice" => _get_scalar(smb_ice, idx),
-        "ice_sheet_smb" => _get_scalar(smb_ice, idx),
-    )
+    ))
 end
 
 """
@@ -463,6 +488,45 @@ end
 Domain-wide summary helpers.
 """
 
+const _DOMAIN_SUMMARY_FIELDS =
+    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff)
+const _CYCLE_SUMMARY_FIELDS = (:thickness, :wet_mass, :bulk_density, :base_mass)
+
+@inline function _column_summary(N, mass, mass_w, density, idx, sample)
+    n = N[idx]
+    thickness_local = zero(eltype(sample))
+    wet_mass_local = zero(eltype(sample))
+    solid_mass_local = zero(eltype(sample))
+    liquid_water_local = zero(eltype(sample))
+    for layer_index in 1:n
+        solid = mass[layer_index, idx]
+        liquid = mass_w[layer_index, idx]
+        rho = density[layer_index, idx]
+        solid_mass_local += solid
+        wet_mass_local += solid + liquid
+        liquid_water_local += liquid
+        if solid > zero(solid) && rho > EPS_TINY
+            thickness_local += solid / rho
+        end
+    end
+    bulk_density_local =
+        thickness_local > EPS_TINY ? solid_mass_local / thickness_local : zero(eltype(sample))
+    return thickness_local, wet_mass_local, bulk_density_local, liquid_water_local
+end
+
+@inline function _summary_buffers(domain::AbstractSnowpackDomain, names::NTuple{N,Symbol}) where {N}
+    NF = eltype(domain)
+    ncol = column_count(domain)
+    return NamedTuple{names}(ntuple(_ -> similar(domain.mass, NF, ncol), N))
+end
+
+@inline function _launch_summary_kernel!(kernel, domain::AbstractSnowpackDomain, args...)
+    kernel! = kernel(_ka_backend(domain.mass))
+    event = kernel!(args...; ndrange=column_count(domain))
+    _wait_kernel(event)
+    return nothing
+end
+
 """
     _summarize_domain_state_kernel!(...)
 
@@ -488,25 +552,11 @@ output arrays are mutated in-place.
 )
     idx = @index(Global)
     if idx <= length(N)
-        n = N[idx]
-        thickness_local = zero(eltype(thickness))
-        wet_mass_local = zero(eltype(wet_mass))
-        solid_mass_local = zero(eltype(wet_mass))
-        liquid_water_local = zero(eltype(liquid_water))
-        for layer_index in 1:n
-            solid = mass[layer_index, idx]
-            liquid = mass_w[layer_index, idx]
-            rho = density[layer_index, idx]
-            solid_mass_local += solid
-            wet_mass_local += solid + liquid
-            liquid_water_local += liquid
-            if solid > zero(solid) && rho > EPS_TINY
-                thickness_local += solid / rho
-            end
-        end
+        thickness_local, wet_mass_local, bulk_density_local, liquid_water_local =
+            _column_summary(N, mass, mass_w, density, idx, thickness)
         thickness[idx] = thickness_local
         wet_mass[idx] = wet_mass_local
-        bulk_density[idx] = thickness_local > EPS_TINY ? solid_mass_local / thickness_local : zero(eltype(bulk_density))
+        bulk_density[idx] = bulk_density_local
         base_mass[idx] = mass_base_state[idx]
         smb_ice[idx] = smb_ice_state[idx]
         liquid_water[idx] = liquid_water_local
@@ -534,23 +584,11 @@ in-place.
 )
     idx = @index(Global)
     if idx <= length(N)
-        n = N[idx]
-        thickness_local = zero(eltype(thickness))
-        wet_mass_local = zero(eltype(wet_mass))
-        solid_mass_local = zero(eltype(wet_mass))
-        for layer_index in 1:n
-            solid = mass[layer_index, idx]
-            liquid = mass_w[layer_index, idx]
-            rho = density[layer_index, idx]
-            solid_mass_local += solid
-            wet_mass_local += solid + liquid
-            if solid > zero(solid) && rho > EPS_TINY
-                thickness_local += solid / rho
-            end
-        end
+        thickness_local, wet_mass_local, bulk_density_local, _ =
+            _column_summary(N, mass, mass_w, density, idx, thickness)
         thickness[idx] = thickness_local
         wet_mass[idx] = wet_mass_local
-        bulk_density[idx] = thickness_local > EPS_TINY ? solid_mass_local / thickness_local : zero(eltype(bulk_density))
+        bulk_density[idx] = bulk_density_local
         base_mass[idx] = mass_base_state[idx]
     end
 end
@@ -571,8 +609,9 @@ function summarize_domain_state!(
     runoff::AbstractVector,
     domain::AbstractSnowpackDomain,
 )
-    kernel! = _summarize_domain_state_kernel!(_ka_backend(domain.mass))
-    event = kernel!(
+    return _launch_summary_kernel!(
+        _summarize_domain_state_kernel!,
+        domain,
         thickness,
         wet_mass,
         bulk_density,
@@ -586,11 +625,8 @@ function summarize_domain_state!(
         domain.density,
         domain.mass_base,
         domain.smb_ice,
-        domain.runoff;
-        ndrange=column_count(domain),
+        domain.runoff,
     )
-    _wait_kernel(event)
-    return nothing
 end
 
 """
@@ -600,35 +636,9 @@ Allocate and return a named tuple of per-column summary arrays for `domain`.
 This is a convenience wrapper around `summarize_domain_state!`.
 """
 function summarize_domain_state(domain::AbstractSnowpackDomain)
-    ncol = column_count(domain)
-    NF = eltype(domain)
-    allocate() = similar(domain.mass, NF, ncol)
-    thickness = allocate()
-    wet_mass = allocate()
-    bulk_density = allocate()
-    base_mass = allocate()
-    smb_ice = allocate()
-    liquid_water = allocate()
-    runoff = allocate()
-    summarize_domain_state!(
-        thickness,
-        wet_mass,
-        bulk_density,
-        base_mass,
-        smb_ice,
-        liquid_water,
-        runoff,
-        domain,
-    )
-    return (
-        thickness=thickness,
-        wet_mass=wet_mass,
-        bulk_density=bulk_density,
-        base_mass=base_mass,
-        smb_ice=smb_ice,
-        liquid_water=liquid_water,
-        runoff=runoff,
-    )
+    summary = _summary_buffers(domain, _DOMAIN_SUMMARY_FIELDS)
+    summarize_domain_state!(summary..., domain)
+    return summary
 end
 
 """
@@ -644,8 +654,9 @@ function summarize_cycle_state!(
     base_mass::AbstractVector,
     domain::AbstractSnowpackDomain,
 )
-    kernel! = _summarize_cycle_state_kernel!(_ka_backend(domain.mass))
-    event = kernel!(
+    return _launch_summary_kernel!(
+        _summarize_cycle_state_kernel!,
+        domain,
         thickness,
         wet_mass,
         bulk_density,
@@ -654,11 +665,8 @@ function summarize_cycle_state!(
         domain.mass,
         domain.mass_w,
         domain.density,
-        domain.mass_base;
-        ndrange=column_count(domain),
+        domain.mass_base,
     )
-    _wait_kernel(event)
-    return nothing
 end
 
 """
@@ -668,18 +676,7 @@ Allocate and return a named tuple of cycle-level summary arrays for `domain`.
 This is the allocating counterpart to `summarize_cycle_state!`.
 """
 function summarize_cycle_state(domain::AbstractSnowpackDomain)
-    ncol = column_count(domain)
-    NF = eltype(domain)
-    allocate() = similar(domain.mass, NF, ncol)
-    thickness = allocate()
-    wet_mass = allocate()
-    bulk_density = allocate()
-    base_mass = allocate()
-    summarize_cycle_state!(thickness, wet_mass, bulk_density, base_mass, domain)
-    return (
-        thickness=thickness,
-        wet_mass=wet_mass,
-        bulk_density=bulk_density,
-        base_mass=base_mass,
-    )
+    summary = _summary_buffers(domain, _CYCLE_SUMMARY_FIELDS)
+    summarize_cycle_state!(summary..., domain)
+    return summary
 end

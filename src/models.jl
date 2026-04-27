@@ -68,14 +68,18 @@ end
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6)
 
-Positive-degree-day model placeholder. Construction is supported; `run!` is
-not implemented yet.
+Bulk positive-degree-day surface mass-balance model. It stores per-column
+snowpack water equivalent, cumulative ice-sheet SMB, and runoff diagnostics.
 """
-struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
+mutable struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
     grid::G
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
+    snowpack_swe::Vector{Float64}
+    smb_ice::Vector{Float64}
+    runoff::Vector{Float64}
+    pdd_sum::Vector{Float64}
 end
 
 function PDDModel(
@@ -84,7 +88,20 @@ function PDDModel(
     ddf_ice::Real=8.0,
     refreezing_fraction::Real=0.6,
 )
-    return PDDModel(grid, Float64(ddf_snow), Float64(ddf_ice), Float64(refreezing_fraction))
+    ddf_snow > 0 || error("`ddf_snow` must be positive.")
+    ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")
+    0.0 <= refreezing_fraction <= 1.0 || error("`refreezing_fraction` must be between 0 and 1.")
+    ncol = ncols(grid)
+    return PDDModel(
+        grid,
+        Float64(ddf_snow),
+        Float64(ddf_ice),
+        Float64(refreezing_fraction),
+        zeros(Float64, ncol),
+        zeros(Float64, ncol),
+        zeros(Float64, ncol),
+        zeros(Float64, ncol),
+    )
 end
 
 """
