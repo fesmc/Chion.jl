@@ -86,15 +86,14 @@ include("processes/densification.jl")
 include("processes/percolation.jl")
 include("processes/refreezing.jl")
 include("dataloaders.jl")
+include("io.jl")
+include("convenience_types.jl")
+include("reporting.jl")
 include("models.jl")
+include("state.jl")
 include("processes/pdd.jl")
-include("output.jl")
+include("integrators.jl")
 include("simulation.jl")
-
-@inline _normalize_run_save(save) = begin
-    save === nothing && return Symbol[]
-    normalize_netcdf_variables(save)
-end
 
 # ---------------------------------------------------------------------------
 # Exports — public API
@@ -105,7 +104,8 @@ export SnowpackGrid, CPU, GPU
 
 # Models
 export BESSIModel, PDDModel, ITMModel
-export build_model
+export AbstractSnowModelState, BESSIState, PDDState, ITMState
+export build_model, initial_state
 export DynamicAlbedo, ConstantAlbedo
 export BESSIDensification, HTESSELDensification
 export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
@@ -115,7 +115,8 @@ export SnowpackForcing, SnowpackState
 
 # Simulation
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
-export run!
+export SimulationIntegrator
+export init_integrator, step!, run!, finalize!, finished, set_forcing!, state
 
 # Data loading
 export load_forcing_file

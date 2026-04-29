@@ -42,14 +42,14 @@ function _pdd_step_column!(
     return nothing
 end
 
-function pdd_step!(model::PDDModel, forcing::SnowpackForcing, time_index::Int)
+function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, time_index::Int)
     ncol = ncols(model.grid)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the PDD model column count.")
     pdd_step!(
-        model.snowpack_swe,
-        model.smb_ice,
-        model.runoff,
-        model.pdd_sum,
+        state.snowpack_swe,
+        state.smb_ice,
+        state.runoff,
+        state.pdd_sum,
         forcing,
         time_index,
         model.ddf_snow,
@@ -188,9 +188,9 @@ function pdd_step!(
     return nothing
 end
 
-function pdd_step!(model::PDDModel, forcing::SnowpackForcing)
+function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing)
     for time_index in 1:_step_time_count(forcing)
-        pdd_step!(model, forcing, time_index)
+        pdd_step!(model, state, forcing, time_index)
     end
     return nothing
 end

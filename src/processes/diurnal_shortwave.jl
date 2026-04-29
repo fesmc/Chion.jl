@@ -24,7 +24,7 @@ end
     _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
 
 Partition daily energy into melt-window and refreezing-window components for a
-simple dEBM-style diurnal cycle.
+simple dEBM-style diurnal variation.
 """
 function _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
     geometry = _debm_sunny_hours_q(latitude_deg, day_of_year, 0.0)

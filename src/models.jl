@@ -25,11 +25,19 @@ _fresh_snow_symbol(::ParameterizedFreshSnowDensity) = :parameterized
 """
     BESSIModel(grid; albedo=DynamicAlbedo(), densification=BESSIDensification(), ...)
 
-Layered snowpack model backed by the BESSI process implementation.
+Configuration for the layered BESSI snowpack model. Evolving state is stored in
+`BESSIState` and owned by `Simulation.now`.
 """
-struct BESSIModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
+struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel{G}
     grid::G
-    domain::SnowpackDomain
+    c::C
+    Ntot::Int
+    mass_max::Float64
+    mass_split::Float64
+    mass_min::Float64
+    rho_max::Float64
+    density_init::Float64
+    temperature_init::Float64
 end
 
 function BESSIModel(
@@ -41,6 +49,7 @@ function BESSIModel(
     mass_max::Real=DEFAULT_MASS_MAX,
     mass_split::Real=DEFAULT_MASS_SPLIT,
     mass_min::Real=DEFAULT_MASS_MIN,
+    rho_max::Real=DEFAULT_RHO_MAX,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
     kwargs...,
@@ -52,34 +61,30 @@ function BESSIModel(
         fresh_snow_density_scheme=_fresh_snow_symbol(fresh_snow_density),
         kwargs...,
     )
-    domain = SnowpackDomain(;
-        c=c,
-        Ntot=Ntot,
-        ncol=ncols(grid),
-        mass_max=mass_max,
-        mass_split=mass_split,
-        mass_min=mass_min,
-        density_init=density_init,
-        temperature_init=temperature_init,
+    return BESSIModel(
+        grid,
+        c,
+        Ntot,
+        Float64(mass_max),
+        Float64(mass_split),
+        Float64(mass_min),
+        Float64(rho_max),
+        Float64(density_init),
+        Float64(temperature_init),
     )
-    return BESSIModel(grid, domain)
 end
 
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6)
 
-Bulk positive-degree-day surface mass-balance model. It stores per-column
-snowpack water equivalent, cumulative ice-sheet SMB, and runoff diagnostics.
+Bulk positive-degree-day surface mass-balance model configuration. Evolving
+state is stored in `PDDState` and owned by `Simulation.now`.
 """
-mutable struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
+struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
     grid::G
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
-    snowpack_swe::Vector{Float64}
-    smb_ice::Vector{Float64}
-    runoff::Vector{Float64}
-    pdd_sum::Vector{Float64}
 end
 
 function PDDModel(
@@ -91,16 +96,11 @@ function PDDModel(
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
     ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")
     0.0 <= refreezing_fraction <= 1.0 || error("`refreezing_fraction` must be between 0 and 1.")
-    ncol = ncols(grid)
     return PDDModel(
         grid,
         Float64(ddf_snow),
         Float64(ddf_ice),
         Float64(refreezing_fraction),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
     )
 end
 

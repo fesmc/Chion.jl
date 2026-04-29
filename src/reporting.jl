@@ -1,18 +1,18 @@
-# Cycle history, run reports, and timing wrappers for Simulation runs.
+# Year history, run reports, and timing wrappers for Simulation runs.
 
 using Base.Threads: nthreads
 using TimerOutputs: TimerOutputs
 using Statistics: mean
 using CSV
 
-@inline completed_cycle_count(history::Vector{NamedTuple}, ::Symbol, cycles::Int) =
-    isempty(history) ? 0 : min(history[end].cycle, cycles)
+@inline completed_year_count(history::Vector{NamedTuple}, status::Symbol, years::Int) =
+    status === :complete ? years : isempty(history) ? 0 : min(history[end].year, years)
 
-@inline cycle_metrics_schedule_label(stride::Int) =
-    stride == 0 ? "final cycle only" : stride == 1 ? "every cycle" : "every $(stride) cycles + final"
+@inline year_metrics_schedule_label(stride::Int) =
+    stride == 0 ? "final year only" : stride == 1 ? "every year" : "every $(stride) years + final"
 
 const HISTORY_CSV_SPECS = (
-    (key=:cycle, label="cycle", integer=true),
+    (key=:year, label="year", integer=true),
     (key=:mean_thickness, label="mean_thickness_m", integer=false),
     (key=:mean_wet_mass, label="mean_wet_mass_mmwe", integer=false),
     (key=:mean_bulk_density, label="mean_bulk_density_kgm3", integer=false),
@@ -35,7 +35,7 @@ const SUMMARY_REPORT_SPECS = (
         ("Bulk density (kg m-3)", :mean_bulk_density),
         ("Firn-to-ice mass (mmWE)", :mean_base_mass),
     )),
-    (title="Last cycle deltas", fields=(
+    (title="Last year deltas", fields=(
         ("Mean signed dThickness (m)", :mean_signed_delta_thickness),
         ("Mean abs dThickness (m)", :mean_abs_delta_thickness),
         ("Max abs dThickness (m)", :max_abs_delta_thickness),
@@ -64,8 +64,8 @@ function _delta_stats(data)
     )
 end
 
-function make_cycle_record_and_deltas!(
-    cycle::Int,
+function make_year_record_and_deltas!(
+    year::Int,
     delta_thickness,
     delta_wet_mass,
     delta_base_mass,
@@ -84,7 +84,7 @@ function make_cycle_record_and_deltas!(
     dwet = _delta_stats(_host_vector(delta_wet_mass))
     dbase = _delta_stats(_host_vector(delta_base_mass))
     return (
-        cycle=cycle,
+        year=year,
         mean_thickness=_finite_mean(_host_vector(thickness)),
         mean_wet_mass=_finite_mean(_host_vector(wet_mass)),
         mean_bulk_density=_finite_mean(_host_vector(bulk_density)),
@@ -108,10 +108,10 @@ function _copy_summary_fields!(summary, device_summary, fields)
     return summary
 end
 
-function cycle_log_line(record)
+function year_log_line(record)
     return @sprintf(
-        "cycle=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",
-        record.cycle,
+        "year=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",
+        record.year,
         record.mean_thickness,
         record.mean_wet_mass,
         record.mean_base_mass,
@@ -139,7 +139,7 @@ function write_run_summary(
     status::Symbol,
     timings::StepTimingStats,
 )
-    last_record = history[end]
+    last_record = isempty(history) ? nothing : history[end]
     mkpath(dirname(out_path))
     open(out_path, "w") do io
         println(io, options.name)
@@ -152,18 +152,20 @@ function write_run_summary(
         println(io, "Threads            : ", nthreads())
         println(io, "File output        : ", options.write_outputs ? "enabled" : "disabled (--no-output)")
         println(io, "NetCDF output      : ", options.write_netcdf ? "enabled" : "disabled (--no-nc)")
-        println(io, "Cycle metrics      : ", cycle_metrics_schedule_label(options.history_stride))
+        println(io, "Year metrics       : ", year_metrics_schedule_label(options.history_year_stride))
         println(io, "Status             : ", string(status))
-        println(io, "Cycles completed   : ", completed_cycle_count(history, status, options.cycles))
-        for section in SUMMARY_REPORT_SPECS
-            println(io)
-            println(io, section.title)
-            for (label, key) in section.fields
-                println(io, @sprintf("%-28s : %.6f", label, getfield(last_record, key)))
+        println(io, "Years completed    : ", completed_year_count(history, status, options.years))
+        if last_record !== nothing
+            for section in SUMMARY_REPORT_SPECS
+                println(io)
+                println(io, section.title)
+                for (label, key) in section.fields
+                    println(io, @sprintf("%-28s : %.6f", label, getfield(last_record, key)))
+                end
             end
         end
         println(io)
-        println(io, "Interpretation     : Requested cycles completed.")
+        println(io, "Interpretation     : ", status === :complete ? "Requested years completed." : "Run finalized before all requested years completed.")
         println(io)
         print_timing_summary(io, timings)
     end
@@ -187,9 +189,9 @@ function print_run_report(
     println(io, "Forcing start   : $(first(time_values))")
     println(io, "Forcing end     : $(last(time_values))")
     println(io, "Backend         : ", String(options.backend))
-    println(io, "Cycles          : ", completed_cycle_count(history, status, options.cycles))
+    println(io, "Years           : ", completed_year_count(history, status, options.years))
     println(io, "Status          : ", string(status))
-    println(io, "Cycle metrics   : ", cycle_metrics_schedule_label(options.history_stride))
+    println(io, "Year metrics    : ", year_metrics_schedule_label(options.history_year_stride))
     println(io, @sprintf("Simulation wall : %.3f s", simulation_wall_sec))
     println(io, @sprintf("Run wall total  : %.3f s", run_wall_sec))
     haskey(timings.to.inner_timers, "model_step_wall") && println(io, @sprintf("Model step wall : %.3f s", TimerOutputs.time(timings.to.inner_timers["model_step_wall"]) * 1e-9))

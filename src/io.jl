@@ -7,10 +7,10 @@ const FINAL_OUTPUT_SPECS = (
     (key=:final_base_mass, source=:final_state, field=:base_mass),
     (key=:final_ice_sheet_smb, source=:domain, field=:smb_ice),
     (key=:final_runoff, source=:domain, field=:runoff),
-    (key=:last_cycle_delta_thickness, source=:deltas, field=:thickness),
-    (key=:last_cycle_delta_wet_mass, source=:deltas, field=:wet_mass),
-    (key=:last_cycle_delta_base_mass, source=:deltas, field=:base_mass),
-    (key=:last_cycle_delta_ice_sheet_smb, source=:deltas, field=:ice_sheet_smb),
+    (key=:last_year_delta_thickness, source=:deltas, field=:thickness),
+    (key=:last_year_delta_wet_mass, source=:deltas, field=:wet_mass),
+    (key=:last_year_delta_base_mass, source=:deltas, field=:base_mass),
+    (key=:last_year_delta_ice_sheet_smb, source=:deltas, field=:ice_sheet_smb),
 )
 
 const HISTORY_OUTPUT_SPECS = (
@@ -182,29 +182,6 @@ function _accumulate_step_diagnostics!(
     return
 end
 
-function _update_cycle_smb_delta!(last_delta::Vector{Float64}, previous_cycle_smb_ice::Vector{Float64}, domain)
-    current = _host_vector(domain.smb_ice; copy_array=true)
-    last_delta .= current .- previous_cycle_smb_ice
-    previous_cycle_smb_ice .= current
-    return
-end
-
-function _final_output_vector(spec, final_state, domain, deltas)
-    source = spec.source
-    values = source === :final_state ? getfield(final_state, spec.field) :
-        source === :domain ? getfield(domain, spec.field) :
-        source === :deltas ? getfield(deltas, spec.field) :
-        error("Unsupported final output source `$(source)`.")
-    return _host_vector(values; copy_array=true)
-end
-
-function _scatter_final_grids(final_state, domain, deltas, layout)
-    return NamedTuple{FINAL_GRID_KEYS}(ntuple(i -> begin
-        values = _final_output_vector(FINAL_OUTPUT_SPECS[i], final_state, domain, deltas)
-        scatter_to_grid(values, layout.js, layout.is, _grid_shape(layout))
-    end, length(FINAL_OUTPUT_SPECS)))
-end
-
 function _finalize_monthly_grids(monthly_sums, monthly_count::Vector{Int32}, layout)
     vectors = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(i -> begin
         spec = MONTHLY_OUTPUT_SPECS[i]
@@ -223,7 +200,7 @@ struct NetCDFWriter
     dataset::NCDataset
     vars::Dict{Symbol, Any}
     max_steps::Int
-    cycles::Int
+    years::Int
 end
 
 @inline _looks_like_directory_path(path::AbstractString) =
@@ -291,23 +268,23 @@ const NC_SPECS = (
     (key=:final_base_mass,        name="final_base_mass",        dims=("x", "y"),       long_name="Cumulative firn mass exported to the ice model", units="mmWE", integer=false),
     (key=:final_ice_sheet_smb,    name="final_ice_sheet_smb",    dims=("x", "y"),       long_name="Cumulative net mass forcing to the ice sheet", units="mmWE", integer=false),
     (key=:final_runoff,           name="final_runoff",           dims=("x", "y"),       long_name="Final cumulative runoff", units="mmWE", integer=false),
-    (key=:last_cycle_delta_thickness, name="last_cycle_delta_thickness", dims=("x", "y"), long_name="Last cycle snow-thickness change", units="m", integer=false),
-    (key=:last_cycle_delta_wet_mass,  name="last_cycle_delta_wet_mass",  dims=("x", "y"), long_name="Last cycle wet-mass change", units="mmWE", integer=false),
-    (key=:last_cycle_delta_base_mass, name="last_cycle_delta_base_mass", dims=("x", "y"), long_name="Last cycle firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:last_cycle_delta_ice_sheet_smb, name="last_cycle_delta_ice_sheet_smb", dims=("x", "y"), long_name="Last cycle net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:last_year_delta_thickness, name="last_year_delta_thickness", dims=("x", "y"), long_name="Last year snow-thickness change", units="m", integer=false),
+    (key=:last_year_delta_wet_mass,  name="last_year_delta_wet_mass",  dims=("x", "y"), long_name="Last year wet-mass change", units="mmWE", integer=false),
+    (key=:last_year_delta_base_mass, name="last_year_delta_base_mass", dims=("x", "y"), long_name="Last year firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:last_year_delta_ice_sheet_smb, name="last_year_delta_ice_sheet_smb", dims=("x", "y"), long_name="Last year net mass forcing to the ice sheet", units="mmWE", integer=false),
     (key=:n_active,               name="n_active",               dims=("x", "y"),       long_name="Number of active Chion layers", units="", integer=true),
     (key=:layer_density,         name="layer_density",         dims=("layer", "x", "y"), long_name="Final Chion layer density", units="kg m-3", integer=false),
     (key=:layer_thickness,       name="layer_thickness",       dims=("layer", "x", "y"), long_name="Final Chion layer thickness", units="m", integer=false),
     (key=:layer_snow_mass,       name="layer_snow_mass",       dims=("layer", "x", "y"), long_name="Final Chion layer snow mass", units="kg m-2", integer=false),
     (key=:layer_liquid_mass,     name="layer_liquid_mass",     dims=("layer", "x", "y"), long_name="Final Chion layer liquid-water mass", units="kg m-2", integer=false),
     (key=:layer_temperature_c,   name="layer_temperature_c",   dims=("layer", "x", "y"), long_name="Final Chion layer temperature", units="C", integer=false),
-    (key=:history_mean_thickness,      name="history_mean_thickness",      dims=("cycle",), long_name="Cycle-mean snow thickness", units="m", integer=false),
-    (key=:history_mean_wet_mass,       name="history_mean_wet_mass",       dims=("cycle",), long_name="Cycle-mean snow wet mass", units="mmWE", integer=false),
-    (key=:history_mean_bulk_density,   name="history_mean_bulk_density",   dims=("cycle",), long_name="Cycle-mean bulk snow density", units="kg m-3", integer=false),
-    (key=:history_mean_base_mass,      name="history_mean_base_mass",      dims=("cycle",), long_name="Cycle-mean firn mass exported to the ice model", units="mmWE", integer=false),
-    (key=:history_mean_abs_delta_thickness, name="history_mean_abs_delta_thickness", dims=("cycle",), long_name="Cycle mean absolute snow-thickness change", units="m", integer=false),
-    (key=:history_mean_abs_delta_wet_mass,  name="history_mean_abs_delta_wet_mass",  dims=("cycle",), long_name="Cycle mean absolute wet-mass change", units="mmWE", integer=false),
-    (key=:history_mean_abs_delta_base_mass, name="history_mean_abs_delta_base_mass", dims=("cycle",), long_name="Cycle mean absolute firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:history_mean_thickness,      name="history_mean_thickness",      dims=("year",), long_name="Year-mean snow thickness", units="m", integer=false),
+    (key=:history_mean_wet_mass,       name="history_mean_wet_mass",       dims=("year",), long_name="Year-mean snow wet mass", units="mmWE", integer=false),
+    (key=:history_mean_bulk_density,   name="history_mean_bulk_density",   dims=("year",), long_name="Year-mean bulk snow density", units="kg m-3", integer=false),
+    (key=:history_mean_base_mass,      name="history_mean_base_mass",      dims=("year",), long_name="Year-mean firn mass exported to the ice model", units="mmWE", integer=false),
+    (key=:history_mean_abs_delta_thickness, name="history_mean_abs_delta_thickness", dims=("year",), long_name="Year mean absolute snow-thickness change", units="m", integer=false),
+    (key=:history_mean_abs_delta_wet_mass,  name="history_mean_abs_delta_wet_mass",  dims=("year",), long_name="Year mean absolute wet-mass change", units="mmWE", integer=false),
+    (key=:history_mean_abs_delta_base_mass, name="history_mean_abs_delta_base_mass", dims=("year",), long_name="Year mean absolute firn mass exported to the ice model", units="mmWE", integer=false),
     (key=:monthly_mean_thickness,      name="monthly_mean_thickness",      dims=("month", "x", "y"), long_name="Monthly mean snow thickness", units="m", integer=false),
     (key=:monthly_mean_wet_mass,       name="monthly_mean_wet_mass",       dims=("month", "x", "y"), long_name="Monthly mean snow wet mass", units="mmWE", integer=false),
     (key=:monthly_mean_bulk_density,   name="monthly_mean_bulk_density",   dims=("month", "x", "y"), long_name="Monthly mean bulk snow density", units="kg m-3", integer=false),
@@ -337,7 +314,6 @@ function init_netcdf(
     nlayer::Int,
     layout::SnowpackGrid,
     initial_thickness::Matrix{Float64},
-    month_cycle::Vector{Int32},
     month_of_year::Vector{Int32},
     source_month_code::Vector{Int32},
     annual_output_source_indices::Vector{Int32},
@@ -346,14 +322,14 @@ function init_netcdf(
     mkpath(dirname(netcdf_path))
     isdir(netcdf_path) && error("NetCDF output path '$(abspath(netcdf_path))' is a directory; pass a file path ending in `.nc`.")
     ny, nx = _grid_shape(layout)
-    max_steps = options.cycles * length(annual_output_source_indices)
+    max_steps = options.years * length(annual_output_source_indices)
     selected = Set(options.netcdf_variables)
-    step_cycle = Int32[cyc for cyc in 1:options.cycles for _ in annual_output_source_indices]
-    step_source_index = Int32[idx for _ in 1:options.cycles for idx in annual_output_source_indices]
-    step_source_code = Int32[code for _ in 1:options.cycles for code in annual_output_source_codes]
+    step_year = Int32[yr for yr in 1:options.years for _ in annual_output_source_indices]
+    step_source_index = Int32[idx for _ in 1:options.years for idx in annual_output_source_indices]
+    step_source_code = Int32[code for _ in 1:options.years for code in annual_output_source_codes]
 
     ds = NCDataset(netcdf_path, "c")
-    for (name, len) in (("x", nx), ("y", ny), ("layer", max(nlayer, 1)), ("cycle", options.cycles), ("month", length(month_cycle)), ("point", length(layout.js)), ("step", max_steps))
+    for (name, len) in (("x", nx), ("y", ny), ("layer", max(nlayer, 1)), ("year", options.years), ("month", length(month_of_year)), ("point", length(layout.js)), ("step", max_steps))
         defDim(ds, name, len)
     end
 
@@ -361,9 +337,8 @@ function init_netcdf(
         (name="x", dims=("x",), meta=(key=:x, long_name="X coordinate", units="km", integer=false), value=layout.x),
         (name="y", dims=("y",), meta=(key=:y, long_name="Y coordinate", units="km", integer=false), value=layout.y),
         (name="layer", dims=("layer",), meta=(key=:layer, long_name="Chion internal layer index from surface downward", units="", integer=true), value=Int32.(collect(1:max(nlayer, 1)))),
-        (name="cycle", dims=("cycle",), meta=(key=:cycle, long_name="Repeated annual forcing cycle index", units="", integer=true), value=Int32.(collect(1:options.cycles))),
-        (name="month", dims=("month",), meta=(key=:month, long_name="Sequential monthly output index", units="", integer=true), value=Int32.(collect(1:length(month_cycle)))),
-        (name="month_cycle", dims=("month",), meta=(key=:month_cycle, long_name="Forcing cycle associated with monthly output", units="", integer=true), value=month_cycle),
+        (name="year", dims=("year",), meta=(key=:year, long_name="Repeated forcing year index", units="", integer=true), value=Int32.(collect(1:options.years))),
+        (name="month", dims=("month",), meta=(key=:month, long_name="Sequential monthly output index", units="", integer=true), value=Int32.(collect(1:length(month_of_year)))),
         (name="month_of_year", dims=("month",), meta=(key=:month_of_year, long_name="Calendar month of the repeated forcing", units="", integer=true), value=month_of_year),
         (name="source_month_code", dims=("month",), meta=(key=:source_month_code, long_name="Source forcing month code YYYYMM", units="", integer=true), value=source_month_code),
         (name="point", dims=("point",), meta=(key=:point, long_name="Compact valid cell index", units="", integer=true), value=Int32.(collect(1:length(layout.js)))),
@@ -371,8 +346,8 @@ function init_netcdf(
         (name="point_i", dims=("point",), meta=(key=:point_i, long_name="1-based x-index for each compact valid cell", units="", integer=true), value=Int32.(layout.is)),
         (name="point_y_km", dims=("point",), meta=(key=:point_y_km, long_name="Y coordinate for each compact valid cell", units="km", integer=false), value=layout.y[layout.js]),
         (name="point_x_km", dims=("point",), meta=(key=:point_x_km, long_name="X coordinate for each compact valid cell", units="km", integer=false), value=layout.x[layout.is]),
-        (name="step", dims=("step",), meta=(key=:step, long_name="Sequential yearly output index across repeated annual cycles", units="", integer=true), value=Int32.(collect(1:max_steps))),
-        (name="step_cycle", dims=("step",), meta=(key=:step_cycle, long_name="Repeated annual forcing cycle index for each yearly output", units="", integer=true), value=step_cycle),
+        (name="step", dims=("step",), meta=(key=:step, long_name="Sequential yearly output index across repeated years", units="", integer=true), value=Int32.(collect(1:max_steps))),
+        (name="step_year", dims=("step",), meta=(key=:step_year, long_name="Repeated forcing year index for each yearly output", units="", integer=true), value=step_year),
         (name="step_source_index", dims=("step",), meta=(key=:step_source_index, long_name="1-based index of the last forcing step included in each yearly output", units="", integer=true), value=step_source_index),
         (name="step_source_code", dims=("step",), meta=(key=:step_source_code, long_name="Source forcing timestamp code YYYYMMDDHH for the final step included in each yearly output", units="", integer=true), value=step_source_code),
         (name="domain_mask", dims=("x", "y"), meta=(key=:domain_mask, long_name="Domain mask", units="1", integer=false), value=Float32.(permutedims(layout.mask, (2, 1)))),
@@ -389,10 +364,10 @@ function init_netcdf(
     ds.attrib["input_label"] = isempty(options.input_label) ? "not provided" : options.input_label
     ds.attrib["forcing_start"] = string(first(time_values))
     ds.attrib["forcing_end"] = string(last(time_values))
-    ds.attrib["cycles_completed"] = "pending"
+    ds.attrib["years_completed"] = "pending"
     ds.attrib["status"] = "pending"
     ds.attrib["created"] = string(now())
-    return NetCDFWriter(ds, vars, max_steps, options.cycles)
+    return NetCDFWriter(ds, vars, max_steps, options.years)
 end
 
 @inline _write_dataset_var!(var, data::AbstractVector) = (var[:] = eltype(var) <: Integer ? data : Float32.(data))
@@ -404,10 +379,10 @@ maybe_write_step_output!(writer::NetCDFWriter, step_index::Int, key::Symbol, dat
 
 maybe_write_output!(writer::NetCDFWriter, key::Symbol, data) = (haskey(writer.vars, key) && (_write_dataset_var!(writer.vars[key], data); nothing))
 
-function _history_vectors(history::Vector{NamedTuple}, cycles::Int)
-    out = Dict(spec.key => fill(NaN, cycles) for spec in HISTORY_OUTPUT_SPECS)
+function _history_vectors(history::Vector{NamedTuple}, years::Int)
+    out = Dict(spec.key => fill(NaN, years) for spec in HISTORY_OUTPUT_SPECS)
     for rec in history, spec in HISTORY_OUTPUT_SPECS
-        out[spec.key][rec.cycle] = getfield(rec, spec.record)
+        out[spec.key][rec.year] = getfield(rec, spec.record)
     end
     return out
 end
@@ -426,12 +401,12 @@ function finalize_netcdf!(
     history::Vector{NamedTuple},
     monthly_grids,
     status::Symbol,
-    cycles_completed::Int,
+    years_completed::Int,
     steps_written::Int,
 )
     _write_output_group!(writer, FINAL_GRID_KEYS, final_grids)
     _write_output_group!(writer, LAYER_GRID_KEYS, layer_grids)
-    for (key, values) in _history_vectors(history, writer.cycles)
+    for (key, values) in _history_vectors(history, writer.years)
         maybe_write_output!(writer, key, values)
     end
     _write_output_group!(writer, MONTHLY_GRID_KEYS, monthly_grids)
@@ -440,19 +415,19 @@ function finalize_netcdf!(
         step_valid[1:steps_written] .= 1
         writer.vars[:step_valid][:] = step_valid
     end
-    writer.dataset.attrib["cycles_completed"] = string(cycles_completed)
+    writer.dataset.attrib["years_completed"] = string(years_completed)
     writer.dataset.attrib["status"] = string(status)
     writer.dataset.attrib["steps_written"] = string(steps_written)
     close(writer.dataset)
 end
 
-function _prepare_output_schedule(time_values::Vector{DateTime}, cycles::Int)
+function _prepare_output_schedule(time_values::Vector{DateTime}, years::Int)
     write_output = falses(length(time_values))
     output_slot = zeros(Int, length(time_values))
     source_indices = Int32[]
     source_codes = Int32[]
-    years = unique(year.(time_values))
-    for (slot, yr) in enumerate(years)
+    source_years = unique(year.(time_values))
+    for (slot, yr) in enumerate(source_years)
         last_t = findlast(t -> year(time_values[t]) == yr, eachindex(time_values))
         isnothing(last_t) && error("Could not determine the last timestep for source year $yr.")
         write_output[last_t] = true
@@ -464,12 +439,11 @@ function _prepare_output_schedule(time_values::Vector{DateTime}, cycles::Int)
     month_keys = unique((year(t), month(t)) for t in time_values)
     month_lookup = Dict(key => idx for (idx, key) in enumerate(month_keys))
     return (
-        annual_output=(write_output=write_output, output_slot=output_slot, source_indices=source_indices, source_codes=source_codes, years=years),
+        annual_output=(write_output=write_output, output_slot=output_slot, source_indices=source_indices, source_codes=source_codes, source_years=source_years),
         step_month=[month_lookup[(year(t), month(t))] for t in time_values],
-        nmonth_per_cycle=length(month_keys),
-        nmonth_total=cycles * length(month_keys),
-        month_cycle=Int32[cyc for cyc in 1:cycles for _ in month_keys],
-        month_of_year=Int32[key[2] for _ in 1:cycles for key in month_keys],
-        source_month_code=Int32[key[1] * 100 + key[2] for _ in 1:cycles for key in month_keys],
+        nmonth_per_year=length(month_keys),
+        nmonth_total=years * length(month_keys),
+        month_of_year=Int32[key[2] for _ in 1:years for key in month_keys],
+        source_month_code=Int32[key[1] * 100 + key[2] for _ in 1:years for key in month_keys],
     )
 end

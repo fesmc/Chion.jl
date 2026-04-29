@@ -490,7 +490,7 @@ Domain-wide summary helpers.
 
 const _DOMAIN_SUMMARY_FIELDS =
     (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff)
-const _CYCLE_SUMMARY_FIELDS = (:thickness, :wet_mass, :bulk_density, :base_mass)
+const _YEAR_SUMMARY_FIELDS = (:thickness, :wet_mass, :bulk_density, :base_mass)
 
 @inline function _column_summary(N, mass, mass_w, density, idx, sample)
     n = N[idx]
@@ -565,13 +565,13 @@ output arrays are mutated in-place.
 end
 
 """
-    _summarize_cycle_state_kernel!(...)
+    _summarize_year_state_kernel!(...)
 
 KernelAbstractions kernel that summarizes the subset of column diagnostics
-needed for equilibrium-cycle tracking. Mutates the supplied output arrays
+needed for equilibrium-year tracking. Mutates the supplied output arrays
 in-place.
 """
-@kernel function _summarize_cycle_state_kernel!(
+@kernel function _summarize_year_state_kernel!(
     thickness,
     wet_mass,
     bulk_density,
@@ -642,20 +642,20 @@ function summarize_domain_state(domain::AbstractSnowpackDomain)
 end
 
 """
-    summarize_cycle_state!(thickness, wet_mass, bulk_density, base_mass, domain)
+    summarize_year_state!(thickness, wet_mass, bulk_density, base_mass, domain)
 
 Fill preallocated arrays with the smaller summary set used to compare
-equilibrium cycles. Mutates the output arrays and returns `nothing`.
+equilibrium years. Mutates the output arrays and returns `nothing`.
 """
-function summarize_cycle_state!(
+function summarize_year_state!(
     thickness::AbstractVector,
     wet_mass::AbstractVector,
     bulk_density::AbstractVector,
-    base_mass::AbstractVector,
-    domain::AbstractSnowpackDomain,
+        base_mass::AbstractVector,
+        domain::AbstractSnowpackDomain,
 )
     return _launch_summary_kernel!(
-        _summarize_cycle_state_kernel!,
+        _summarize_year_state_kernel!,
         domain,
         thickness,
         wet_mass,
@@ -670,13 +670,13 @@ function summarize_cycle_state!(
 end
 
 """
-    summarize_cycle_state(domain)
+    summarize_year_state(domain)
 
-Allocate and return a named tuple of cycle-level summary arrays for `domain`.
-This is the allocating counterpart to `summarize_cycle_state!`.
+Allocate and return a named tuple of year-level summary arrays for `domain`.
+This is the allocating counterpart to `summarize_year_state!`.
 """
-function summarize_cycle_state(domain::AbstractSnowpackDomain)
-    summary = _summary_buffers(domain, _CYCLE_SUMMARY_FIELDS)
-    summarize_cycle_state!(summary..., domain)
+function summarize_year_state(domain::AbstractSnowpackDomain)
+    summary = _summary_buffers(domain, _YEAR_SUMMARY_FIELDS)
+    summarize_year_state!(summary..., domain)
     return summary
 end
