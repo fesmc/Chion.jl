@@ -150,7 +150,6 @@ function load_forcing_file(
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
     wind_default::Float64=5.0,
-    device=CPU(),
 )
     ds = NCDataset(path)
     try
@@ -207,7 +206,7 @@ function load_forcing_file(
 
         js = repeat(collect(1:ny), inner=nx)
         is = repeat(collect(1:nx), outer=ny)
-        grid = SnowpackGrid(device, nx * ny; x=x, y=y, js=js, is=is, mask=ones(ny, nx))
+        grid = SnowpackGrid(nx * ny; x=x, y=y, js=js, is=is, mask=ones(ny, nx))
         forcing = SnowpackForcing(
             time_values=time_values,
             dt_days=dt_days,

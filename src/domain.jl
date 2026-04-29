@@ -6,7 +6,6 @@ abstract type AbstractSnowpackGrid end
 abstract type AbstractSnowModel{G <: AbstractSnowpackGrid} end
 
 ncols(g::AbstractSnowpackGrid) = g.ncol
-grid(m::AbstractSnowModel) = m.grid
 
 """
     AbstractSnowpackDomain{NF}
@@ -56,8 +55,7 @@ function is a no-op for `nothing` and always returns `nothing`.
 end
 
 """Spatial discretization for a set of independent snowpack columns."""
-struct SnowpackGrid{DEV} <: AbstractSnowpackGrid
-    device::DEV
+struct SnowpackGrid <: AbstractSnowpackGrid
     ncol::Int
     x::Union{Nothing, Vector{Float64}}
     y::Union{Nothing, Vector{Float64}}
@@ -67,7 +65,6 @@ struct SnowpackGrid{DEV} <: AbstractSnowpackGrid
 end
 
 function SnowpackGrid(
-    device,
     ncol::Integer;
     x=nothing,
     y=nothing,
@@ -89,9 +86,9 @@ function SnowpackGrid(
         mask_m = isnothing(mask) ? ones(Float64, length(y_v), length(x_v)) : Matrix{Float64}(mask)
         size(mask_m, 1) == length(y_v) || error("`mask` y-dimension must match `y`.")
         size(mask_m, 2) == length(x_v) || error("`mask` x-dimension must match `x`.")
-        return SnowpackGrid(device, Int(ncol), x_v, y_v, js_v, is_v, mask_m)
+        return SnowpackGrid(Int(ncol), x_v, y_v, js_v, is_v, mask_m)
     end
-    return SnowpackGrid(device, Int(ncol), nothing, nothing, nothing, nothing, nothing)
+    return SnowpackGrid(Int(ncol), nothing, nothing, nothing, nothing, nothing)
 end
 
 has_spatial_coords(g::SnowpackGrid) =
@@ -321,35 +318,6 @@ end
 
 @adapt_structure SnowpackDomain
 
-"""Thin model-facing view of evolving snowpack state arrays."""
-struct SnowpackState{VT, MT, NI}
-    mass::MT
-    mass_w::MT
-    density::MT
-    temperature::MT
-    N::NI
-    surface_temperature::VT
-    albedo::VT
-    snow_cover::VT
-    runoff::VT
-    smb::VT
-end
-
-function SnowpackState(domain::SnowpackDomain)
-    return SnowpackState(
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.N,
-        domain.Tsrf,
-        domain.albedo_dynamic,
-        domain.snow_cover,
-        domain.runoff,
-        domain.smb_ice,
-    )
-end
-
 """
 State accessors and formatted state output.
 """
@@ -490,7 +458,6 @@ Domain-wide summary helpers.
 
 const _DOMAIN_SUMMARY_FIELDS =
     (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff)
-const _YEAR_SUMMARY_FIELDS = (:thickness, :wet_mass, :bulk_density, :base_mass)
 
 @inline function _column_summary(N, mass, mass_w, density, idx, sample)
     n = N[idx]
@@ -667,16 +634,4 @@ function summarize_year_state!(
         domain.density,
         domain.mass_base,
     )
-end
-
-"""
-    summarize_year_state(domain)
-
-Allocate and return a named tuple of year-level summary arrays for `domain`.
-This is the allocating counterpart to `summarize_year_state!`.
-"""
-function summarize_year_state(domain::AbstractSnowpackDomain)
-    summary = _summary_buffers(domain, _YEAR_SUMMARY_FIELDS)
-    summarize_year_state!(summary..., domain)
-    return summary
 end

@@ -204,25 +204,3 @@ function print_run_report(
     end
     print_timing_summary(io, timings; total_wall_sec=run_wall_sec)
 end
-function time_block!(stats, key::Symbol, f; synchronize=nothing)
-    synchronize === nothing || synchronize()
-    t0 = time_ns()
-    value = f()
-    synchronize === nothing || synchronize()
-    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
-    return value
-end
-
-time_block!(f, stats, key::Symbol; kwargs...) = time_block!(stats, key, f; kwargs...)
-
-function time_counted_block!(stats, key::Symbol, count::Int, f; synchronize=nothing)
-    synchronize === nothing || synchronize()
-    t0 = time_ns()
-    value = f()
-    synchronize === nothing || synchronize()
-    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9, count)
-    return value
-end
-
-time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
-    time_counted_block!(stats, key, count, f; kwargs...)

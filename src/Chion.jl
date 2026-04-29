@@ -10,69 +10,12 @@ using KernelAbstractions
 using ProgressMeter: Progress, next!
 
 # ---------------------------------------------------------------------------
-# Internal helpers shared by forcing and runtime code
-# ---------------------------------------------------------------------------
-
-@inline function _synthesized_time_values(dt_days::Vector{Float64})
-    base = DateTime(2000, 1, 1, 12)
-    out = Vector{DateTime}(undef, length(dt_days))
-    elapsed_ms = 0
-    for idx in eachindex(dt_days)
-        out[idx] = base + Dates.Millisecond(elapsed_ms)
-        elapsed_ms += round(Int, dt_days[idx] * 86_400_000)
-    end
-    return out
-end
-
-@inline function _ensure_matching_field_sizes(reference::Tuple{Int,Int}, name::AbstractString, field)
-    size(field) == reference || error("`$name` must have shape $(reference), got $(size(field)).")
-end
-
-@inline function _forcing_column_count(field, ntime::Int)
-    field isa Number && return 1
-    data = collect(field)
-    ndims(data) == 1 && return 1
-    ndims(data) == 2 || error("Forcing fields must be scalars, vectors, or matrices.")
-    size(data, 2) == ntime || error("Matrix forcing fields must have $ntime columns, got $(size(data, 2)).")
-    return size(data, 1)
-end
-
-@inline function _forcing_numeric_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
-    if field isa Number
-        return fill(Float64(field), ncol, ntime)
-    end
-    data = collect(field)
-    if ndims(data) == 1
-        length(data) == ntime || error("`$name` must have length $ntime.")
-        return repeat(reshape(Float64.(data), 1, ntime), ncol, 1)
-    elseif ndims(data) == 2
-        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
-        return Matrix{Float64}(data)
-    end
-    error("`$name` must be a scalar, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
-end
-
-@inline function _forcing_bool_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
-    if field isa Bool
-        return fill(field, ncol, ntime)
-    end
-    data = collect(field)
-    if ndims(data) == 1
-        length(data) == ntime || error("`$name` must have length $ntime.")
-        return repeat(reshape(Bool.(data), 1, ntime), ncol, 1)
-    elseif ndims(data) == 2
-        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
-        return Bool.(data)
-    end
-    error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
-end
-
-# ---------------------------------------------------------------------------
 # Core domain, forcing, and physics
 # ---------------------------------------------------------------------------
 include("constants.jl")
 include("domain.jl")
 include("forcing.jl")
+include("timing.jl")
 include("step.jl")
 include("column_state_utils.jl")
 include("processes/albedo.jl")
@@ -93,6 +36,9 @@ include("models.jl")
 include("state.jl")
 include("processes/pdd.jl")
 include("integrators.jl")
+include("runtime.jl")
+include("diagnostics.jl")
+include("output_runtime.jl")
 include("simulation.jl")
 
 # ---------------------------------------------------------------------------
@@ -100,7 +46,7 @@ include("simulation.jl")
 # ---------------------------------------------------------------------------
 
 # Grid
-export SnowpackGrid, CPU, GPU
+export SnowpackGrid
 
 # Models
 export BESSIModel, PDDModel, ITMModel
@@ -110,8 +56,8 @@ export DynamicAlbedo, ConstantAlbedo
 export BESSIDensification, HTESSELDensification
 export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
 
-# Forcing and state
-export SnowpackForcing, SnowpackState
+# Forcing
+export SnowpackForcing
 
 # Simulation
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
