@@ -29,6 +29,13 @@ function _apply_melt!(
         return zero(remaining_melt)
     end
 
+    surface_mass = _get_layer(mass, 1, idx)
+    if remaining_melt < surface_mass - EPS_EMPTY_LAYER
+        _set_layer!(mass, 1, idx, surface_mass - remaining_melt)
+        _set_layer!(mass_w, 1, idx, _get_layer(mass_w, 1, idx) + remaining_melt)
+        return remaining_melt
+    end
+
     melted_total = zero(remaining_melt)
     while remaining_melt > zero(remaining_melt) && _n_active(N_storage, idx) > 0
         layer_mass = _get_layer(mass, 1, idx)
