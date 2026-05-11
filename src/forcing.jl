@@ -71,6 +71,11 @@ end
 
 @adapt_structure SnowpackForcing
 
+@inline function forcing_step_kind(forcing::SnowpackForcing, time_index::Int)
+    dt = _step_dt(forcing.dt_days, time_index)
+    return 27.0 <= dt <= 32.0 ? :monthly : :scheduled
+end
+
 function SnowpackForcing(;
     dt_days,
     air_temperature=nothing,

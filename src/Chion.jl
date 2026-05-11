@@ -49,7 +49,7 @@ include("simulation.jl")
 export SnowpackGrid
 
 # Models
-export BESSIModel, PDDModel, ITMModel
+export BESSIModel, PDDModel, ITMModel, StochasticMonthlyPDD
 export AbstractSnowModelState, BESSIState, PDDState, ITMState
 export build_model, initial_state
 export DynamicAlbedo, ConstantAlbedo

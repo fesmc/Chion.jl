@@ -109,30 +109,55 @@ end
 
 function step_model!(model::PDDModel, ::PDDState, runtime, forcing::SnowpackForcing, time_index::Int)
     if runtime.snowpack_swe isa Vector{Float64}
-        pdd_step!(
-            runtime.snowpack_swe,
-            runtime.smb_ice,
-            runtime.runoff,
-            runtime.pdd_sum,
-            forcing,
-            time_index,
-            model.ddf_snow,
-            model.ddf_ice,
-            model.refreezing_fraction,
-            runtime.scratch,
-        )
+        if forcing_step_kind(forcing, time_index) === :monthly
+            pdd_monthly_step!(
+                runtime.snowpack_swe,
+                runtime.smb_ice,
+                runtime.runoff,
+                runtime.pdd_sum,
+                forcing,
+                time_index,
+                model,
+                runtime.scratch,
+            )
+        else
+            pdd_step!(
+                runtime.snowpack_swe,
+                runtime.smb_ice,
+                runtime.runoff,
+                runtime.pdd_sum,
+                forcing,
+                time_index,
+                model.ddf_snow,
+                model.ddf_ice,
+                model.refreezing_fraction,
+                runtime.scratch,
+            )
+        end
     else
-        pdd_step!(
-            runtime.snowpack_swe,
-            runtime.smb_ice,
-            runtime.runoff,
-            runtime.pdd_sum,
-            forcing,
-            time_index,
-            model.ddf_snow,
-            model.ddf_ice,
-            model.refreezing_fraction,
-        )
+        if forcing_step_kind(forcing, time_index) === :monthly
+            pdd_monthly_step!(
+                runtime.snowpack_swe,
+                runtime.smb_ice,
+                runtime.runoff,
+                runtime.pdd_sum,
+                forcing,
+                time_index,
+                model,
+            )
+        else
+            pdd_step!(
+                runtime.snowpack_swe,
+                runtime.smb_ice,
+                runtime.runoff,
+                runtime.pdd_sum,
+                forcing,
+                time_index,
+                model.ddf_snow,
+                model.ddf_ice,
+                model.refreezing_fraction,
+            )
+        end
     end
     return nothing
 end

@@ -74,17 +74,31 @@ function BESSIModel(
     )
 end
 
+"""PISM-style expectation-integral monthly PDD parameterization."""
+struct StochasticMonthlyPDD
+    temperature_sigma::Float64
+end
+
+function StochasticMonthlyPDD(; temperature_sigma::Real=5.0)
+    temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
+    return StochasticMonthlyPDD(Float64(temperature_sigma))
+end
+
 """
-    PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6)
+    PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6,
+             monthly_method=StochasticMonthlyPDD())
 
 Bulk positive-degree-day surface mass-balance model configuration. Evolving
-state is stored in `PDDState` and owned by `Simulation.now`.
+state is stored in `PDDState` and owned by `Simulation.now`. Monthly forcing
+steps use a PISM-style expectation integral with normally-distributed
+unresolved temperature variability.
 """
 struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
     grid::G
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
+    monthly_method::StochasticMonthlyPDD
 end
 
 function PDDModel(
@@ -92,17 +106,21 @@ function PDDModel(
     ddf_snow::Real=3.0,
     ddf_ice::Real=8.0,
     refreezing_fraction::Real=0.6,
+    monthly_method::StochasticMonthlyPDD=StochasticMonthlyPDD(),
 )
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
     ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")
     0.0 <= refreezing_fraction <= 1.0 || error("`refreezing_fraction` must be between 0 and 1.")
+
     return PDDModel(
         grid,
         Float64(ddf_snow),
         Float64(ddf_ice),
         Float64(refreezing_fraction),
+        monthly_method,
     )
 end
+
 
 """
     ITMModel(grid; c_rad=0.513, c_temp=0.362, T_melt=0.0, refreezing_fraction=0.6)
