@@ -184,12 +184,11 @@ Core stepping flow shared by batch stepping kernels.
 """
 
 """
-    _step_state_resolved!(..., forcing, workspace, update_snow_cover=true; timings=nothing)
+    _step_state_resolved!(..., forcing, workspace, update_snow_cover=true)
 
 Advance one snowpack column by one forcing step using already-resolved arrays,
 constants, and scratch storage. This mutates the supplied state arrays
-in-place, may update runoff and SMB diagnostics, and optionally records stage
-timings.
+in-place and may update runoff and SMB diagnostics.
 """
 function _step_state_resolved!(
     N_storage,
@@ -211,38 +210,35 @@ function _step_state_resolved!(
     mass_min,
     forcing::SnowpackStepForcing,
     workspace,
-    update_snow_cover::Bool=true;
-    timings=nothing,
+    update_snow_cover::Bool=true,
 )
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
 
-    _time_block!(timings, :accumulation) do
-        _apply_accumulation!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            temperature,
-            mass_base,
-            smb_ice,
-            runoff,
-            Tsrf,
-            snow_cover,
-            albedo_dynamic,
-            idx,
-            c,
-            Ntot,
-            mass_max,
-            mass_split,
-            mass_min,
-            forcing.snowfall_rate,
-            forcing.rainfall_rate,
-            dt_seconds;
-            air_temperature=forcing.air_temperature,
-            wind_speed=forcing.wind_speed,
-        )
-    end
+    _apply_accumulation!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        temperature,
+        mass_base,
+        smb_ice,
+        runoff,
+        Tsrf,
+        snow_cover,
+        albedo_dynamic,
+        idx,
+        c,
+        Ntot,
+        mass_max,
+        mass_split,
+        mass_min,
+        forcing.snowfall_rate,
+        forcing.rainfall_rate,
+        dt_seconds;
+        air_temperature=forcing.air_temperature,
+        wind_speed=forcing.wind_speed,
+    )
 
     if forcing.snowfall_rate > zero(dt_seconds) &&
        started_without_surface_snow &&
@@ -252,19 +248,16 @@ function _step_state_resolved!(
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
-        _time_call!(timings, :surface_albedo, _set_scalar!, albedo_dynamic, idx, c.alpha_ice)
-        bare_ice_ablation = _time_call!(timings, :bare_ice_ablation, _bare_ice_ablation_mass, c, forcing, dt_seconds)
+        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        bare_ice_ablation = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         if update_snow_cover
-            _time_call!(timings, :snow_cover, _update_snow_cover_arrays!, N_storage, mass, mass_w, density, snow_cover, idx)
+            _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
         end
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - bare_ice_ablation)
         return nothing
     end
 
-    _time_call!(
-        timings,
-        :surface_albedo,
-        _update_surface_albedo_arrays!,
+    _update_surface_albedo_arrays!(
         N_storage,
         mass,
         mass_w,
@@ -290,10 +283,7 @@ function _step_state_resolved!(
 
     accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) +
                         (has_surface_snow ? forcing.rainfall_rate : zero(dt_seconds))
-    _time_call!(
-        timings,
-        :densification,
-        _go_densification!,
+    _go_densification!(
         N_storage,
         mass,
         density,
@@ -311,10 +301,7 @@ function _step_state_resolved!(
         forcing.snowfall_rate,
         forcing.rainfall_rate,
     )
-    energy = _time_call!(
-        timings,
-        :energy_flux,
-        _go_energy_flux_resolved!,
+    energy = _go_energy_flux_resolved!(
         N_storage,
         mass,
         mass_w,
@@ -330,7 +317,6 @@ function _step_state_resolved!(
         latent_heat_linear,
         latent_heat_constant,
         dt_seconds,
-        1,
         forcing.has_q_sw_net,
         forcing.q_sw_net,
         forcing.has_q_lw_down,
@@ -379,10 +365,7 @@ function _step_state_resolved!(
 
     if energy.needs_melt || extra_melt_energy > zero(dt_seconds)
         melt_mass = (energy.melt_energy_available + extra_melt_energy) / c.Lm
-        melted_snow = _time_call!(
-            timings,
-            :melt,
-            _apply_melt!,
+        melted_snow = _apply_melt!(
             N_storage,
             mass,
             mass_w,
@@ -404,10 +387,7 @@ function _step_state_resolved!(
 
     has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     if has_liquid_water
-        routed_runoff = _time_call!(
-            timings,
-            :percolation,
-            _go_percolation!,
+        routed_runoff = _go_percolation!(
             N_storage,
             mass,
             mass_w,
@@ -423,10 +403,7 @@ function _step_state_resolved!(
     if _uses_htessel_densification(c) &&
        n_liquid_water_before_energy > 0 &&
        has_liquid_water
-        _time_call!(
-            timings,
-            :liquid_water_compaction,
-            _apply_htessel_liquid_water_compaction!,
+        _apply_htessel_liquid_water_compaction!(
             N_storage,
             mass,
             mass_w,
@@ -438,10 +415,7 @@ function _step_state_resolved!(
     end
 
     if has_liquid_water
-        _time_call!(
-            timings,
-            :refreezing,
-            _go_refreezing!,
+        _go_refreezing!(
             N_storage,
             mass_w,
             mass,
@@ -456,7 +430,7 @@ function _step_state_resolved!(
     end
 
     if update_snow_cover
-        _time_call!(timings, :snow_cover, _update_snow_cover_arrays!, N_storage, mass, mass_w, density, snow_cover, idx)
+        _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
     end
     if !_surface_has_snow(N_storage, mass, idx)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
