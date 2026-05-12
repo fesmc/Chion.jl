@@ -434,12 +434,12 @@ function _free_slot_for_surface_split!(
 end
 
 """
-    _enforce_mass_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, dt_seconds, c)
+    _enforce_snow_depth_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, dt_seconds, c)
 
-Apply the column mass-cap rule after accumulation, removing excess basal mass
-when the active solid mass exceeds the configured cap.
+Apply the column depth-cap rule after accumulation, removing excess basal mass
+when the active solid snow depth exceeds the configured cap.
 """
-function _enforce_mass_cap!(
+function _enforce_snow_depth_cap!(
     N_storage,
     mass,
     mass_w,
@@ -456,37 +456,43 @@ function _enforce_mass_cap!(
     dt_seconds,
     c::SnowpackPhysicalConstants,
 )
-    total_active_solid_mass = zero(eltype(mass))
+    total_active_snow_depth = zero(eltype(mass))
     @inbounds for layer_index in 1:_n_active(N_storage, idx)
-        total_active_solid_mass += _get_layer(mass, layer_index, idx)
-    end
-
-    if Ntot <= 3
-        mass_cap = oftype(total_active_solid_mass, 1.5) * mass_split
-        excess = total_active_solid_mass - mass_cap
-        if excess > zero(excess)
-            _continuous_bottom_deplete!(
-                N_storage,
-                mass,
-                mass_w,
-                density,
-                temperature,
-                mass_base,
-                smb_ice,
-                runoff,
-                Tsrf,
-                albedo_dynamic,
-                idx,
-                excess,
-                c,
-            )
+        layer_mass = _get_layer(mass, layer_index, idx)
+        layer_density = _get_layer(density, layer_index, idx)
+        if layer_mass > zero(layer_mass) && layer_density > EPS_TINY
+            total_active_snow_depth += layer_mass / layer_density
         end
-        return nothing
     end
 
-    reference_column_mass_cap = BESSI_REFERENCE_LAYER_COUNT * mass_split * oftype(mass_split, 1.5)
-    excess_basal_mass = total_active_solid_mass - reference_column_mass_cap
-    if excess_basal_mass > zero(excess_basal_mass)
+    reference_depth = BESSI_REFERENCE_LAYER_COUNT *
+                      mass_split *
+                      oftype(mass_split, 1.5) /
+                      oftype(mass_split, BESSI_REFERENCE_DEPTH_DENSITY)
+    excess_depth = total_active_snow_depth - reference_depth
+    if excess_depth > zero(excess_depth)
+        excess_basal_mass = zero(eltype(mass))
+        remaining_excess_depth = excess_depth
+        @inbounds for layer_index in _n_active(N_storage, idx):-1:1
+            layer_mass = _get_layer(mass, layer_index, idx)
+            layer_density = _get_layer(density, layer_index, idx)
+            if layer_mass <= zero(layer_mass)
+                continue
+            elseif layer_density <= EPS_TINY
+                excess_basal_mass += layer_mass
+                continue
+            end
+
+            layer_depth = layer_mass / layer_density
+            if layer_depth > remaining_excess_depth
+                excess_basal_mass += remaining_excess_depth * layer_density
+                break
+            end
+
+            excess_basal_mass += layer_mass
+            remaining_excess_depth -= layer_depth
+        end
+
         _continuous_bottom_deplete!(
             N_storage,
             mass,

@@ -135,7 +135,7 @@ function _apply_accumulation!(
         _merge_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, Ntot, mass_split, mass_min, c)
     end
 
-    _enforce_mass_cap!(
+    _enforce_snow_depth_cap!(
         N_storage,
         mass,
         mass_w,

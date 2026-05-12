@@ -19,7 +19,7 @@ const DEFAULT_SECONDS_PER_YEAR = DEFAULT_SECONDS_PER_MONTH * 12.0
 # ---------------------------------------------------------------------------
 # Snowpack column defaults
 # ---------------------------------------------------------------------------
-const DEFAULT_NTOT = 15
+const DEFAULT_NTOT = 2
 const DEFAULT_N_ACTIVE = 0
 const DEFAULT_MASS_MAX = 500.0
 const DEFAULT_MASS_SPLIT = 300.0
@@ -28,8 +28,9 @@ const DEFAULT_RHO_MAX = 900.0
 const DEFAULT_DENSITY_INIT = 300.0
 const DEFAULT_TEMPERATURE_INIT = 273.0
 
-# Legacy BESSI reference uses a 15-layer column when capping total column mass.
+# Legacy BESSI reference uses a 15-layer column when capping total column depth.
 const BESSI_REFERENCE_LAYER_COUNT = 15
+const BESSI_REFERENCE_DEPTH_DENSITY = 300.0
 
 # ---------------------------------------------------------------------------
 # Scheme flag constants
