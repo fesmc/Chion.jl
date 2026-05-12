@@ -2,7 +2,7 @@ module ChionExampleScriptHelpers
 
 using Chion
 
-export arg_value, has_flag
+export arg_value, env_value, has_flag
 export _albedo_scheme, _densification_scheme, _fresh_snow_scheme
 
 function arg_value(args::Vector{String}, name::String, default::String="")
@@ -11,6 +11,11 @@ function arg_value(args::Vector{String}, name::String, default::String="")
         startswith(arg, prefix) && return arg[length(prefix)+1:end]
     end
     return default
+end
+
+function env_value(name::String, default::String="")
+    value = get(ENV, name, "")
+    return isempty(value) ? default : value
 end
 
 has_flag(args::Vector{String}, name::String) = any(==("--" * name), args)
