@@ -32,47 +32,8 @@ from above. Mutates `temperature_profile` in-place and returns it.
     return temperature_profile
 end
 
-"""
-    _snow_thermal_conductivity(ρ, Kᵢ, diffusion_model)
-
-Evaluate one of the supported snow thermal-conductivity parameterizations for
-density `ρ`.
-"""
-function _snow_thermal_conductivity(ρ, Kᵢ, diffusion_model::Int)
-    if diffusion_model == 1
-        return Kᵢ * (ρ / oftype(ρ, 1000.0))^oftype(ρ, 1.88)
-    elseif diffusion_model == 2
-        if ρ > oftype(ρ, 156.0)
-            return oftype(ρ, 0.138) - oftype(ρ, 1.01e-3) * ρ + oftype(ρ, 3.233e-6) * ρ^2
-        else
-            return oftype(ρ, 0.023) + oftype(ρ, 0.234e-3) * ρ
-        end
-    else
-        return oftype(ρ, 2.1e-2) + oftype(ρ, 4.2e-4) * ρ + oftype(ρ, 2.2e-9) * ρ^3
-    end
-end
-
-@inline _snow_thermal_conductivity_model1(ρ, Kᵢ) =
+@inline _snow_thermal_conductivity(ρ, Kᵢ) =
     Kᵢ * (ρ * oftype(ρ, 1.0e-3))^oftype(ρ, 1.88)
-
-"""
-    _snow_thermal_conductivity_model2(ρ)
-
-Evaluate the Sturm-style piecewise thermal-conductivity parameterization.
-"""
-@inline function _snow_thermal_conductivity_model2(ρ)
-    if ρ > oftype(ρ, 156.0)
-        return oftype(ρ, 0.138) - oftype(ρ, 1.01e-3) * ρ + oftype(ρ, 3.233e-6) * ρ^2
-    end
-    return oftype(ρ, 0.023) + oftype(ρ, 0.234e-3) * ρ
-end
-
-@inline _snow_thermal_conductivity_model3(ρ) =
-    oftype(ρ, 2.1e-2) + oftype(ρ, 4.2e-4) * ρ + oftype(ρ, 2.2e-9) * ρ^3
-
-@inline _conductivity_for_model(::Val{1}, ρ, Ki) = _snow_thermal_conductivity_model1(ρ, Ki)
-@inline _conductivity_for_model(::Val{2}, ρ, Ki) = _snow_thermal_conductivity_model2(ρ)
-@inline _conductivity_for_model(::Val{M}, ρ, Ki) where {M} = _snow_thermal_conductivity_model3(ρ)
 
 """
     shortwave_absorbed(shortwave_down; surface_albedo)
@@ -255,7 +216,7 @@ Return `true` when column `idx` has a nonempty surface snow layer.
 end
 
 """
-    _go_energy_flux_resolved!(..., scratch, air_temperature, shortwave_down, latent_heat_linear_coefficient_eff, latent_heat_constant_term_eff, dt_seconds, resolved_diffusion_model, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+    _go_energy_flux_resolved!(..., scratch, air_temperature, shortwave_down, latent_heat_linear_coefficient_eff, latent_heat_constant_term_eff, dt_seconds, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
 
 Advance the temperature profile of column `idx` over one time step by solving
 the surface energy balance and vertical heat diffusion problem. Mutates
@@ -278,7 +239,6 @@ function _go_energy_flux_resolved!(
     latent_heat_linear_coefficient_eff,
     latent_heat_constant_term_eff,
     dt_seconds,
-    resolved_diffusion_model::Val{M},
     use_q_sw_net::Bool,
     q_sw_net_value,
     use_q_lw_down::Bool,
@@ -287,7 +247,7 @@ function _go_energy_flux_resolved!(
     q_sh_value,
     use_q_lh::Bool,
     q_lh_value,
-) where {M}
+)
     n_layers = _n_active(N_storage, idx)
     if n_layers <= 0 || _get_layer(mass, 1, idx) <= zero(eltype(mass))
         return _energy_flux_result(
@@ -307,22 +267,9 @@ function _go_energy_flux_resolved!(
     upper = scratch.upper
     rhs = scratch.rhs
     interface_terms = scratch.interface_conductance
-    previous_temperature = scratch.previous_temperature
-    layer_thickness = scratch.layer_thickness
-    thermal_conductivity = scratch.thermal_conductivity
-
-    @inbounds for layer_index in 1:n_layers
-        layer_density = _get_layer(density, layer_index, idx)
-        layer_mass = _get_layer(mass, layer_index, idx)
-        layer_temperature = _get_layer(temperature, layer_index, idx)
-        _set_layer!(previous_temperature, layer_index, idx, layer_temperature)
-        _set_layer!(rhs, layer_index, idx, layer_temperature)
-        _set_layer!(layer_thickness, layer_index, idx, layer_mass / _safe_positive(layer_density))
-        _set_layer!(thermal_conductivity, layer_index, idx, _conductivity_for_model(resolved_diffusion_model, layer_density, c.Ki))
-    end
-
+    solver_diag = scratch.previous_temperature
     surface_mass = _safe_positive(_get_layer(mass, 1, idx))
-    previous_surface_temperature = _get_layer(previous_temperature, 1, idx)
+    previous_surface_temperature = _get_layer(temperature, 1, idx)
     surface_temperature_scale = dt_seconds / c.ci / surface_mass
     surface_temperature_sq = previous_surface_temperature * previous_surface_temperature
     surface_temperature_cube = surface_temperature_sq * previous_surface_temperature
@@ -383,14 +330,29 @@ function _go_energy_flux_resolved!(
         )
     end
 
-    @inbounds for layer_index in 1:(n_layers - 1)
-        interface_term = interface_conductance(
-            _get_layer(thermal_conductivity, layer_index, idx),
-            _get_layer(layer_thickness, layer_index, idx),
-            _get_layer(thermal_conductivity, layer_index + 1, idx),
-            _get_layer(layer_thickness, layer_index + 1, idx),
+    previous_layer_density = _get_layer(density, 1, idx)
+    previous_layer_thickness = surface_mass / _safe_positive(previous_layer_density)
+    previous_layer_conductivity = _snow_thermal_conductivity(previous_layer_density, c.Ki)
+    _set_layer!(rhs, 1, idx, previous_surface_temperature + surface_rhs_term)
+
+    @inbounds for layer_index in 2:n_layers
+        layer_density = _get_layer(density, layer_index, idx)
+        layer_thickness = _get_layer(mass, layer_index, idx) / _safe_positive(layer_density)
+        layer_conductivity = _snow_thermal_conductivity(layer_density, c.Ki)
+        _set_layer!(
+            interface_terms,
+            layer_index - 1,
+            idx,
+            interface_conductance(
+                previous_layer_conductivity,
+                previous_layer_thickness,
+                layer_conductivity,
+                layer_thickness,
+            ),
         )
-        _set_layer!(interface_terms, layer_index, idx, interface_term)
+        _set_layer!(rhs, layer_index, idx, _get_layer(temperature, layer_index, idx))
+        previous_layer_thickness = layer_thickness
+        previous_layer_conductivity = layer_conductivity
     end
 
     β_scale = -oftype(dt_seconds, 2.0) * dt_seconds / c.ci
@@ -415,37 +377,21 @@ function _go_energy_flux_resolved!(
         )
     end
 
-    _set_layer!(rhs, 1, idx, previous_surface_temperature + surface_rhs_term)
-    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, idx, n_layers)
+    _copy_column!(solver_diag, diag, idx, n_layers)
+    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
 
     if _get_layer(resolved_temperature, 1, idx) > c.T0
         needs_melt = true
         energy_to_melting = (c.T0 - previous_surface_temperature) * c.ci * surface_mass
 
-        β_scale = -oftype(dt_seconds, 2.0) * dt_seconds / c.ci
-        β1 = β_scale / _safe_positive(_get_layer(mass, 1, idx))
-        _set_layer!(upper, 1, idx, β1 * _get_layer(interface_terms, 1, idx))
-        _set_layer!(diag, 1, idx, one(dt_seconds) - _get_layer(upper, 1, idx))
-        βn = β_scale / _safe_positive(_get_layer(mass, n_layers, idx))
-        _set_layer!(lower, n_layers - 1, idx, βn * _get_layer(interface_terms, n_layers - 1, idx))
-        _set_layer!(diag, n_layers, idx, one(dt_seconds) - _get_layer(lower, n_layers - 1, idx))
-        @inbounds for layer_index in 2:(n_layers - 1)
-            βi = β_scale / _safe_positive(_get_layer(mass, layer_index, idx))
-            _set_layer!(lower, layer_index - 1, idx, βi * _get_layer(interface_terms, layer_index - 1, idx))
-            _set_layer!(upper, layer_index, idx, βi * _get_layer(interface_terms, layer_index, idx))
-            _set_layer!(
-                diag,
-                layer_index,
-                idx,
-                one(dt_seconds) - _get_layer(lower, layer_index - 1, idx) - _get_layer(upper, layer_index, idx),
-            )
-        end
         @inbounds for layer_index in 1:n_layers
-            _set_layer!(rhs, layer_index, idx, _get_layer(previous_temperature, layer_index, idx))
+            _set_layer!(rhs, layer_index, idx, _get_layer(temperature, layer_index, idx))
         end
         _set_layer!(rhs, 1, idx, c.T0)
+        _copy_column!(solver_diag, diag, idx, n_layers)
+        _set_layer!(solver_diag, 1, idx, _get_layer(solver_diag, 1, idx) - surface_diag_term)
 
-        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, idx, n_layers)
+        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
         energy_to_melting += (c.T0 - _get_layer(resolved_temperature, 1, idx)) * c.ci * surface_mass
         _set_layer!(resolved_temperature, 1, idx, c.T0)
         _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
@@ -481,7 +427,7 @@ function _go_energy_flux_resolved!(
 end
 
 """
-    go_energy_flux!(domain, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch=EnergyWorkspace(domain), diffusion_model=2, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
+    go_energy_flux!(domain, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
 
 Public wrapper for the column energy-flux solve on `domain`. Reuses `scratch`
 for temporary arrays and returns the same diagnostic named tuple as
@@ -495,8 +441,7 @@ function go_energy_flux!(
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
     dt_seconds;
-    scratch=EnergyWorkspace(domain),
-    diffusion_model::Int=2,
+    scratch,
     q_sw_net=nothing,
     q_lw_down=nothing,
     q_sh=nothing,
@@ -518,7 +463,6 @@ function go_energy_flux!(
         latent_heat_linear_coefficient,
         latent_heat_constant_term,
         dt_seconds,
-        Val(diffusion_model),
         !isnothing(q_sw_net),
         isnothing(q_sw_net) ? zero(dt_seconds) : q_sw_net,
         !isnothing(q_lw_down),
