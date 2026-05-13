@@ -38,6 +38,10 @@ struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: 
     rho_max::Float64
     density_init::Float64
     temperature_init::Float64
+    diurnal_shortwave_substeps::Bool
+    diurnal_shortwave_threshold::Float64
+    diurnal_shortwave_max_substeps::Int
+    diurnal_shortwave_min_air_temperature::Float64
 end
 
 function BESSIModel(
@@ -52,8 +56,17 @@ function BESSIModel(
     rho_max::Real=DEFAULT_RHO_MAX,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
+    diurnal_shortwave::Bool=false,
+    diurnal_shortwave_substeps::Bool=false,
+    diurnal_shortwave_threshold::Real=0.0,
+    diurnal_shortwave_max_substeps::Integer=3,
+    diurnal_shortwave_min_air_temperature_c::Real=-8.0,
     kwargs...,
 )
+    diurnal_shortwave_threshold >= 0 || error("`diurnal_shortwave_threshold` must be non-negative.")
+    1 <= diurnal_shortwave_max_substeps <= 24 || error("`diurnal_shortwave_max_substeps` must be between 1 and 24.")
+    isfinite(diurnal_shortwave_min_air_temperature_c) || error("`diurnal_shortwave_min_air_temperature_c` must be finite.")
+    resolved_diurnal_shortwave_substeps = diurnal_shortwave_substeps || diurnal_shortwave
     c = SnowpackPhysicalConstants(
         Float64;
         albedo_scheme=_albedo_symbol(albedo),
@@ -71,6 +84,10 @@ function BESSIModel(
         Float64(rho_max),
         Float64(density_init),
         Float64(temperature_init),
+        resolved_diurnal_shortwave_substeps,
+        Float64(diurnal_shortwave_threshold),
+        Int(diurnal_shortwave_max_substeps),
+        Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
     )
 end
 

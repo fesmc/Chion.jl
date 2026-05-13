@@ -119,6 +119,26 @@ function _column_matrix(field::Array{Float64, 3})
     return reshape(permutedims(field, (3, 2, 1)), nx * ny, ntime)
 end
 
+function _as_y_x(data, dim_names::Tuple, ny::Int, nx::Int, name::AbstractString)
+    A = Float64.(data)
+    ndims(A) == 2 || error("`$name` must be a 2-D latitude/coordinate field, got shape $(size(A)).")
+    lower_names = lowercase.(String.(dim_names))
+    ydim = findfirst(==("y"), lower_names)
+    xdim = findfirst(==("x"), lower_names)
+    if !isnothing(ydim) && !isnothing(xdim)
+        size(A, ydim) == ny || error("`$name` y dimension must have length $ny, got $(size(A, ydim)).")
+        size(A, xdim) == nx || error("`$name` x dimension must have length $nx, got $(size(A, xdim)).")
+        return permutedims(A, (ydim, xdim))
+    elseif size(A) == (ny, nx)
+        return A
+    elseif size(A) == (nx, ny)
+        return permutedims(A, (2, 1))
+    end
+    error("`$name` must have shape `(y, x)` or `(x, y)`; got $(size(A)).")
+end
+
+_column_vector_y_x(field::AbstractMatrix{<:Real}) = vec(permutedims(Float64.(field), (2, 1)))
+
 function _wind_matrix(ds::NCDataset, wind_speed_name, ntime::Int, ny::Int, nx::Int, wind_default::Float64)
     isnothing(wind_speed_name) && return fill(wind_default, nx * ny, ntime)
     haskey(ds, wind_speed_name) || return fill(wind_default, nx * ny, ntime)
@@ -147,6 +167,7 @@ function load_forcing_file(
     q_lw_down_name::Union{Nothing, AbstractString}="LWD",
     q_sh_name::Union{Nothing, AbstractString}="SHF",
     q_lh_name::Union{Nothing, AbstractString}="LHF",
+    latitude_name::Union{Nothing, AbstractString}="LAT",
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
     wind_default::Float64=5.0,
@@ -172,6 +193,12 @@ function load_forcing_file(
         rain_m = _column_matrix(rain)
         sw_m = _column_matrix(sw)
         wind_m = _wind_matrix(ds, wind_speed_name, ntime, ny, nx, wind_default)
+        latitude_deg = if !isnothing(latitude_name) && haskey(ds, latitude_name)
+            latitude_data, latitude_dims = _read_variable_data(ds, latitude_name)
+            _column_vector_y_x(_as_y_x(latitude_data, latitude_dims, ny, nx, latitude_name))
+        else
+            nothing
+        end
 
         q_lw_m = zeros(Float64, nx * ny, ntime)
         has_q_lw_m = fill(false, nx * ny, ntime)
@@ -221,6 +248,7 @@ function load_forcing_file(
             has_q_sh=has_q_sh_m,
             q_lh=q_lh_m,
             has_q_lh=has_q_lh_m,
+            latitude_deg=latitude_deg,
         )
         return (grid=grid, forcing=forcing)
     finally

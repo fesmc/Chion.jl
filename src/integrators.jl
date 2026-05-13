@@ -68,6 +68,7 @@ function _single_step_forcing_template(forcing::SnowpackForcing)
         snowfall_rate=forcing.snowfall_rate[:, 1:1],
         rainfall_rate=forcing.rainfall_rate[:, 1:1],
         shortwave_down=forcing.shortwave_down[:, 1:1],
+        latitude_deg=forcing.latitude_deg[:, 1:1],
         wind_speed=forcing.wind_speed[:, 1:1],
         q_lw_down=forcing.q_lw_down[:, 1:1],
         has_q_lw_down=forcing.has_q_lw_down[:, 1:1],
@@ -195,6 +196,7 @@ function _set_forcing!(
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    latitude_deg=nothing,
     time_value=nothing,
 )
     f = integrator.stepper.current_forcing
@@ -212,6 +214,7 @@ function _set_forcing!(
         _assign_numeric_step_field!(f.rainfall_rate, rainfall_rate, ncol, "rainfall_rate")
     end
     _assign_numeric_step_field!(f.shortwave_down, shortwave_down, ncol, "shortwave_down")
+    !isnothing(latitude_deg) && (f.latitude_deg[:, :] .= _forcing_column_metadata_matrix(latitude_deg, ncol, 1, "latitude_deg"))
     _assign_numeric_step_field!(f.wind_speed, wind_speed, ncol, "wind_speed")
     if _assign_numeric_step_field!(f.q_lw_down, q_lw_down, ncol, "q_lw_down") && isnothing(has_q_lw_down)
         fill!(f.has_q_lw_down, true)
@@ -225,7 +228,11 @@ function _set_forcing!(
         fill!(f.has_q_lh, true)
     end
     _assign_bool_step_field!(f.has_q_lh, has_q_lh, ncol, "has_q_lh")
-    isnothing(time_value) || (f.time_values[1] = DateTime(time_value))
+    if !isnothing(time_value)
+        f.time_values[1] = DateTime(time_value)
+        f.day_of_year[1] = _calendar_day_of_year(f.time_values[1])
+        f.solar_longitude_deg[1] = _solar_longitude_deg_from_calendar_day(f.day_of_year[1])
+    end
     return integrator
 end
 

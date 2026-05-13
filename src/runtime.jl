@@ -28,6 +28,9 @@ function _validate_integrator_setup!(sim, options::RunOptions)
     grid = _model_grid(model)
     ncol = _model_column_count(model)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the model column count.")
+    if model isa BESSIModel && model.diurnal_shortwave_substeps
+        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
+    end
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
@@ -102,8 +105,17 @@ function init_model_runtime!(context, options::RunOptions, timings::StepTimingSt
     return IntegratorModelRuntime(runtime, context.ncol, context.grid)
 end
 
-function step_model!(::BESSIModel, ::BESSIState, runtime, forcing::SnowpackForcing, time_index::Int)
-    step!(runtime.domain, forcing, time_index, runtime.workspace)
+function step_model!(model::BESSIModel, ::BESSIState, runtime, forcing::SnowpackForcing, time_index::Int)
+    step!(
+        runtime.domain,
+        forcing,
+        time_index,
+        runtime.workspace;
+        diurnal_shortwave_substeps=model.diurnal_shortwave_substeps,
+        diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
+        diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
+        diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
+    )
     return nothing
 end
 

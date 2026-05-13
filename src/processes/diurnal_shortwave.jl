@@ -1,146 +1,145 @@
 """
-Simple dEBM-style diurnal shortwave partitioning helpers.
+Energy-conserving adaptive diurnal shortwave substep helpers.
 """
 
-@inline _debm_declination(day_of_year) = oftype(day_of_year, 23.44) * sind(oftype(day_of_year, 360) * (day_of_year - oftype(day_of_year, 79)) / oftype(day_of_year, 365))
+@inline _diurnal_obliquity_deg(x) = oftype(x, 23.439291)
+@inline _solar_declination_deg(solar_longitude_deg) =
+    asind(sind(_diurnal_obliquity_deg(solar_longitude_deg)) * sind(solar_longitude_deg))
 
-"""
-    _debm_sunny_hours_q(latitude_deg, day_of_year, orbital_phase_deg=0.0)
-
-Compute simple orbital geometry diagnostics for the dEBM-style diurnal melt
-partition, including sunny hours and geometric scaling factors.
-"""
-function _debm_sunny_hours_q(latitude_deg, day_of_year, orbital_phase_deg=0.0)
-    declination = _debm_declination(day_of_year + orbital_phase_deg / 360)
-    cos_omega = clamp(-tand(latitude_deg) * tand(declination), -1.0, 1.0)
-    omega = acos(cos_omega)
-    hours = 24.0 * omega / π
-    q = max(cosd(latitude_deg - declination), 0.0)
-    fluxfac = q / π
-    return (hours=hours, q=q, fluxfac=fluxfac)
+@inline function _sunset_hour_angle(latitude_deg, declination_deg)
+    cos_h0 = -tand(latitude_deg) * tand(declination_deg)
+    if cos_h0 >= one(cos_h0)
+        return zero(cos_h0)
+    elseif cos_h0 <= -one(cos_h0)
+        return oftype(cos_h0, π)
+    end
+    return acos(cos_h0)
 end
 
-"""
-    _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
-
-Partition daily energy into melt-window and refreezing-window components for a
-simple dEBM-style diurnal variation.
-"""
-function _debm_melt_window_fluxes(shortwave_down, baseline_nonshortwave_flux, latitude_deg, day_of_year)
-    geometry = _debm_sunny_hours_q(latitude_deg, day_of_year, 0.0)
-    sunny_fraction = clamp(geometry.hours / 24.0, 1.0 / 24.0, 1.0)
-    shortwave_peak_flux = shortwave_down / sunny_fraction
-    baseline_daily_flux = shortwave_down + baseline_nonshortwave_flux
-    baseline_positive_daily_flux = max(baseline_daily_flux, 0.0)
-    melt_window_daily_flux = max(shortwave_peak_flux + baseline_nonshortwave_flux, 0.0) * sunny_fraction
-    nighttime_fraction = 1.0 - sunny_fraction
-    nighttime_flux = baseline_nonshortwave_flux
-    melt_period_fraction = sunny_fraction + (nighttime_flux > 0.0 ? nighttime_fraction : 0.0)
-    refreezing_daily_flux = nighttime_flux < 0.0 ? -nighttime_flux * nighttime_fraction : 0.0
+@inline function _diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg)
+    declination_deg = _solar_declination_deg(solar_longitude_deg)
+    h0 = _sunset_hour_angle(latitude_deg, declination_deg)
+    lat_rad = deg2rad(latitude_deg)
+    dec_rad = deg2rad(declination_deg)
+    sin_lat_sin_dec = sin(lat_rad) * sin(dec_rad)
+    cos_lat_cos_dec = cos(lat_rad) * cos(dec_rad)
+    daylight_integral = oftype(latitude_deg, 2) *
+                        (h0 * sin_lat_sin_dec + cos_lat_cos_dec * sin(h0))
     return (
-        baseline_daily_flux=baseline_daily_flux,
-        baseline_positive_daily_flux=baseline_positive_daily_flux,
-        melt_window_daily_flux=melt_window_daily_flux,
-        refreezing_daily_flux=refreezing_daily_flux,
-        melt_period_fraction=melt_period_fraction,
-        melt_period_hours=24.0 * melt_period_fraction,
-        sunny_hours=geometry.hours,
-        q=geometry.q,
-        fluxfac=geometry.fluxfac,
+        declination_deg=declination_deg,
+        sunset_hour_angle=h0,
+        daylight_integral=daylight_integral,
+        sin_lat_sin_dec=sin_lat_sin_dec,
+        cos_lat_cos_dec=cos_lat_cos_dec,
     )
 end
 
-"""
-    _diagnose_debm_diurnal_adjustment(c, air_temperature, snowfall_rate, rainfall_rate, dt_seconds, surface_temperature, surface_mass; ...)
+@inline function _diurnal_shortwave_interval_average(
+    shortwave_daily_mean,
+    latitude_deg,
+    solar_longitude_deg,
+    hour_angle_start,
+    hour_angle_end,
+)
+    interval_width = hour_angle_end - hour_angle_start
+    if shortwave_daily_mean <= zero(shortwave_daily_mean) ||
+       interval_width <= zero(interval_width) ||
+       !isfinite(latitude_deg) ||
+       !isfinite(solar_longitude_deg)
+        return zero(shortwave_daily_mean)
+    end
 
-Diagnose how a dEBM-style diurnal partition changes melt energy and
-refreezing-recharge energy over one time step.
-"""
-function _diagnose_debm_diurnal_adjustment(
-    c::SnowpackPhysicalConstants,
+    terms = _diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg)
+    if terms.daylight_integral <= eps(typeof(float(terms.daylight_integral))) ||
+       terms.sunset_hour_angle <= zero(terms.sunset_hour_angle)
+        return zero(shortwave_daily_mean)
+    end
+
+    daylight_start = max(hour_angle_start, -terms.sunset_hour_angle)
+    daylight_end = min(hour_angle_end, terms.sunset_hour_angle)
+    daylight_end <= daylight_start && return zero(shortwave_daily_mean)
+
+    daylight_integral = (daylight_end - daylight_start) * terms.sin_lat_sin_dec +
+                        terms.cos_lat_cos_dec * (sin(daylight_end) - sin(daylight_start))
+    scale = shortwave_daily_mean * oftype(shortwave_daily_mean, 2π) / terms.daylight_integral
+    return max(scale * daylight_integral / interval_width, zero(shortwave_daily_mean))
+end
+
+@inline function _diurnal_shortwave_peak_flux(shortwave_daily_mean, latitude_deg, solar_longitude_deg)
+    if shortwave_daily_mean <= zero(shortwave_daily_mean) ||
+       !isfinite(latitude_deg) ||
+       !isfinite(solar_longitude_deg)
+        return zero(shortwave_daily_mean)
+    end
+    terms = _diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg)
+    if terms.daylight_integral <= eps(typeof(float(terms.daylight_integral))) ||
+       terms.sunset_hour_angle <= zero(terms.sunset_hour_angle)
+        return zero(shortwave_daily_mean)
+    end
+    scale = shortwave_daily_mean * oftype(shortwave_daily_mean, 2π) / terms.daylight_integral
+    return max(
+        scale * (terms.sin_lat_sin_dec + terms.cos_lat_cos_dec),
+        zero(shortwave_daily_mean),
+    )
+end
+
+@inline function _diurnal_shortwave_substep_count(
+    dt_days,
+    shortwave_daily_mean,
     air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    dt_seconds,
-    surface_temperature,
-    surface_mass;
-    q_sw_net=nothing,
-    q_lw_down=nothing,
-    q_sh=nothing,
-    q_lh=nothing,
-    latitude,
-    day_of_year,
+    min_air_temperature,
+    latitude_deg,
+    solar_longitude_deg,
+    threshold,
+    max_substeps::Int,
 )
-    shortwave_component = isnothing(q_sw_net) ? 0.0 : q_sw_net
-    longwave_component = isnothing(q_lw_down) ? c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * surface_temperature^4) :
-        q_lw_down - c.σ * c.ϵ_snow * surface_temperature^4
-    sensible_component = isnothing(q_sh) ? c.D_sh * (air_temperature - surface_temperature) : q_sh
-    latent_component = isnothing(q_lh) ? 0.0 : q_lh
-    rain_component = rainfall_rate * c.cw * (air_temperature - c.T0)
-    baseline_nonshortwave_flux = longwave_component + sensible_component + latent_component + rain_component
-    partition = _debm_melt_window_fluxes(shortwave_component, baseline_nonshortwave_flux, latitude, day_of_year)
-    baseline_positive_flux = max(shortwave_component + baseline_nonshortwave_flux, 0.0)
-    corrected_positive_flux = partition.melt_window_daily_flux
-    extra_melt_energy = max(corrected_positive_flux - baseline_positive_flux, 0.0) * dt_seconds
-    return (
-        baseline_positive_flux=baseline_positive_flux,
-        corrected_positive_flux=corrected_positive_flux,
-        extra_melt_energy=extra_melt_energy,
-        refreezing_recharge_energy=partition.refreezing_daily_flux * dt_seconds,
-        refreezing_period_seconds=(1.0 - partition.melt_period_fraction) * dt_seconds,
-        melt_period_seconds=partition.melt_period_fraction * dt_seconds,
-        partition=partition,
-    )
+    max_substeps <= 1 && return 1
+    if dt_days < oftype(dt_days, 0.75) ||
+       dt_days > oftype(dt_days, 1.25) ||
+       shortwave_daily_mean <= zero(shortwave_daily_mean) ||
+       air_temperature <= min_air_temperature ||
+       !isfinite(air_temperature) ||
+       !isfinite(latitude_deg) ||
+       !isfinite(solar_longitude_deg)
+        return 1
+    end
+
+    peak_flux = _diurnal_shortwave_peak_flux(shortwave_daily_mean, latitude_deg, solar_longitude_deg)
+    max(peak_flux - shortwave_daily_mean, zero(shortwave_daily_mean)) <= threshold && return 1
+
+    terms = _diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg)
+    terms.sunset_hour_angle <= zero(terms.sunset_hour_angle) && return 1
+    return max_substeps
 end
 
-"""
-    _apply_diurnal_refreezing_recharge!(N_storage, mass, mass_w, temperature, idx, c, recharge_energy, refreezing_period_seconds)
-
-Deposit refreezing recharge energy into cold snow layers by lowering their
-temperature in-place. Returns a named tuple describing how much recharge energy
-was applied and how much remains.
-"""
-function _apply_diurnal_refreezing_recharge!(
-    N_storage,
-    mass,
-    mass_w,
-    temperature,
-    idx::Int,
-    c::SnowpackPhysicalConstants,
-    recharge_energy,
-    refreezing_period_seconds,
+@inline function _diurnal_substep_forcing(
+    forcing::SnowpackStepForcing,
+    fraction,
+    shortwave_down,
+    q_sw_net,
 )
-    remaining_energy = max(recharge_energy, 0.0)
-    applied_energy = 0.0
-
-    if remaining_energy <= 0.0 || _n_active(N_storage, idx) <= 0 || !_column_has_liquid_water(N_storage, mass_w, idx)
-        return (
-            applied_recharge_energy=0.0,
-            remaining_recharge_energy=remaining_energy,
-            refreezing_period_seconds=refreezing_period_seconds,
-        )
-    end
-
-    @inbounds for layer_index in 1:_n_active(N_storage, idx)
-        liquid_water = _get_layer(mass_w, layer_index, idx)
-        solid_mass = _get_layer(mass, layer_index, idx)
-        if liquid_water <= 0.0 || solid_mass <= 0.0
-            continue
-        end
-
-        layer_capacity = liquid_water * c.Lm
-        applied_here = min(remaining_energy, layer_capacity)
-        if applied_here > 0.0
-            _set_layer!(temperature, layer_index, idx, _get_layer(temperature, layer_index, idx) - applied_here / (c.ci * solid_mass))
-            remaining_energy -= applied_here
-            applied_energy += applied_here
-        end
-        remaining_energy <= 0.0 && break
-    end
-
-    return (
-        applied_recharge_energy=applied_energy,
-        remaining_recharge_energy=remaining_energy,
-        refreezing_period_seconds=refreezing_period_seconds,
+    return SnowpackStepForcing(
+        forcing.air_temperature,
+        forcing.precipitation_rate,
+        forcing.dt_days * fraction,
+        forcing.snowfall_rate,
+        forcing.rainfall_rate,
+        shortwave_down,
+        forcing.wind_speed,
+        q_sw_net,
+        forcing.q_lw_down,
+        forcing.q_sh,
+        forcing.q_lh,
+        forcing.has_q_sw_net,
+        forcing.has_q_lw_down,
+        forcing.has_q_sh,
+        forcing.has_q_lh,
+        false,
+        forcing.latitude_deg,
+        forcing.day_of_year,
+        forcing.solar_longitude_deg,
+        forcing.diurnal_shortwave_threshold,
+        forcing.diurnal_shortwave_max_substeps,
+        forcing.diurnal_shortwave_min_air_temperature,
     )
 end

@@ -52,14 +52,47 @@ end
     error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
 end
 
+@inline function _forcing_column_metadata_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
+    if field isa Number
+        return fill(Float64(field), ncol, ntime)
+    end
+    data = collect(field)
+    if ndims(data) == 1
+        length(data) == ncol || error("`$name` vector input must have length $ncol.")
+        return repeat(reshape(Float64.(data), ncol, 1), 1, ntime)
+    elseif ndims(data) == 2
+        size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
+        return Matrix{Float64}(data)
+    end
+    error("`$name` must be a scalar, a vector of length $ncol, or a matrix of size ($ncol, $ntime).")
+end
+
+@inline function _calendar_day_of_year(t::DateTime)
+    seconds_today = hour(t) * 3600 + minute(t) * 60 + second(t) + millisecond(t) / 1000
+    return Float64(dayofyear(t)) + seconds_today / 86_400.0
+end
+
+@inline function _solar_longitude_deg_from_calendar_day(day_of_year)
+    days_since_j2000_like_year_start = day_of_year - 1.0
+    mean_longitude = 280.46646 + 0.98564736 * days_since_j2000_like_year_start
+    mean_anomaly = 357.52911 + 0.98560028 * days_since_j2000_like_year_start
+    true_longitude = mean_longitude +
+                     1.914602 * sind(mean_anomaly) +
+                     0.019993 * sind(2.0 * mean_anomaly)
+    return mod(true_longitude, 360.0)
+end
+
 """Time-varying atmospheric boundary conditions for a snowpack model."""
 struct SnowpackForcing
     time_values::Vector{DateTime}
     dt_days::Vector{Float64}
+    day_of_year::Vector{Float64}
+    solar_longitude_deg::Vector{Float64}
     air_temperature
     snowfall_rate
     rainfall_rate
     shortwave_down
+    latitude_deg
     wind_speed
     q_lw_down
     has_q_lw_down
@@ -93,6 +126,7 @@ function SnowpackForcing(;
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    latitude_deg=nothing,
     time_values=nothing,
 )
     has_native = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
@@ -106,9 +140,16 @@ function SnowpackForcing(;
 
     column_count = isnothing(ncol) ? 1 : Int(ncol)
     if isnothing(ncol)
-        for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
-            snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh)
-            isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
+        if !isnothing(latitude_deg) && !(latitude_deg isa Number)
+            latitude_data = collect(latitude_deg)
+            ndims(latitude_data) == 1 && (column_count = length(latitude_data))
+            ndims(latitude_data) == 2 && (column_count = size(latitude_data, 1))
+        end
+        if isnothing(latitude_deg) || latitude_deg isa Number
+            for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
+                snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh)
+                isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
+            end
         end
     end
     column_count > 0 || error("`ncol` must be positive.")
@@ -132,6 +173,7 @@ function SnowpackForcing(;
     dims = size(air_temperature)
     shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
     wind_speed_m = isnothing(wind_speed) ? fill(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
+    latitude_deg_m = isnothing(latitude_deg) ? fill(NaN, dims) : _forcing_column_metadata_matrix(latitude_deg, column_count, ntime, "latitude_deg")
     q_lw_down_m = isnothing(q_lw_down) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
     has_q_lw_down_m = isnothing(q_lw_down) ? fill(false, dims) : isnothing(has_q_lw_down) ? fill(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down")
     q_sh_m = isnothing(q_sh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
@@ -143,6 +185,7 @@ function SnowpackForcing(;
         ("snowfall_rate", snowfall_rate),
         ("rainfall_rate", rainfall_rate),
         ("shortwave_down", shortwave_down_m),
+        ("latitude_deg", latitude_deg_m),
         ("wind_speed", wind_speed_m),
         ("q_lw_down", q_lw_down_m),
         ("has_q_lw_down", has_q_lw_down_m),
@@ -156,14 +199,19 @@ function SnowpackForcing(;
 
     time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
+    day_of_year_v = _calendar_day_of_year.(time_values_v)
+    solar_longitude_deg_v = _solar_longitude_deg_from_calendar_day.(day_of_year_v)
 
     return SnowpackForcing(
         time_values_v,
         dt_days_v,
+        day_of_year_v,
+        solar_longitude_deg_v,
         air_temperature,
         snowfall_rate,
         rainfall_rate,
         shortwave_down_m,
+        latitude_deg_m,
         wind_speed_m,
         q_lw_down_m,
         has_q_lw_down_m,
