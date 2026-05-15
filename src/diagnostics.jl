@@ -1,6 +1,6 @@
 """Runtime summaries, step diagnostics, history, and yearly deltas."""
 
-const SUMMARY_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :pdd)
+const SUMMARY_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :pdd, :melt, :refreezing, :albedo)
 const YEAR_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass)
 
 _named_buffers(names::NTuple{N, Symbol}, build::F) where {N, F <: Function} = NamedTuple{names}(ntuple(_ -> build(), N))
@@ -48,6 +48,9 @@ function summarize_step_state!(summary, ::BESSIModel, ::BESSIState, runtime)
         summary.smb_ice,
         summary.liquid_water,
         summary.runoff,
+        summary.melt,
+        summary.refreezing,
+        summary.albedo,
         runtime.domain,
     )
     fill!(summary.pdd, 0.0)
@@ -63,6 +66,9 @@ function summarize_step_state!(summary, ::PDDModel, ::PDDState, runtime)
     fill!(summary.liquid_water, 0.0)
     summary.runoff .= runtime.runoff
     summary.pdd .= runtime.pdd_sum
+    fill!(summary.melt, NaN)
+    fill!(summary.refreezing, NaN)
+    fill!(summary.albedo, NaN)
     return summary
 end
 
@@ -72,6 +78,10 @@ _model_runoff_vector(::BESSIModel, ::BESSIState, runtime) = _host_vector(runtime
 _model_runoff_vector(::PDDModel, ::PDDState, runtime) = _host_vector(runtime.runoff; copy_array=true)
 _model_pdd_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
 _model_pdd_vector(::PDDModel, ::PDDState, runtime, ncol::Int) = _host_vector(runtime.pdd_sum; copy_array=true)
+_model_melt_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
+_model_melt_vector(::BESSIModel, ::BESSIState, runtime, ncol::Int) = _host_vector(runtime.domain.melt; copy_array=true)
+_model_refreezing_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
+_model_refreezing_vector(::BESSIModel, ::BESSIState, runtime, ncol::Int) = _host_vector(runtime.domain.refreezing; copy_array=true)
 
 function _update_year_smb_delta!(last_delta::Vector{Float64}, previous_year_smb_ice::Vector{Float64}, model::AbstractSnowModel, state::AbstractSnowModelState, runtime)
     current = _model_smb_ice_vector(model, state, runtime)
@@ -113,6 +123,8 @@ function init_diagnostics!(context, model_runtime::IntegratorModelRuntime, optio
         smb_ice=_model_smb_ice_vector(model, state, runtime),
         runoff=_model_runoff_vector(model, state, runtime),
         pdd=_model_pdd_vector(model, state, runtime, ncol),
+        melt=_model_melt_vector(model, state, runtime, ncol),
+        refreezing=_model_refreezing_vector(model, state, runtime, ncol),
     )
     previous_year_smb_ice = need_last_year_smb_delta ? _model_smb_ice_vector(model, state, runtime) : Float64[]
 
