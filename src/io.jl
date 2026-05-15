@@ -29,9 +29,13 @@ const MONTHLY_OUTPUT_SPECS = (
     (key=:monthly_mean_bulk_density, aggregate=:mean),
     (key=:monthly_mean_base_mass, aggregate=:sum),
     (key=:monthly_mean_ice_sheet_smb, aggregate=:sum),
+    (key=:monthly_smb, aggregate=:sum),
     (key=:monthly_export_to_ice, aggregate=:sum),
     (key=:monthly_net_ice_sheet_forcing, aggregate=:sum),
     (key=:monthly_runoff, aggregate=:sum),
+    (key=:monthly_melt, aggregate=:sum),
+    (key=:monthly_refreezing, aggregate=:sum),
+    (key=:monthly_mean_albedo, aggregate=:mean),
 )
 
 const OUTPUT_GROUPS = (
@@ -155,10 +159,14 @@ function _accumulate_step_diagnostics!(
     current_smb = summary.smb_ice
     current_runoff = summary.runoff
     current_pdd = summary.pdd
+    current_melt = summary.melt
+    current_refreezing = summary.refreezing
     delta_base = current_base .- previous.base_mass
     delta_smb = current_smb .- previous.smb_ice
     delta_runoff = current_runoff .- previous.runoff
     delta_pdd = current_pdd .- previous.pdd
+    delta_melt = current_melt .- previous.melt
+    delta_refreezing = current_refreezing .- previous.refreezing
 
     if need_monthly_outputs
         monthly_sums.monthly_mean_thickness[month_idx, :] .+= summary.thickness
@@ -166,9 +174,13 @@ function _accumulate_step_diagnostics!(
         monthly_sums.monthly_mean_bulk_density[month_idx, :] .+= summary.bulk_density
         monthly_sums.monthly_mean_base_mass[month_idx, :] .+= current_base
         monthly_sums.monthly_mean_ice_sheet_smb[month_idx, :] .+= delta_smb
+        monthly_sums.monthly_smb[month_idx, :] .+= delta_smb
         monthly_sums.monthly_export_to_ice[month_idx, :] .+= delta_base
         monthly_sums.monthly_net_ice_sheet_forcing[month_idx, :] .+= delta_smb
         monthly_sums.monthly_runoff[month_idx, :] .+= delta_runoff
+        monthly_sums.monthly_melt[month_idx, :] .+= delta_melt
+        monthly_sums.monthly_refreezing[month_idx, :] .+= delta_refreezing
+        monthly_sums.monthly_mean_albedo[month_idx, :] .+= summary.albedo
     end
     if need_step_outputs
         step_vectors.step_export_to_ice .+= delta_base
@@ -179,6 +191,8 @@ function _accumulate_step_diagnostics!(
     previous.smb_ice .= current_smb
     previous.runoff .= current_runoff
     previous.pdd .= current_pdd
+    previous.melt .= current_melt
+    previous.refreezing .= current_refreezing
     return
 end
 
@@ -214,7 +228,7 @@ end
 _default_output_dir(name::AbstractString) = joinpath(pwd(), "run_output", _slug(name))
 
 function resolve_netcdf_path(options)
-    default_name = "$(options.name)_final_state.nc"
+    default_name = "$(options.name)_final_state2.nc"
     isempty(options.netcdf_path) && return joinpath(options.output_dir, default_name)
     return isdir(options.netcdf_path) || _looks_like_directory_path(options.netcdf_path) ?
         joinpath(options.netcdf_path, default_name) :
@@ -290,9 +304,13 @@ const NC_SPECS = (
     (key=:monthly_mean_bulk_density,   name="monthly_mean_bulk_density",   dims=("month", "x", "y"), long_name="Monthly mean bulk snow density", units="kg m-3", integer=false),
     (key=:monthly_mean_base_mass,      name="monthly_mean_base_mass",      dims=("month", "x", "y"), long_name="Monthly mean cumulative firn mass exported to the ice model", units="mmWE", integer=false),
     (key=:monthly_mean_ice_sheet_smb,  name="monthly_mean_ice_sheet_smb",  dims=("month", "x", "y"), long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
+    (key=:monthly_smb,                 name="monthly_smb",                 dims=("month", "x", "y"), long_name="Monthly surface mass balance diagnostic", units="mmWE", integer=false),
     (key=:monthly_export_to_ice,       name="monthly_export_to_ice",       dims=("month", "x", "y"), long_name="Monthly firn mass exported to the ice model", units="mmWE", integer=false),
     (key=:monthly_net_ice_sheet_forcing, name="monthly_net_ice_sheet_forcing", dims=("month", "x", "y"), long_name="Monthly net mass forcing to the ice sheet", units="mmWE", integer=false),
     (key=:monthly_runoff,              name="monthly_runoff",              dims=("month", "x", "y"), long_name="Monthly runoff production", units="mmWE", integer=false),
+    (key=:monthly_melt,                name="monthly_melt",                dims=("month", "x", "y"), long_name="Monthly melt production", units="mmWE", integer=false),
+    (key=:monthly_refreezing,          name="monthly_refreezing",          dims=("month", "x", "y"), long_name="Monthly refreezing", units="mmWE", integer=false),
+    (key=:monthly_mean_albedo,         name="monthly_mean_albedo",         dims=("month", "x", "y"), long_name="Monthly mean surface albedo", units="1", integer=false),
     (key=:step_export_to_ice,          name="step_export_to_ice",          dims=("step", "x", "y"), long_name="Annual firn mass exported to the ice model for each written output interval", units="mmWE", integer=false),
     (key=:step_ice_sheet_smb,          name="step_ice_sheet_smb",          dims=("step", "x", "y"), long_name="Annual net mass forcing to the ice sheet for each written output interval", units="mmWE", integer=false),
     (key=:step_pdd,                    name="step_pdd",                    dims=("step", "x", "y"), long_name="Annual positive degree days for each written output interval", units="degC d", integer=false),
