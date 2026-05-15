@@ -58,6 +58,8 @@ function _copy_domain_state!(dest::SnowpackDomain, src::SnowpackDomain)
     dest.mass_base .= src.mass_base
     dest.smb_ice .= src.smb_ice
     dest.runoff .= src.runoff
+    dest.melt .= src.melt
+    dest.refreezing .= src.refreezing
     dest.Tsrf .= src.Tsrf
     dest.snow_cover .= src.snow_cover
     dest.albedo_dynamic .= src.albedo_dynamic

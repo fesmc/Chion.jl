@@ -183,6 +183,8 @@ mutable struct SnowpackDomain{
     mass_base::VT
     smb_ice::VT
     runoff::VT
+    melt::VT
+    refreezing::VT
     Tsrf::VT
     snow_cover::VT
     albedo_dynamic::VT
@@ -226,6 +228,8 @@ function SnowpackDomain(;
         zeros(NF, ncol),
         zeros(NF, ncol),
         zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
         fill(c.T0, ncol),
         zeros(NF, ncol),
         fill(c.alpha_dry, ncol),
@@ -233,7 +237,7 @@ function SnowpackDomain(;
 end
 
 """
-    SnowpackDomain(N, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, snow_cover, albedo_dynamic; c=..., ...)
+    SnowpackDomain(N, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, melt, refreezing, Tsrf, snow_cover, albedo_dynamic; c=..., ...)
 
 Wrap existing state arrays as a `SnowpackDomain`. Array shapes and per-column
 vector lengths are validated but the input arrays are not copied.
@@ -247,6 +251,8 @@ function SnowpackDomain(
     mass_base::AbstractVector{NF},
     smb_ice::AbstractVector{NF},
     runoff::AbstractVector{NF},
+    melt::AbstractVector{NF},
+    refreezing::AbstractVector{NF},
     Tsrf::AbstractVector{NF},
     snow_cover::AbstractVector{NF},
     albedo_dynamic::AbstractVector{NF};
@@ -269,6 +275,8 @@ function SnowpackDomain(
         ("mass_base", mass_base),
         ("smb_ice", smb_ice),
         ("runoff", runoff),
+        ("melt", melt),
+        ("refreezing", refreezing),
         ("Tsrf", Tsrf),
         ("snow_cover", snow_cover),
         ("albedo_dynamic", albedo_dynamic),
@@ -292,6 +300,8 @@ function SnowpackDomain(
         mass_base,
         smb_ice,
         runoff,
+        melt,
+        refreezing,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -457,7 +467,7 @@ Domain-wide summary helpers.
 """
 
 const _DOMAIN_SUMMARY_FIELDS =
-    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff)
+    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :melt, :refreezing, :albedo)
 
 @inline function _column_summary(N, mass, mass_w, density, idx, sample)
     n = N[idx]
@@ -509,6 +519,9 @@ output arrays are mutated in-place.
     smb_ice,
     liquid_water,
     runoff,
+    melt,
+    refreezing,
+    albedo,
     N,
     mass,
     mass_w,
@@ -516,6 +529,9 @@ output arrays are mutated in-place.
     mass_base_state,
     smb_ice_state,
     runoff_state,
+    melt_state,
+    refreezing_state,
+    albedo_state,
 )
     idx = @index(Global)
     if idx <= length(N)
@@ -528,6 +544,9 @@ output arrays are mutated in-place.
         smb_ice[idx] = smb_ice_state[idx]
         liquid_water[idx] = liquid_water_local
         runoff[idx] = runoff_state[idx]
+        melt[idx] = melt_state[idx]
+        refreezing[idx] = refreezing_state[idx]
+        albedo[idx] = albedo_state[idx]
     end
 end
 
@@ -561,7 +580,7 @@ in-place.
 end
 
 """
-    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, domain)
+    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, melt, refreezing, albedo, domain)
 
 Fill preallocated summary arrays with one-column diagnostics from `domain`.
 Outputs are column-wise totals or aggregates in SI-like model units.
@@ -574,6 +593,9 @@ function summarize_domain_state!(
     smb_ice::AbstractVector,
     liquid_water::AbstractVector,
     runoff::AbstractVector,
+    melt::AbstractVector,
+    refreezing::AbstractVector,
+    albedo::AbstractVector,
     domain::AbstractSnowpackDomain,
 )
     return _launch_summary_kernel!(
@@ -586,6 +608,9 @@ function summarize_domain_state!(
         smb_ice,
         liquid_water,
         runoff,
+        melt,
+        refreezing,
+        albedo,
         domain.N,
         domain.mass,
         domain.mass_w,
@@ -593,6 +618,9 @@ function summarize_domain_state!(
         domain.mass_base,
         domain.smb_ice,
         domain.runoff,
+        domain.melt,
+        domain.refreezing,
+        domain.albedo_dynamic,
     )
 end
 
