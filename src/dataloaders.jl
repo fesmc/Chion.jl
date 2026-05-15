@@ -59,19 +59,44 @@ function _read_variable_data(ds::NCDataset, name::AbstractString)
     return data, dimnames(var)
 end
 
+function _layer_dim_from_names(dim_names::Tuple)
+    lower_names = lowercase.(String.(dim_names))
+    return findfirst(name ->
+        name == "z" ||
+        name == "level" ||
+        name == "lev" ||
+        name == "lvl" ||
+        occursin("height", name) ||
+        occursin("level", name),
+        lower_names,
+    )
+end
+
 function _drop_singleton_layer(data, name::AbstractString)
     ndims(data) == 4 || return data
     singleton_dim = findfirst(==(1), size(data))
-    isnothing(singleton_dim) && error("`$name` is 4-D, but no singleton layer dimension could be identified.")
-    return dropdims(data; dims=singleton_dim)
+    if !isnothing(singleton_dim)
+        return dropdims(data; dims=singleton_dim)
+    end
+    level_dim = findfirst(==(2), size(data))
+    isnothing(level_dim) && error("`$name` is 4-D, but no singleton or 2-level layer dimension could be identified.")
+    return Array(selectdim(data, level_dim, 1))
 end
 
 function _drop_singleton_layer(data, dim_names::Tuple, name::AbstractString)
     ndims(data) == 4 || return data, dim_names
     singleton_dim = findfirst(==(1), size(data))
-    isnothing(singleton_dim) && error("`$name` is 4-D, but no singleton layer dimension could be identified.")
-    kept = ntuple(i -> i < singleton_dim ? dim_names[i] : dim_names[i + 1], ndims(data) - 1)
-    return dropdims(data; dims=singleton_dim), kept
+    if !isnothing(singleton_dim)
+        kept = ntuple(i -> i < singleton_dim ? dim_names[i] : dim_names[i + 1], ndims(data) - 1)
+        return dropdims(data; dims=singleton_dim), kept
+    end
+    level_dim = _layer_dim_from_names(dim_names)
+    if isnothing(level_dim) || size(data, level_dim) != 2
+        level_dim = findfirst(==(2), size(data))
+    end
+    isnothing(level_dim) && error("`$name` is 4-D, but no singleton or 2-level layer dimension could be identified.")
+    kept = ntuple(i -> i < level_dim ? dim_names[i] : dim_names[i + 1], ndims(data) - 1)
+    return Array(selectdim(data, level_dim, 1)), kept
 end
 
 function _as_time_y_x(data, ntime::Int, ny::Int, nx::Int, name::AbstractString)
