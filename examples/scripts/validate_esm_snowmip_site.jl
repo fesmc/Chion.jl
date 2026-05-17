@@ -167,14 +167,15 @@ function make_case(inp, cfg, albedo, densification, fresh_snow_density)
     init_mass = (!cfg.no_init_from_obs && isfinite(inp.obs_depth[1]) && inp.obs_depth[1] > 0) ?
         cfg.initial_density * inp.obs_depth[1] : 0.0
 
-    grid  = Chion.SnowpackGrid(Chion.CPU(), 1)
+    grid  = Chion.SnowpackGrid(1)
     model = Chion.BESSIModel(grid;
         albedo             = albedo,
         densification      = densification,
         fresh_snow_density = fresh_snow_density,
         Ntot               = cfg.ntot,
     )
-    domain = model.domain
+    state = Chion.initial_state(model)
+    domain = state.domain
     fill!(domain.N, init_mass > 0 ? 1 : 0)
     fill!(domain.mass, 0.0); fill!(domain.mass_w, 0.0); fill!(domain.density, 0.0)
     fill!(domain.temperature, domain.c.T0)
@@ -203,7 +204,7 @@ function make_case(inp, cfg, albedo, densification, fresh_snow_density)
         time_values      = inp.dates,
         ncol             = 1,
     )
-    return (domain=domain, forcing=forcing)
+    return (model=model, state=state, domain=domain, forcing=forcing)
 end
 
 function current_state(domain)
@@ -347,7 +348,7 @@ function write_outputs(out_dir, slug, dates, obs_depth, sim_depth, obs_swe, sim_
         end
     end
     open(txt, "w") do io
-        println(io, "General API  : domain + forcing + KernelAbstractions batch step!")
+        println(io, "General API  : explicit state + forcing + KernelAbstractions batch step!")
         println(io, @sprintf("Snow depth : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.depth.n, metrics.depth.bias, metrics.depth.mae, metrics.depth.rmse, metrics.depth.corr))
         println(io, @sprintf("Snow SWE   : n=%d bias=%.5f mae=%.5f rmse=%.5f corr=%.5f", metrics.swe.n, metrics.swe.bias, metrics.swe.mae, metrics.swe.rmse, metrics.swe.corr))
     end
@@ -392,7 +393,7 @@ function main(args)
     out = write_outputs(arg_value(args, "out-dir", DEFAULT_OUT_DIR), slug, inp.dates, inp.obs_depth, sim.depth, inp.obs_swe, sim.swe, sim, metrics; plot_on=!has_flag(args, "no-plot"))
 
     println("Validation complete.")
-    println("General API : domain + forcing + KernelAbstractions batch step!")
+    println("General API : explicit state + forcing + KernelAbstractions batch step!")
     println("Met file    : $(abspath(inp.met_path))")
     println("Obs file    : $(abspath(inp.obs_path))")
     println("CSV output  : $(abspath(out.csv))")

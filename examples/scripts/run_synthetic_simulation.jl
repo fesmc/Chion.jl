@@ -13,7 +13,7 @@ function print_help()
     println()
     println("Options:")
     println("  --backend=threads|cpu|gpu    Execution backend (default: threads)")
-    println("  --cycles=N                   Number of forcing cycles to run (default: 3)")
+    println("  --years=N                    Number of forcing years to run (default: 3)")
     println("  --nx=N                       Synthetic multi-column grid size in x (default: 2)")
     println("  --ny=N                       Synthetic multi-column grid size in y (default: 2)")
     println("  --output-dir=PATH            Output directory")
@@ -36,7 +36,7 @@ function main(args::Vector{String})
     ny = parse(Int, arg_value(args, "ny", "2"))
     ncol = nx * ny
 
-    grid = SnowpackGrid(CPU(), ncol;
+    grid = SnowpackGrid(ncol;
         x = Float64.(1:nx),
         y = Float64.(1:ny),
         js = [j for j in 1:ny for _ in 1:nx],
@@ -56,7 +56,8 @@ function main(args::Vector{String})
         220.0 + 35.0 * ((i - 1) / max(nx - 1, 1)) + 20.0 * ((j - 1) / max(ny - 1, 1))
         for j in 1:ny for i in 1:nx
     ]
-    domain = model.domain
+    state = initial_state(model)
+    domain = state.domain
     fill!(domain.N, 1)
     fill!(domain.mass, 0.0)
     fill!(domain.mass_w, 0.0)
@@ -95,18 +96,19 @@ function main(args::Vector{String})
     save = has_flag(args, "no-nc") ? Symbol[] : arg_value(args, "netcdf-vars", "final,history")
     simulation = Simulation(model;
         forcing        = forcing,
-        cycles         = parse(Int, arg_value(args, "cycles", "3")),
+        state          = state,
+        years          = parse(Int, arg_value(args, "years", "3")),
         backend        = arg_value(args, "backend", "threads"),
         save           = save,
         output_dir     = arg_value(args, "output-dir", joinpath(@__DIR__, "..", "plots", "synthetic_simulation")),
         netcdf_path    = arg_value(args, "netcdf-path", ""),
         write_outputs  = !has_flag(args, "no-output"),
-        history_stride = 1,
+        history_year_stride = 1,
     )
 
     result = run!(simulation)
     println("Status:      $(result.status)")
-    println("Cycles:      $(length(result.history))")
+    println("Years:       $(length(result.history))")
     println("Summary:     $(result.summary_path)")
     println("History CSV: $(result.history_csv_path)")
     println("NetCDF:      $(result.netcdf_path)")

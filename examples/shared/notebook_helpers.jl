@@ -29,18 +29,28 @@ function output_dir_for(slug::AbstractString)
 end
 
 """
-    seed_domain!(model; surface_mass, density, temperature_c) -> model
+    seed_domain!(model; surface_mass, density, temperature_c) -> BESSIState
 
-Initialise the first layer of every column in `model.domain` with the given
-surface mass, density, and temperature.  Returns `model` for convenience.
+Initialise the first layer of every column in a new `BESSIState` with the given
+surface mass, density, and temperature.
 """
 function seed_domain!(
     model::Chion.BESSIModel;
     surface_mass,
-    density::Real=model.domain.c.rho_s,
+    density::Real=model.c.rho_s,
     temperature_c::Real=-10.0,
 )
-    domain = model.domain
+    state = Chion.initial_state(model)
+    return seed_domain!(state; surface_mass=surface_mass, density=density, temperature_c=temperature_c)
+end
+
+function seed_domain!(
+    state::Chion.BESSIState;
+    surface_mass,
+    density::Real=state.domain.c.rho_s,
+    temperature_c::Real=-10.0,
+)
+    domain = state.domain
     fill!(domain.N, 0)
     fill!(domain.mass, 0.0)
     fill!(domain.mass_w, 0.0)
@@ -80,13 +90,13 @@ function seed_domain!(
     end
 
     Chion.compute_auxiliary!(domain)
-    return model
+    return state
 end
 
 """
     regular_grid(nx, ny; x, y) -> SnowpackGrid
 
-Build a `SnowpackGrid` for a regular `nx × ny` column layout on `CPU()`.
+Build a `SnowpackGrid` for a regular `nx × ny` column layout.
 """
 function regular_grid(nx::Integer, ny::Integer; x=collect(1:nx), y=collect(1:ny))
     nx > 0 || error("`nx` must be positive.")
@@ -98,7 +108,7 @@ function regular_grid(nx::Integer, ny::Integer; x=collect(1:nx), y=collect(1:ny)
     js = [j for j in 1:ny for _ in 1:nx]
     is = [i for _ in 1:ny for i in 1:nx]
     mask = ones(Float64, ny, nx)
-    return Chion.SnowpackGrid(Chion.CPU(), nx * ny; x=xvals, y=yvals, js=js, is=is, mask=mask)
+    return Chion.SnowpackGrid(nx * ny; x=xvals, y=yvals, js=js, is=is, mask=mask)
 end
 
 plots_available() = HAS_PLOTS
@@ -110,17 +120,19 @@ function _plots_module()
 end
 
 function result_domain_cpu(::Chion.SimulationResult)
-    error("Access the domain via simulation.model.domain instead of the result.")
+    error("Access the domain via simulation.now instead of the result.")
 end
 
 function result_domain_cpu(domain::SM.SnowpackDomain)
     return domain.mass isa Array ? domain : Chion.cpu_domain(domain)
 end
 
+result_domain_cpu(state::Chion.BESSIState) = result_domain_cpu(state.domain)
+result_domain_cpu(simulation::Chion.Simulation) = result_domain_cpu(simulation.now)
+
 function summarize_column(model_or_domain, idx::Integer=1)
-    domain = model_or_domain isa Chion.BESSIModel ?
-        result_domain_cpu(model_or_domain.domain) :
-        result_domain_cpu(model_or_domain)
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    domain = result_domain_cpu(model_or_domain)
     state = Chion.get_state(domain, Int(idx))
     return (
         idx=Int(idx),
@@ -173,9 +185,8 @@ function _layout_grid(grid::Chion.SnowpackGrid, values::AbstractVector{<:Real})
 end
 
 function _domain_summary(model_or_domain)
-    domain = model_or_domain isa Chion.BESSIModel ?
-        result_domain_cpu(model_or_domain.domain) :
-        result_domain_cpu(model_or_domain)
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    domain = result_domain_cpu(model_or_domain)
     return SM.summarize_domain_state(domain)
 end
 
@@ -212,30 +223,29 @@ function forcing_timeseries_plot(
     return P.plot(p1, p2, p3, p4; layout=(2, 2), size=(950, 650))
 end
 
-function history_plot(history::Vector{<:NamedTuple}; title::AbstractString="Cycle history")
+function history_plot(history::Vector{<:NamedTuple}; title::AbstractString="Year history")
     isempty(history) && error("History is empty.")
     P = _plots_module()
-    cycles         = getproperty.(history, :cycle)
+    years          = getproperty.(history, :year)
     mean_thickness = getproperty.(history, :mean_thickness)
     mean_wet_mass  = getproperty.(history, :mean_wet_mass)
     mean_base_mass = getproperty.(history, :mean_base_mass)
     mean_abs_dth   = getproperty.(history, :mean_abs_delta_thickness)
     mean_abs_dswe  = getproperty.(history, :mean_abs_delta_wet_mass)
     mean_abs_dbase = getproperty.(history, :mean_abs_delta_base_mass)
-    p1 = P.plot(cycles, mean_thickness;  lw=3, marker=:circle, color=:steelblue,   xlabel="Cycle", ylabel="m",    title="Mean thickness",      framestyle=:box, legend=false)
-    p2 = P.plot(cycles, mean_wet_mass;   lw=3, marker=:circle, color=:forestgreen, xlabel="Cycle", ylabel="mmWE", title="Mean wet mass",        framestyle=:box, legend=false)
-    p3 = P.plot(cycles, mean_base_mass;  lw=3, marker=:circle, color=:purple,      xlabel="Cycle", ylabel="mmWE", title="Mean base mass",       framestyle=:box, legend=false)
-    p4 = P.plot(cycles, mean_abs_dth;   lw=3, marker=:circle, color=:firebrick,   xlabel="Cycle", ylabel="m",    title="Mean abs dThickness",  framestyle=:box, legend=false)
-    p5 = P.plot(cycles, mean_abs_dswe;  lw=3, marker=:circle, color=:darkorange,  xlabel="Cycle", ylabel="mmWE", title="Mean abs dSWE",        framestyle=:box, legend=false)
-    p6 = P.plot(cycles, mean_abs_dbase; lw=3, marker=:circle, color=:indigo,      xlabel="Cycle", ylabel="mmWE", title="Mean abs dBase",       framestyle=:box, legend=false)
+    p1 = P.plot(years, mean_thickness;  lw=3, marker=:circle, color=:steelblue,   xlabel="Year", ylabel="m",    title="Mean thickness",      framestyle=:box, legend=false)
+    p2 = P.plot(years, mean_wet_mass;   lw=3, marker=:circle, color=:forestgreen, xlabel="Year", ylabel="mmWE", title="Mean wet mass",        framestyle=:box, legend=false)
+    p3 = P.plot(years, mean_base_mass;  lw=3, marker=:circle, color=:purple,      xlabel="Year", ylabel="mmWE", title="Mean base mass",       framestyle=:box, legend=false)
+    p4 = P.plot(years, mean_abs_dth;   lw=3, marker=:circle, color=:firebrick,   xlabel="Year", ylabel="m",    title="Mean abs dThickness",  framestyle=:box, legend=false)
+    p5 = P.plot(years, mean_abs_dswe;  lw=3, marker=:circle, color=:darkorange,  xlabel="Year", ylabel="mmWE", title="Mean abs dSWE",        framestyle=:box, legend=false)
+    p6 = P.plot(years, mean_abs_dbase; lw=3, marker=:circle, color=:indigo,      xlabel="Year", ylabel="mmWE", title="Mean abs dBase",       framestyle=:box, legend=false)
     return P.plot(p1, p2, p3, p4, p5, p6; layout=(2, 3), size=(1150, 700), plot_title=title)
 end
 
 function column_profile_plot(model_or_domain, idx::Integer=1; title::AbstractString="Final column profile")
     P = _plots_module()
-    domain = model_or_domain isa Chion.BESSIModel ?
-        result_domain_cpu(model_or_domain.domain) :
-        result_domain_cpu(model_or_domain)
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    domain = result_domain_cpu(model_or_domain)
     state = Chion.get_state(domain, Int(idx))
     layer_density = Float64.(state["density"])
     layer_mass    = Float64.(state["mass"])
