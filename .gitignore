@@ -7,3 +7,7 @@ Manifest.toml
 *.txt
 *.log
 *.err
+*.csv
+*.svg
+*.sh
+*.out
