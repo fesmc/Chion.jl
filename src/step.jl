@@ -120,6 +120,8 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     diurnal_shortwave_threshold::NF
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::NF
+    diurnal_temperature_cycle::Bool
+    diurnal_temperature_amplitude::NF
 end
 
 function SnowpackStepForcing(
@@ -166,6 +168,8 @@ function SnowpackStepForcing(
         zero(air_temperature),
         3,
         oftype(air_temperature, 265.15),
+        false,
+        zero(air_temperature),
     )
 end
 
@@ -255,6 +259,8 @@ sets precipitation rate to snowfall plus rainfall.
     diurnal_shortwave_threshold,
     diurnal_shortwave_max_substeps::Int,
     diurnal_shortwave_min_air_temperature,
+    diurnal_temperature_cycle::Bool,
+    diurnal_temperature_amplitude,
 )
     return SnowpackStepForcing(
         air_temperature,
@@ -279,6 +285,8 @@ sets precipitation rate to snowfall plus rainfall.
         diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps,
         diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle,
+        diurnal_temperature_amplitude,
     )
 end
 
@@ -297,6 +305,8 @@ function _step_diurnal_shortwave_interval_resolved!(
     mass_base,
     smb_ice,
     runoff,
+    melt,
+    refreezing,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -321,6 +331,14 @@ function _step_diurnal_shortwave_interval_resolved!(
         hour_angle_start,
         hour_angle_end,
     )
+    air_temperature = forcing.diurnal_temperature_cycle ?
+        _diurnal_temperature_interval_average(
+            forcing.air_temperature,
+            forcing.diurnal_temperature_amplitude,
+            hour_angle_start,
+            hour_angle_end,
+        ) :
+        forcing.air_temperature
     q_sw_net = forcing.has_q_sw_net ?
         _diurnal_shortwave_interval_average(
             forcing.q_sw_net,
@@ -330,7 +348,7 @@ function _step_diurnal_shortwave_interval_resolved!(
             hour_angle_end,
         ) :
         forcing.q_sw_net
-    subforcing = _diurnal_substep_forcing(forcing, fraction, shortwave_down, q_sw_net)
+    subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net)
     return _step_state_core_resolved!(
         N_storage,
         mass,
@@ -340,6 +358,8 @@ function _step_diurnal_shortwave_interval_resolved!(
         mass_base,
         smb_ice,
         runoff,
+        melt,
+        refreezing,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -371,6 +391,8 @@ function _step_state_resolved!(
     mass_base,
     smb_ice,
     runoff,
+    melt,
+    refreezing,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -405,7 +427,7 @@ function _step_state_resolved!(
                 hour_angle_end = substep_index == n_substeps ? day_end : hour_angle_start + substep_width
                 _step_diurnal_shortwave_interval_resolved!(
                     N_storage, mass, mass_w, density, temperature,
-                    mass_base, smb_ice, runoff, Tsrf, snow_cover, albedo_dynamic,
+                    mass_base, smb_ice, runoff, melt, refreezing, Tsrf, snow_cover, albedo_dynamic,
                     idx, c, Ntot, mass_max, mass_split, mass_min, forcing,
                     workspace, hour_angle_start, hour_angle_end, update_snow_cover && substep_index == n_substeps,
                 )
@@ -423,6 +445,8 @@ function _step_state_resolved!(
         mass_base,
         smb_ice,
         runoff,
+        melt,
+        refreezing,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -447,6 +471,8 @@ function _step_state_core_resolved!(
     mass_base,
     smb_ice,
     runoff,
+    melt,
+    refreezing,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -502,6 +528,8 @@ function _step_state_core_resolved!(
             _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
         end
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - bare_ice_ablation)
+        _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_ablation)
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_ablation)
         return nothing
     end
 
@@ -593,8 +621,11 @@ function _step_state_core_resolved!(
             c,
         )
         if melted_snow < melt_mass && _n_active(N_storage, idx) == 0
-            _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - (melt_mass - melted_snow))
+            ice_melt = melt_mass - melted_snow
+            _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - ice_melt)
+            _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + ice_melt)
         end
+        _set_scalar!(melt, idx, _get_scalar(melt, idx) + melt_mass)
     end
 
     has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
@@ -627,7 +658,7 @@ function _step_state_core_resolved!(
     end
 
     if has_liquid_water
-        _go_refreezing!(
+        refrozen_mass = _go_refreezing!(
             N_storage,
             mass_w,
             mass,
@@ -639,6 +670,7 @@ function _step_state_core_resolved!(
             c.Lm,
             c.rho_i,
         )
+        _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
         has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     end
 
@@ -671,6 +703,8 @@ and advances each column independently in-place.
     mass_base,
     smb_ice,
     runoff,
+    melt,
+    refreezing,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -698,6 +732,8 @@ and advances each column independently in-place.
     diurnal_shortwave_threshold,
     diurnal_shortwave_max_substeps::Int,
     diurnal_shortwave_min_air_temperature,
+    diurnal_temperature_cycle::Bool,
+    diurnal_temperature_amplitude,
     time_index::Int,
     dt_days,
     update_snow_cover::Bool,
@@ -724,6 +760,8 @@ and advances each column independently in-place.
             diurnal_shortwave_threshold,
             diurnal_shortwave_max_substeps,
             diurnal_shortwave_min_air_temperature,
+            diurnal_temperature_cycle,
+            diurnal_temperature_amplitude,
         )
         _step_state_resolved!(
             N_storage,
@@ -734,6 +772,8 @@ and advances each column independently in-place.
             mass_base,
             smb_ice,
             runoff,
+            melt,
+            refreezing,
             Tsrf,
             snow_cover,
             albedo_dynamic,
@@ -766,6 +806,8 @@ return the KernelAbstractions event.
     diurnal_shortwave_threshold,
     diurnal_shortwave_max_substeps::Int,
     diurnal_shortwave_min_air_temperature,
+    diurnal_temperature_cycle::Bool,
+    diurnal_temperature_amplitude,
 )
     kernel! = _step_columns_kernel!(_ka_backend(domain.mass))
     return kernel!(
@@ -777,6 +819,8 @@ return the KernelAbstractions event.
         domain.mass_base,
         domain.smb_ice,
         domain.runoff,
+        domain.melt,
+        domain.refreezing,
         domain.Tsrf,
         domain.snow_cover,
         domain.albedo_dynamic,
@@ -804,6 +848,8 @@ return the KernelAbstractions event.
         diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps,
         diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle,
+        diurnal_temperature_amplitude,
         time_index,
         _step_dt(forcing.dt_days, time_index),
         update_snow_cover;
@@ -828,6 +874,8 @@ function step!(
     diurnal_shortwave_threshold=0.0,
     diurnal_shortwave_max_substeps::Int=3,
     diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude=0.0,
 )
     _wait_kernel(_launch_step_columns_kernel!(
         domain,
@@ -839,6 +887,8 @@ function step!(
         diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps,
         diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle,
+        diurnal_temperature_amplitude,
     ))
     return nothing
 end
@@ -859,6 +909,8 @@ function step!(
     diurnal_shortwave_threshold=0.0,
     diurnal_shortwave_max_substeps::Int=3,
     diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude=0.0,
 )
     for time_index in 1:_step_time_count(forcing)
         step!(
@@ -871,6 +923,8 @@ function step!(
             diurnal_shortwave_threshold=diurnal_shortwave_threshold,
             diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
             diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
+            diurnal_temperature_cycle=diurnal_temperature_cycle,
+            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
         )
     end
     return nothing

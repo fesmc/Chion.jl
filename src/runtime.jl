@@ -115,6 +115,8 @@ function step_model!(model::BESSIModel, ::BESSIState, runtime, forcing::Snowpack
         diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
         diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle=model.diurnal_temperature_cycle,
+        diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
     )
     return nothing
 end

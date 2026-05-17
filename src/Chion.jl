@@ -2,12 +2,13 @@ module Chion
 
 using Printf
 using Dates
+using Serialization
 using NCDatasets
 using Base.Threads: @threads
 using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
 using KernelAbstractions
-using ProgressMeter: Progress, next!
+using ProgressMeter: Progress, next!, update!
 
 # ---------------------------------------------------------------------------
 # Core domain, forcing, and physics
@@ -39,6 +40,7 @@ include("integrators.jl")
 include("runtime.jl")
 include("diagnostics.jl")
 include("output_runtime.jl")
+include("checkpoint.jl")
 include("simulation.jl")
 
 # ---------------------------------------------------------------------------
@@ -63,6 +65,7 @@ export SnowpackForcing
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
 export SimulationIntegrator
 export init_integrator, step!, run!, finalize!, finished, set_forcing!, state
+export checkpoint!, restart_integrator, load_checkpoint
 
 # Data loading
 export load_forcing_file

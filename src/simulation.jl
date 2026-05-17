@@ -150,7 +150,15 @@ step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
 step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
     _step_external!(integrator, Δt_days, force_dt)
 
-run!(integrator::SimulationIntegrator) = _run_integrator!(integrator)
+run!(
+    integrator::SimulationIntegrator;
+    checkpoint_path::AbstractString="",
+    checkpoint_year_stride::Integer=1,
+) = _run_integrator!(
+    integrator;
+    checkpoint_path=checkpoint_path,
+    checkpoint_year_stride=checkpoint_year_stride,
+)
 
 finalize!(integrator::SimulationIntegrator) = _finalize_integrator!(integrator)
 
@@ -162,8 +170,14 @@ function run!(
     options::SimulationOptions=sim.options,
     output::OutputOptions=sim.output,
     io::IO=stdout,
+    checkpoint_path::AbstractString="",
+    checkpoint_year_stride::Integer=1,
 )
     integrator = init_integrator(sim; options=options, output=output, io=io)
-    run!(integrator)
+    run!(
+        integrator;
+        checkpoint_path=checkpoint_path,
+        checkpoint_year_stride=checkpoint_year_stride,
+    )
     return finalize!(integrator)
 end

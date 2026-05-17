@@ -161,9 +161,27 @@ function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force
     return _advance_with_forcing!(integrator, forcing, 1)
 end
 
-function _run_integrator!(integrator::SimulationIntegrator)
+function _should_checkpoint_after_year(integrator::SimulationIntegrator, checkpoint_path::AbstractString, checkpoint_year_stride::Integer)
+    isempty(checkpoint_path) && return false
+    stride = Int(checkpoint_year_stride)
+    stride >= 0 || error("`checkpoint_year_stride` must be >= 0.")
+    stride == 0 && return false
+    _finished(integrator) && return false
+    return mod(integrator.stepper.completed_years, stride) == 0
+end
+
+function _run_integrator!(
+    integrator::SimulationIntegrator;
+    checkpoint_path::AbstractString="",
+    checkpoint_year_stride::Integer=1,
+)
     while !_finished(integrator)
+        completed_years_before = integrator.stepper.completed_years
         _step_scheduled!(integrator)
+        if integrator.stepper.completed_years != completed_years_before &&
+           _should_checkpoint_after_year(integrator, checkpoint_path, checkpoint_year_stride)
+            checkpoint!(integrator, checkpoint_path)
+        end
     end
     return nothing
 end

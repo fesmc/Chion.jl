@@ -83,6 +83,20 @@ end
     )
 end
 
+@inline function _diurnal_temperature_interval_average(
+    air_temperature_daily_mean,
+    amplitude,
+    hour_angle_start,
+    hour_angle_end,
+)
+    interval_width = hour_angle_end - hour_angle_start
+    if amplitude <= zero(amplitude) || interval_width <= zero(interval_width)
+        return air_temperature_daily_mean
+    end
+    return air_temperature_daily_mean +
+           amplitude * (sin(hour_angle_end) - sin(hour_angle_start)) / interval_width
+end
+
 @inline function _diurnal_shortwave_substep_count(
     dt_days,
     shortwave_daily_mean,
@@ -115,11 +129,12 @@ end
 @inline function _diurnal_substep_forcing(
     forcing::SnowpackStepForcing,
     fraction,
+    air_temperature,
     shortwave_down,
     q_sw_net,
 )
     return SnowpackStepForcing(
-        forcing.air_temperature,
+        air_temperature,
         forcing.precipitation_rate,
         forcing.dt_days * fraction,
         forcing.snowfall_rate,
@@ -141,5 +156,7 @@ end
         forcing.diurnal_shortwave_threshold,
         forcing.diurnal_shortwave_max_substeps,
         forcing.diurnal_shortwave_min_air_temperature,
+        false,
+        forcing.diurnal_temperature_amplitude,
     )
 end

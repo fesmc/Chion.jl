@@ -42,6 +42,8 @@ struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: 
     diurnal_shortwave_threshold::Float64
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::Float64
+    diurnal_temperature_cycle::Bool
+    diurnal_temperature_amplitude::Float64
 end
 
 function BESSIModel(
@@ -61,11 +63,14 @@ function BESSIModel(
     diurnal_shortwave_threshold::Real=0.0,
     diurnal_shortwave_max_substeps::Integer=3,
     diurnal_shortwave_min_air_temperature_c::Real=-8.0,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude_c::Real=5.0,
     kwargs...,
 )
     diurnal_shortwave_threshold >= 0 || error("`diurnal_shortwave_threshold` must be non-negative.")
     1 <= diurnal_shortwave_max_substeps <= 24 || error("`diurnal_shortwave_max_substeps` must be between 1 and 24.")
     isfinite(diurnal_shortwave_min_air_temperature_c) || error("`diurnal_shortwave_min_air_temperature_c` must be finite.")
+    diurnal_temperature_amplitude_c >= 0 || error("`diurnal_temperature_amplitude_c` must be non-negative.")
     resolved_diurnal_shortwave_substeps = diurnal_shortwave_substeps || diurnal_shortwave
     c = SnowpackPhysicalConstants(
         Float64;
@@ -88,6 +93,8 @@ function BESSIModel(
         Float64(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),
         Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
+        diurnal_temperature_cycle,
+        Float64(diurnal_temperature_amplitude_c),
     )
 end
 
