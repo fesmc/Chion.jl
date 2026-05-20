@@ -39,6 +39,7 @@ const FRESH_SNOW_DENSITY_CONSTANT = UInt8(1)
 const FRESH_SNOW_DENSITY_PARAMETERIZED = UInt8(2)
 const ALBEDO_CONSTANT = UInt8(1)
 const ALBEDO_DYNAMIC = UInt8(2)
+const ALBEDO_PRESCRIBED = UInt8(3)
 const LOW_DENSIFICATION_BESSI = UInt8(1)
 const LOW_DENSIFICATION_HTESSEL = UInt8(2)
 
@@ -96,6 +97,9 @@ Return the floating-point element type used by the physical constants set `c`.
 @inline _uses_constant_albedo(c::SnowpackPhysicalConstants) =
     c.albedo_scheme == ALBEDO_CONSTANT
 
+@inline _uses_prescribed_albedo(c::SnowpackPhysicalConstants) =
+    c.albedo_scheme == ALBEDO_PRESCRIBED
+
 @inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
     c.low_density_densification == LOW_DENSIFICATION_HTESSEL
 
@@ -145,12 +149,14 @@ legacy aliases.
     else
         scheme
     end
-    normalized_scheme in (:constant, :dynamic) ||
+    normalized_scheme in (:constant, :dynamic, :prescribed) ||
         error(
             "Unsupported albedo scheme '$scheme'. " *
-            "Use :constant, :dynamic, or the aliases :legacy / :bessi.",
+            "Use :constant, :dynamic, :prescribed, or the aliases :legacy / :bessi.",
         )
-    return normalized_scheme == :constant ? ALBEDO_CONSTANT : ALBEDO_DYNAMIC
+    return normalized_scheme == :constant ? ALBEDO_CONSTANT :
+        normalized_scheme == :prescribed ? ALBEDO_PRESCRIBED :
+        ALBEDO_DYNAMIC
 end
 
 """
@@ -171,9 +177,9 @@ function SnowpackPhysicalConstants(::Type{NF};
     ci::Real=2110.0,
     cw::Real=4181.0,
     Lm::Real=334000.0,
-    D_sh::Real=10.0,
-    alpha_dry::Real=0.85,
-    alpha_wet::Real=0.72,
+    D_sh::Real=20.0,
+    alpha_dry::Real=0.81,
+    alpha_wet::Real=0.70,
     alpha_ice::Real=0.3,
     max_lwc_albedo::Real=0.1,
     albedo_scheme::Symbol=:dynamic,

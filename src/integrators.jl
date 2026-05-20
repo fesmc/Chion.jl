@@ -76,6 +76,8 @@ function _single_step_forcing_template(forcing::SnowpackForcing)
         has_q_sh=forcing.has_q_sh[:, 1:1],
         q_lh=forcing.q_lh[:, 1:1],
         has_q_lh=forcing.has_q_lh[:, 1:1],
+        prescribed_albedo=forcing.prescribed_albedo[:, 1:1],
+        has_prescribed_albedo=forcing.has_prescribed_albedo[:, 1:1],
         time_values=[first(forcing.time_values)],
     )
 end
@@ -214,6 +216,8 @@ function _set_forcing!(
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    prescribed_albedo=nothing,
+    has_prescribed_albedo=nothing,
     latitude_deg=nothing,
     time_value=nothing,
 )
@@ -246,6 +250,10 @@ function _set_forcing!(
         fill!(f.has_q_lh, true)
     end
     _assign_bool_step_field!(f.has_q_lh, has_q_lh, ncol, "has_q_lh")
+    if _assign_numeric_step_field!(f.prescribed_albedo, prescribed_albedo, ncol, "prescribed_albedo") && isnothing(has_prescribed_albedo)
+        fill!(f.has_prescribed_albedo, true)
+    end
+    _assign_bool_step_field!(f.has_prescribed_albedo, has_prescribed_albedo, ncol, "has_prescribed_albedo")
     if !isnothing(time_value)
         f.time_values[1] = DateTime(time_value)
         f.day_of_year[1] = _calendar_day_of_year(f.time_values[1])

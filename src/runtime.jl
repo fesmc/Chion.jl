@@ -31,6 +31,9 @@ function _validate_integrator_setup!(sim, options::RunOptions)
     if model isa BESSIModel && model.diurnal_shortwave_substeps
         all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
     end
+    if model isa BESSIModel && _uses_prescribed_albedo(model.c)
+        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `PrescribedAlbedo`.")
+    end
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")

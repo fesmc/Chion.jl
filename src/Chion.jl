@@ -54,7 +54,7 @@ export SnowpackGrid
 export BESSIModel, PDDModel, ITMModel, StochasticMonthlyPDD
 export AbstractSnowModelState, BESSIState, PDDState, ITMState
 export build_model, initial_state
-export DynamicAlbedo, ConstantAlbedo
+export DynamicAlbedo, ConstantAlbedo, PrescribedAlbedo
 export BESSIDensification, HTESSELDensification
 export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
 
@@ -64,7 +64,7 @@ export SnowpackForcing
 # Simulation
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
 export SimulationIntegrator
-export init_integrator, step!, run!, finalize!, finished, set_forcing!, state
+export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_forcing!, state
 export checkpoint!, restart_integrator, load_checkpoint
 
 # Data loading

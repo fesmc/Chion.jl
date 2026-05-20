@@ -100,6 +100,8 @@ struct SnowpackForcing
     has_q_sh
     q_lh
     has_q_lh
+    prescribed_albedo
+    has_prescribed_albedo
 end
 
 @adapt_structure SnowpackForcing
@@ -126,6 +128,8 @@ function SnowpackForcing(;
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    prescribed_albedo=nothing,
+    has_prescribed_albedo=nothing,
     latitude_deg=nothing,
     time_values=nothing,
 )
@@ -147,7 +151,8 @@ function SnowpackForcing(;
         end
         if isnothing(latitude_deg) || latitude_deg isa Number
             for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
-                snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh)
+                snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh,
+                prescribed_albedo)
                 isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
             end
         end
@@ -180,6 +185,8 @@ function SnowpackForcing(;
     has_q_sh_m = isnothing(q_sh) ? fill(false, dims) : isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
     q_lh_m = isnothing(q_lh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
     has_q_lh_m = isnothing(q_lh) ? fill(false, dims) : isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
+    prescribed_albedo_m = isnothing(prescribed_albedo) ? zeros(Float64, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
+    has_prescribed_albedo_m = isnothing(prescribed_albedo) ? fill(false, dims) : isnothing(has_prescribed_albedo) ? fill(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
@@ -193,6 +200,8 @@ function SnowpackForcing(;
         ("has_q_sh", has_q_sh_m),
         ("q_lh", q_lh_m),
         ("has_q_lh", has_q_lh_m),
+        ("prescribed_albedo", prescribed_albedo_m),
+        ("has_prescribed_albedo", has_prescribed_albedo_m),
     )
         _ensure_matching_field_sizes(dims, name, field)
     end
@@ -219,5 +228,7 @@ function SnowpackForcing(;
         has_q_sh_m,
         q_lh_m,
         has_q_lh_m,
+        prescribed_albedo_m,
+        has_prescribed_albedo_m,
     )
 end

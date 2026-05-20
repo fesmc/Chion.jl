@@ -120,6 +120,7 @@ function init_diagnostics!(context, model_runtime::IntegratorModelRuntime, optio
     )
     previous = (
         base_mass=_host_vector(prev.base_mass; copy_array=true),
+        wet_mass=_host_vector(prev.wet_mass; copy_array=true),
         smb_ice=_model_smb_ice_vector(model, state, runtime),
         runoff=_model_runoff_vector(model, state, runtime),
         pdd=_model_pdd_vector(model, state, runtime, ncol),

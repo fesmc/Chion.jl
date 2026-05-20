@@ -149,6 +149,8 @@ end
         forcing.has_q_lw_down,
         forcing.has_q_sh,
         forcing.has_q_lh,
+        forcing.prescribed_albedo,
+        forcing.has_prescribed_albedo,
         false,
         forcing.latitude_deg,
         forcing.day_of_year,

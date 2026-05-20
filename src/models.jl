@@ -6,6 +6,8 @@ Model definitions exposed by Chion's simulation-first API.
 struct DynamicAlbedo end
 """Constant surface albedo scheme for `BESSIModel`."""
 struct ConstantAlbedo end
+"""Use prescribed surface albedo from `SnowpackForcing`."""
+struct PrescribedAlbedo end
 """BESSI low-density densification scheme."""
 struct BESSIDensification end
 """HTESSEL-style low-density densification scheme."""
@@ -17,6 +19,7 @@ struct ParameterizedFreshSnowDensity end
 
 _albedo_symbol(::DynamicAlbedo) = :dynamic
 _albedo_symbol(::ConstantAlbedo) = :constant
+_albedo_symbol(::PrescribedAlbedo) = :prescribed
 _densification_symbol(::BESSIDensification) = :bessi
 _densification_symbol(::HTESSELDensification) = :htessel
 _fresh_snow_symbol(::ConstantFreshSnowDensity) = :constant

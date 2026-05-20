@@ -176,8 +176,8 @@ end
 
 Load a generic NetCDF forcing file into a `SnowpackGrid` and
 `SnowpackForcing`. Required variables default to `x`, `y`, `time`, `TT`, `SF`,
-`RF`, and `SWD`; optional turbulent/radiative flux fields are loaded when
-present.
+`RF`, and `SWD`; optional turbulent/radiative flux fields and prescribed
+surface albedo are loaded when present and requested.
 """
 function load_forcing_file(
     path::AbstractString;
@@ -192,6 +192,7 @@ function load_forcing_file(
     q_lw_down_name::Union{Nothing, AbstractString}="LWD",
     q_sh_name::Union{Nothing, AbstractString}="SHF",
     q_lh_name::Union{Nothing, AbstractString}="LHF",
+    prescribed_albedo_name::Union{Nothing, AbstractString}=nothing,
     latitude_name::Union{Nothing, AbstractString}="LAT",
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
@@ -252,6 +253,15 @@ function load_forcing_file(
             q_lh_m[.!has_q_lh_m] .= 0.0
         end
 
+        prescribed_albedo_m = zeros(Float64, nx * ny, ntime)
+        has_prescribed_albedo_m = fill(false, nx * ny, ntime)
+        if !isnothing(prescribed_albedo_name) && haskey(ds, prescribed_albedo_name)
+            prescribed_albedo_raw = _column_matrix(_read_time_y_x(ds, prescribed_albedo_name, ntime, ny, nx))
+            prescribed_albedo_m .= prescribed_albedo_raw
+            has_prescribed_albedo_m .= isfinite.(prescribed_albedo_raw)
+            prescribed_albedo_m[.!has_prescribed_albedo_m] .= 0.0
+        end
+
         air_temperature = air_temperature_in_celsius ? tair_m .+ 273.15 : tair_m
         snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
         rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
@@ -273,6 +283,8 @@ function load_forcing_file(
             has_q_sh=has_q_sh_m,
             q_lh=q_lh_m,
             has_q_lh=has_q_lh_m,
+            prescribed_albedo=prescribed_albedo_m,
+            has_prescribed_albedo=has_prescribed_albedo_m,
             latitude_deg=latitude_deg,
         )
         return (grid=grid, forcing=forcing)

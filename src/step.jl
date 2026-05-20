@@ -113,6 +113,8 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     has_q_lw_down::Bool
     has_q_sh::Bool
     has_q_lh::Bool
+    prescribed_albedo::NF
+    has_prescribed_albedo::Bool
     diurnal_shortwave_substeps::Bool
     latitude_deg::NF
     day_of_year::NF
@@ -140,6 +142,8 @@ function SnowpackStepForcing(
     has_q_lw_down::Bool,
     has_q_sh::Bool,
     has_q_lh::Bool,
+    prescribed_albedo,
+    has_prescribed_albedo::Bool,
     diurnal_shortwave_substeps::Bool,
     latitude_deg,
     day_of_year,
@@ -161,6 +165,8 @@ function SnowpackStepForcing(
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        prescribed_albedo,
+        has_prescribed_albedo,
         diurnal_shortwave_substeps,
         latitude_deg,
         day_of_year,
@@ -189,6 +195,8 @@ function SnowpackStepForcing(
     has_q_lw_down::Bool,
     has_q_sh::Bool,
     has_q_lh::Bool,
+    prescribed_albedo,
+    has_prescribed_albedo::Bool,
     diurnal_shortwave_substeps::Bool,
     latitude_deg,
     day_of_year,
@@ -209,6 +217,8 @@ function SnowpackStepForcing(
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        prescribed_albedo,
+        has_prescribed_albedo,
         diurnal_shortwave_substeps,
         latitude_deg,
         day_of_year,
@@ -233,7 +243,7 @@ vector-valued `dt_days` storage.
 @inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
 
 """
-    _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh)
+    _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh, prescribed_albedo, has_prescribed_albedo)
 
 Build a single-column `SnowpackStepForcing` from already-indexed forcing
 values. The returned forcing disables optional fluxes that are not present and
@@ -252,6 +262,8 @@ sets precipitation rate to snowfall plus rainfall.
     has_q_sh::Bool,
     q_lh,
     has_q_lh::Bool,
+    prescribed_albedo,
+    has_prescribed_albedo::Bool,
     diurnal_shortwave_substeps::Bool,
     latitude_deg,
     day_of_year,
@@ -278,6 +290,8 @@ sets precipitation rate to snowfall plus rainfall.
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        prescribed_albedo,
+        has_prescribed_albedo,
         diurnal_shortwave_substeps,
         latitude_deg,
         day_of_year,
@@ -295,6 +309,15 @@ end
 """
 Core stepping flow shared by batch stepping kernels.
 """
+
+@inline function _prescribed_surface_albedo(forcing::SnowpackStepForcing)
+    return clamp(forcing.prescribed_albedo, zero(forcing.prescribed_albedo), one(forcing.prescribed_albedo))
+end
+
+@inline function _set_prescribed_surface_albedo!(albedo_dynamic, idx::Int, forcing::SnowpackStepForcing)
+    _set_scalar!(albedo_dynamic, idx, _prescribed_surface_albedo(forcing))
+    return nothing
+end
 
 function _step_diurnal_shortwave_interval_resolved!(
     N_storage,
@@ -488,6 +511,7 @@ function _step_state_core_resolved!(
 )
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
+    use_prescribed_albedo = _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo
 
     _apply_accumulation!(
         N_storage,
@@ -520,9 +544,11 @@ function _step_state_core_resolved!(
         _set_layer!(temperature, 1, idx, forcing.air_temperature)
     end
 
+    use_prescribed_albedo && _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
-        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         bare_ice_ablation = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         if update_snow_cover
             _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
@@ -533,16 +559,20 @@ function _step_state_core_resolved!(
         return nothing
     end
 
-    _update_surface_albedo_arrays!(
-        N_storage,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        albedo_dynamic,
-        idx,
-        c,
-    )
+    if use_prescribed_albedo
+        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    else
+        _update_surface_albedo_arrays!(
+            N_storage,
+            mass,
+            mass_w,
+            density,
+            temperature,
+            albedo_dynamic,
+            idx,
+            c,
+        )
+    end
 
     n_liquid_water_before_energy = 0
     if _uses_htessel_densification(c)
@@ -677,7 +707,9 @@ function _step_state_core_resolved!(
     if update_snow_cover
         _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
     end
-    if !_surface_has_snow(N_storage, mass, idx)
+    if use_prescribed_albedo
+        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    elseif !_surface_has_snow(N_storage, mass, idx)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
 
@@ -725,6 +757,8 @@ and advances each column independently in-place.
     has_q_sh,
     q_lh,
     has_q_lh,
+    prescribed_albedo,
+    has_prescribed_albedo,
     latitude_deg,
     day_of_year,
     solar_longitude_deg,
@@ -753,6 +787,8 @@ and advances each column independently in-place.
             has_q_sh[idx, time_index],
             q_lh[idx, time_index],
             has_q_lh[idx, time_index],
+            prescribed_albedo[idx, time_index],
+            has_prescribed_albedo[idx, time_index],
             diurnal_shortwave_substeps,
             latitude_deg[idx, time_index],
             day_of_year,
@@ -841,6 +877,8 @@ return the KernelAbstractions event.
         forcing.has_q_sh,
         forcing.q_lh,
         forcing.has_q_lh,
+        forcing.prescribed_albedo,
+        forcing.has_prescribed_albedo,
         forcing.latitude_deg,
         forcing.day_of_year[time_index],
         forcing.solar_longitude_deg[time_index],

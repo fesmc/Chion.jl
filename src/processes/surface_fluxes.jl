@@ -51,10 +51,12 @@ energy.
     q_sh_value,
     use_q_lh::Bool,
     q_lh_value,
+    surface_albedo,
 )
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
-        max(shortwave_down, zero(dt_seconds)) * (one(dt_seconds) - c.alpha_ice)
+        max(shortwave_down, zero(dt_seconds)) *
+        (one(dt_seconds) - clamp(surface_albedo, zero(surface_albedo), one(surface_albedo)))
     return (
         absorbed_shortwave,
         _resolved_nonshortwave_surface_flux_components(
@@ -74,7 +76,7 @@ energy.
 end
 
 """
-    _bare_ice_ablation_mass_resolved(c, air_temperature, rainfall_rate, dt_seconds, shortwave_down, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
+    _bare_ice_ablation_mass_resolved(c, air_temperature, rainfall_rate, dt_seconds, shortwave_down, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value, surface_albedo)
 
 Convert net positive bare-ice surface energy into melt mass over `dt_seconds`.
 Returns zero when the surface energy balance is negative.
@@ -93,6 +95,7 @@ function _bare_ice_ablation_mass_resolved(
     q_sh_value,
     use_q_lh::Bool,
     q_lh_value,
+    surface_albedo,
 )
     absorbed_shortwave, longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
         _resolved_bare_ice_surface_flux_components(
@@ -109,6 +112,7 @@ function _bare_ice_ablation_mass_resolved(
             q_sh_value,
             use_q_lh,
             q_lh_value,
+            surface_albedo,
         )
     net_surface_flux = absorbed_shortwave + longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
     return max(net_surface_flux, zero(net_surface_flux)) * dt_seconds / c.Lm
@@ -139,5 +143,8 @@ function _bare_ice_ablation_mass(
         forcing.q_sh,
         forcing.has_q_lh,
         forcing.q_lh,
+        _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo ?
+            _prescribed_surface_albedo(forcing) :
+            c.alpha_ice,
     )
 end
