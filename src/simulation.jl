@@ -104,11 +104,11 @@ end
 """
     init_problem!(sim, options)
 
-Validate and prepare the model/forcing context before an initialized run. This
-is Chion's analogue of FastIsostasy's pre-integrator initialization hook.
+Validate and prepare the model/forcing context before an initialized run.
 """
 function init_problem!(sim::Simulation, options::RunOptions)
-    return _validate_integrator_setup!(sim, options)
+    validate_integrator_setup!(sim, options)
+    return nothing
 end
 
 function init_problem!(
@@ -123,7 +123,7 @@ end
     init_integrator(sim; options=sim.options, output=sim.output, io=stdout)
 
 Initialize a runtime that can be advanced with `step!`, `run!`, and
-`finalize!`, following the FastIsostasy coupling lifecycle.
+`finalize!`.
 """
 function init_integrator(
     sim::Simulation;
@@ -133,12 +133,11 @@ function init_integrator(
 )
     run_options = _run_options(options, output)
     timings = StepTimingStats()
-    context = init_problem!(sim, run_options)
-    model_runtime = init_model_runtime!(context, run_options, timings)
-    diagnostics = init_diagnostics!(context, model_runtime, run_options, timings)
-    output_runtime = init_io!(context, model_runtime, diagnostics, run_options, timings)
-    stepper = init_stepper_state!(context, run_options, io)
-    return _new_integrator(sim, run_options, io, timings, model_runtime, diagnostics, output_runtime, stepper)
+    init_problem!(sim, run_options)
+    model_runtime = init_model_runtime!(sim, run_options, timings)
+    diagnostics = init_diagnostics!(sim, model_runtime, run_options, timings)
+    output_runtime = init_io!(sim, model_runtime, diagnostics, run_options, timings)
+    return _new_integrator(sim, run_options, io, timings, model_runtime, diagnostics, output_runtime)
 end
 
 finished(integrator::SimulationIntegrator) = _finished(integrator)
@@ -149,6 +148,59 @@ step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
 
 step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
     _step_external!(integrator, Δt_days, force_dt)
+
+_surface_temperature_vector(::BESSIModel, ::BESSIState, runtime) =
+    _host_vector(runtime.domain.Tsrf; copy_array=true)
+
+function _yearly_grid(values::Vector{Float64}, grid::AbstractSnowpackGrid)
+    has_spatial_coords(grid) || return Matrix{Float64}(undef, 0, 0)
+    return scatter_to_grid(values, grid.js, grid.is, size(grid.mask))
+end
+
+"""
+    yearly_step!(integrator)
+
+Advance a scheduled BESSI simulation by one full forcing year and return annual
+coupling fields. `ice_sheet_net_forcing_yearly` is the yearly `smb_ice` delta in
+native Chion mass units, and `mean_T_srf_K` is the mean surface temperature.
+"""
+function yearly_step!(integrator::SimulationIntegrator)
+    integrator.sim.model isa BESSIModel ||
+        error("yearly_step! currently supports BESSIModel simulations.")
+    integrator.time_index == 1 ||
+        error("yearly_step! must be called at the start of a forcing year.")
+
+    nsteps = length(integrator.sim.forcing.time_values)
+    nsteps > 0 || error("Cannot advance a yearly step without forcing time values.")
+    weights_days = integrator.sim.forcing.dt_days
+    total_days = sum(weights_days)
+    total_days > 0.0 || error("Cannot compute yearly means with non-positive total forcing duration.")
+
+    model = integrator.sim.model
+    state = integrator.sim.now
+    runtime = integrator.model_runtime.backend
+    grid = integrator.model_runtime.grid
+
+    smb_before = _model_smb_ice_vector(model, state, runtime)
+    Tsrf_sum = zeros(Float64, integrator.model_runtime.ncol)
+
+    for time_index in 1:nsteps
+        step!(integrator)
+        Tsrf = _surface_temperature_vector(model, state, runtime)
+        @. Tsrf_sum += Tsrf * weights_days[time_index]
+    end
+
+    ice_sheet_net_forcing_yearly = _model_smb_ice_vector(model, state, runtime) .- smb_before
+    mean_T_srf_K = Tsrf_sum ./ total_days
+
+    return (
+        year=integrator.completed_years,
+        mean_T_srf_K=mean_T_srf_K,
+        ice_sheet_net_forcing_yearly=ice_sheet_net_forcing_yearly,
+        mean_T_srf_K_grid=_yearly_grid(mean_T_srf_K, grid),
+        ice_sheet_net_forcing_yearly_grid=_yearly_grid(ice_sheet_net_forcing_yearly, grid),
+    )
+end
 
 run!(
     integrator::SimulationIntegrator;
