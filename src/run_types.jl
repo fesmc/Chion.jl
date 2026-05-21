@@ -5,10 +5,12 @@ struct IntegratorClocks
     simulation_wall_t0::Int
 end
 
-struct ModelRuntime
+mutable struct ModelRuntime
     backend
     ncol::Int
     grid
+    active::Vector{Bool}
+    active_indices
 end
 
 mutable struct DiagnosticsRuntime

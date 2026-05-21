@@ -102,17 +102,142 @@ function prepare_runtime!(::ITMModel, ::AbstractSnowModelState, ::SnowpackForcin
     error("ITMModel is not yet implemented. Physics coming soon.")
 end
 
-function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
-    backend = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
-    return ModelRuntime(backend, _model_column_count(sim.model), _model_grid(sim.model))
+_backend_active_indices(indices::Vector{Int}, backend) =
+    getproperty(backend, :is_gpu) ? adapt(gpu_storage_type(), indices) : indices
+
+@kernel function _reset_bessi_columns_kernel!(
+    N,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    melt,
+    refreezing,
+    Tsrf,
+    snow_cover,
+    albedo_dynamic,
+    inactive_indices,
+    Ntot::Int,
+    density_init,
+    temperature_init,
+    surface_temperature_init,
+    albedo_init,
+)
+    active_idx = @index(Global)
+    if active_idx <= length(inactive_indices)
+        idx = inactive_indices[active_idx]
+        N[idx] = 0
+        for layer_index in 1:Ntot
+            mass[layer_index, idx] = zero(density_init)
+            mass_w[layer_index, idx] = zero(density_init)
+            density[layer_index, idx] = density_init
+            temperature[layer_index, idx] = temperature_init
+        end
+        mass_base[idx] = zero(density_init)
+        smb_ice[idx] = zero(density_init)
+        runoff[idx] = zero(density_init)
+        melt[idx] = zero(density_init)
+        refreezing[idx] = zero(density_init)
+        Tsrf[idx] = surface_temperature_init
+        snow_cover[idx] = zero(density_init)
+        albedo_dynamic[idx] = albedo_init
+    end
 end
 
-function step_model!(model::BESSIModel, ::BESSIState, runtime, forcing::SnowpackForcing, time_index::Int)
+function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactive_indices::Vector{Int})
+    isempty(inactive_indices) && return nothing
+    backend_indices = _backend_active_indices(inactive_indices, runtime)
+    kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.domain.mass))
+    event = kernel!(
+        runtime.domain.N,
+        runtime.domain.mass,
+        runtime.domain.mass_w,
+        runtime.domain.density,
+        runtime.domain.temperature,
+        runtime.domain.mass_base,
+        runtime.domain.smb_ice,
+        runtime.domain.runoff,
+        runtime.domain.melt,
+        runtime.domain.refreezing,
+        runtime.domain.Tsrf,
+        runtime.domain.snow_cover,
+        runtime.domain.albedo_dynamic,
+        backend_indices,
+        runtime.domain.Ntot,
+        convert(eltype(runtime.domain.mass), model.density_init),
+        convert(eltype(runtime.domain.mass), model.temperature_init),
+        runtime.domain.c.T0,
+        runtime.domain.c.alpha_dry;
+        ndrange=length(inactive_indices),
+    )
+    _wait_kernel(event)
+    return nothing
+end
+
+@kernel function _reset_pdd_columns_kernel!(
+    snowpack_swe,
+    smb_ice,
+    runoff,
+    pdd_sum,
+    inactive_indices,
+)
+    active_idx = @index(Global)
+    if active_idx <= length(inactive_indices)
+        idx = inactive_indices[active_idx]
+        snowpack_swe[idx] = zero(eltype(snowpack_swe))
+        smb_ice[idx] = zero(eltype(smb_ice))
+        runoff[idx] = zero(eltype(runoff))
+        pdd_sum[idx] = zero(eltype(pdd_sum))
+    end
+end
+
+function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices::Vector{Int})
+    isempty(inactive_indices) && return nothing
+    backend_indices = _backend_active_indices(inactive_indices, runtime)
+    kernel! = _reset_pdd_columns_kernel!(_ka_backend(runtime.snowpack_swe))
+    event = kernel!(
+        runtime.snowpack_swe,
+        runtime.smb_ice,
+        runtime.runoff,
+        runtime.pdd_sum,
+        backend_indices;
+        ndrange=length(inactive_indices),
+    )
+    _wait_kernel(event)
+    return nothing
+end
+
+_reset_model_columns!(::AbstractSnowModel, ::AbstractSnowModelState, runtime, inactive_indices::Vector{Int}) = nothing
+
+function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
+    length(active) == model_runtime.ncol || error("Active mask length must match the model column count.")
+    active_v = Vector{Bool}(active)
+    active_indices = findall(active_v)
+    isempty(active_indices) && error("Active mask kept no Chion columns.")
+    model_runtime.active = active_v
+    model_runtime.active_indices = _backend_active_indices(active_indices, model_runtime.backend)
+    return model_runtime
+end
+
+function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
+    backend = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
+    ncol = _model_column_count(sim.model)
+    active = trues(ncol)
+    active_indices = _backend_active_indices(collect(1:ncol), backend)
+    return ModelRuntime(backend, ncol, _model_grid(sim.model), active, active_indices)
+end
+
+function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+    runtime = model_runtime.backend
     step!(
         runtime.domain,
         forcing,
         time_index,
-        runtime.workspace;
+        runtime.workspace,
+        model_runtime.active_indices;
         diurnal_shortwave_substeps=model.diurnal_shortwave_substeps,
         diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
@@ -123,7 +248,8 @@ function step_model!(model::BESSIModel, ::BESSIState, runtime, forcing::Snowpack
     return nothing
 end
 
-function step_model!(model::PDDModel, ::PDDState, runtime, forcing::SnowpackForcing, time_index::Int)
+function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+    runtime = model_runtime.backend
     if runtime.snowpack_swe isa Vector{Float64}
         if forcing_step_kind(forcing, time_index) === :monthly
             pdd_monthly_step!(
@@ -160,6 +286,7 @@ function step_model!(model::PDDModel, ::PDDState, runtime, forcing::SnowpackForc
                 forcing,
                 time_index,
                 model,
+                model_runtime.active_indices,
             )
         else
             pdd_step!(
@@ -172,6 +299,7 @@ function step_model!(model::PDDModel, ::PDDState, runtime, forcing::SnowpackForc
                 model.ddf_snow,
                 model.ddf_ice,
                 model.refreezing_fraction,
+                model_runtime.active_indices,
             )
         end
     end

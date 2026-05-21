@@ -241,6 +241,7 @@ function _checkpoint_payload(integrator::SimulationIntegrator)
         options=_checkpoint_run_options(integrator.options),
         time_index=integrator.time_index,
         completed_years=integrator.completed_years,
+        active=copy(integrator.model_runtime.active),
         current_forcing=deepcopy(integrator.current_forcing),
         diagnostics=_checkpoint_diagnostics(integrator.diagnostics),
         output=_checkpoint_output(integrator.output),
@@ -293,6 +294,7 @@ function _restart_integrator_from_checkpoint(checkpoint; io::IO=stdout, sim_tran
     timings = StepTimingStats()
     init_problem!(sim, options)
     model_runtime = init_model_runtime!(sim, options, timings)
+    hasproperty(checkpoint, :active) && _set_model_runtime_active_indices!(model_runtime, Bool.(checkpoint.active))
     diagnostics = init_diagnostics!(sim, model_runtime, options, timings)
     _restore_diagnostics!(diagnostics, checkpoint.diagnostics)
     output = _restart_output_runtime(sim, model_runtime, diagnostics, options, checkpoint.output)

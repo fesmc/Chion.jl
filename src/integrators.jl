@@ -78,7 +78,7 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     runtime = model_runtime.backend
 
     time_counted_block!(integrator.timings, :model_step_wall, model_runtime.ncol) do
-        step_model!(model, state, runtime, forcing, time_index)
+        step_model!(model, state, model_runtime, forcing, time_index)
     end
 
     accumulate_step_diagnostics!(integrator)
@@ -137,6 +137,43 @@ function _run_integrator!(
         end
     end
     return nothing
+end
+
+@inline _active_mask_value(value::Bool) = value
+@inline _active_mask_value(value) = isfinite(Float64(value)) && Float64(value) != 0.0
+
+function _active_mask_vector(mask, grid::AbstractSnowpackGrid, ncol::Int)
+    data = collect(mask)
+    if ndims(data) == 1
+        length(data) == ncol || error("Active mask vector length must match the model column count.")
+        return [_active_mask_value(data[idx]) for idx in eachindex(data)]
+    elseif ndims(data) == 2
+        has_spatial_coords(grid) || error("2-D active masks require a grid with spatial coordinates.")
+        size(data) == size(grid.mask) || error("Active mask matrix must have size $(size(grid.mask)), got $(size(data)).")
+        return [_active_mask_value(data[grid.js[col], grid.is[col]]) for col in 1:ncol]
+    end
+    error("Active mask must be a vector of model columns or a y-x matrix matching `grid.mask`.")
+end
+
+function _set_active_mask!(
+    integrator::SimulationIntegrator,
+    mask;
+    reset_newly_inactive::Bool=true,
+)
+    integrator.finalized && error("Cannot update the active mask of a finalized integrator.")
+    active = _active_mask_vector(mask, integrator.model_runtime.grid, integrator.model_runtime.ncol)
+    old_active = integrator.model_runtime.active
+    newly_inactive = reset_newly_inactive ? findall(old_active .& .!active) : Int[]
+    if !isempty(newly_inactive)
+        _reset_model_columns!(
+            integrator.sim.model,
+            integrator.sim.now,
+            integrator.model_runtime.backend,
+            newly_inactive,
+        )
+    end
+    _set_model_runtime_active_indices!(integrator.model_runtime, active)
+    return integrator
 end
 
 function _assign_numeric_step_field!(dest::AbstractMatrix, value, ncol::Int, name::AbstractString; transform=identity)

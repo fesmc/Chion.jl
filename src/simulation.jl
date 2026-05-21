@@ -157,6 +157,21 @@ function _yearly_grid(values::Vector{Float64}, grid::AbstractSnowpackGrid)
     return scatter_to_grid(values, grid.js, grid.is, size(grid.mask))
 end
 
+function _mask_inactive_yearly_outputs!(
+    ice_sheet_net_forcing_yearly::Vector{Float64},
+    mean_T_srf_K::Vector{Float64},
+    active::Vector{Bool},
+)
+    length(active) == length(ice_sheet_net_forcing_yearly) || error("Active mask length must match yearly output length.")
+    @inbounds for idx in eachindex(active)
+        if !active[idx]
+            ice_sheet_net_forcing_yearly[idx] = 0.0
+            mean_T_srf_K[idx] = NaN
+        end
+    end
+    return nothing
+end
+
 """
     yearly_step!(integrator)
 
@@ -192,6 +207,7 @@ function yearly_step!(integrator::SimulationIntegrator)
 
     ice_sheet_net_forcing_yearly = _model_smb_ice_vector(model, state, runtime) .- smb_before
     mean_T_srf_K = Tsrf_sum ./ total_days
+    _mask_inactive_yearly_outputs!(ice_sheet_net_forcing_yearly, mean_T_srf_K, integrator.model_runtime.active)
 
     return (
         year=integrator.completed_years,
@@ -216,6 +232,9 @@ finalize!(integrator::SimulationIntegrator) = _finalize_integrator!(integrator)
 
 set_forcing!(integrator::SimulationIntegrator; kwargs...) =
     _set_forcing!(integrator; kwargs...)
+
+set_active_mask!(integrator::SimulationIntegrator, mask; kwargs...) =
+    _set_active_mask!(integrator, mask; kwargs...)
 
 function run!(
     sim::Simulation;

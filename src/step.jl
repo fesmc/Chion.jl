@@ -746,6 +746,7 @@ and advances each column independently in-place.
     mass_split,
     mass_min,
     workspace::ColumnarStepWorkspace,
+    active_indices,
     air_temperature,
     snowfall_rate,
     rainfall_rate,
@@ -772,8 +773,9 @@ and advances each column independently in-place.
     dt_days,
     update_snow_cover::Bool,
 )
-    idx = @index(Global)
-    if idx <= length(N_storage)
+    active_idx = @index(Global)
+    if active_idx <= length(active_indices)
+        idx = active_indices[active_idx]
         forcing = _step_forcing_from_fields(
             air_temperature[idx, time_index],
             snowfall_rate[idx, time_index],
@@ -837,6 +839,7 @@ return the KernelAbstractions event.
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace,
+    active_indices,
     update_snow_cover::Bool,
     diurnal_shortwave_substeps::Bool,
     diurnal_shortwave_threshold,
@@ -866,6 +869,7 @@ return the KernelAbstractions event.
         domain.mass_split,
         domain.mass_min,
         workspace,
+        active_indices,
         forcing.air_temperature,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
@@ -891,7 +895,7 @@ return the KernelAbstractions event.
         time_index,
         _step_dt(forcing.dt_days, time_index),
         update_snow_cover;
-        ndrange=column_count(domain),
+        ndrange=length(active_indices),
     )
 end
 
@@ -915,11 +919,43 @@ function step!(
     diurnal_temperature_cycle::Bool=false,
     diurnal_temperature_amplitude=0.0,
 )
+    active_indices = 1:column_count(domain)
+    return step!(
+        domain,
+        forcing,
+        time_index,
+        workspace,
+        active_indices;
+        update_snow_cover=update_snow_cover,
+        diurnal_shortwave_substeps=diurnal_shortwave_substeps,
+        diurnal_shortwave_threshold=diurnal_shortwave_threshold,
+        diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
+        diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle=diurnal_temperature_cycle,
+        diurnal_temperature_amplitude=diurnal_temperature_amplitude,
+    )
+end
+
+function step!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    workspace::ColumnarStepWorkspace,
+    active_indices;
+    update_snow_cover::Bool=true,
+    diurnal_shortwave_substeps::Bool=false,
+    diurnal_shortwave_threshold=0.0,
+    diurnal_shortwave_max_substeps::Int=3,
+    diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude=0.0,
+)
     _wait_kernel(_launch_step_columns_kernel!(
         domain,
         forcing,
         time_index,
         workspace,
+        active_indices,
         update_snow_cover,
         diurnal_shortwave_substeps,
         diurnal_shortwave_threshold,
@@ -950,12 +986,42 @@ function step!(
     diurnal_temperature_cycle::Bool=false,
     diurnal_temperature_amplitude=0.0,
 )
+    active_indices = 1:column_count(domain)
+    return step!(
+        domain,
+        forcing,
+        workspace,
+        active_indices;
+        update_snow_cover=update_snow_cover,
+        diurnal_shortwave_substeps=diurnal_shortwave_substeps,
+        diurnal_shortwave_threshold=diurnal_shortwave_threshold,
+        diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
+        diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle=diurnal_temperature_cycle,
+        diurnal_temperature_amplitude=diurnal_temperature_amplitude,
+    )
+end
+
+function step!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    workspace::ColumnarStepWorkspace,
+    active_indices;
+    update_snow_cover::Bool=true,
+    diurnal_shortwave_substeps::Bool=false,
+    diurnal_shortwave_threshold=0.0,
+    diurnal_shortwave_max_substeps::Int=3,
+    diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude=0.0,
+)
     for time_index in 1:_step_time_count(forcing)
         step!(
             domain,
             forcing,
             time_index,
-            workspace;
+            workspace,
+            active_indices;
             update_snow_cover=update_snow_cover,
             diurnal_shortwave_substeps=diurnal_shortwave_substeps,
             diurnal_shortwave_threshold=diurnal_shortwave_threshold,
