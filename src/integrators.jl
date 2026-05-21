@@ -1,65 +1,5 @@
 """Initialized integrator type and lifecycle helpers for `Simulation`."""
 
-struct IntegratorClocks
-    run_wall_t0::Int
-    simulation_wall_t0::Int
-end
-
-struct IntegratorModelRuntime
-    runtime
-    ncol::Int
-    grid
-end
-
-mutable struct DiagnosticsRuntime
-    selected::Set{Symbol}
-    need_step_outputs::Bool
-    need_monthly_outputs::Bool
-    need_layer_outputs::Bool
-    need_last_year_smb_delta::Bool
-    need_step_diagnostics::Bool
-    prev
-    final
-    backend_year_summary
-    step_summary
-    backend_step_summary
-    deltas
-    previous
-    previous_year_smb_ice::Vector{Float64}
-    history::Vector{NamedTuple}
-end
-
-mutable struct OutputRuntime
-    schedule
-    writer
-    nc_path::String
-    monthly_sums
-    monthly_count::Vector{Int32}
-    step_vectors
-    steps_written::Int
-end
-
-mutable struct StepperRuntime
-    time_index::Int
-    completed_years::Int
-    current_forcing::SnowpackForcing
-    progress
-end
-
-mutable struct SimulationIntegrator
-    sim
-    options::RunOptions
-    io::IO
-    timings::StepTimingStats
-    clocks::IntegratorClocks
-    model_runtime::IntegratorModelRuntime
-    diagnostics::DiagnosticsRuntime
-    output::OutputRuntime
-    stepper::StepperRuntime
-    finalized::Bool
-    result::Union{Nothing, SimulationResult}
-end
-
 function _single_step_forcing_template(forcing::SnowpackForcing)
     return SnowpackForcing(
         dt_days=[first(forcing.dt_days)],
@@ -82,12 +22,20 @@ function _single_step_forcing_template(forcing::SnowpackForcing)
     )
 end
 
-function init_stepper_state!(context, options::RunOptions, io::IO)
+function _new_integrator(
+    sim,
+    options::RunOptions,
+    io::IO,
+    timings::StepTimingStats,
+    model_runtime,
+    diagnostics,
+    output;
+    time_index::Integer=1,
+    completed_years::Integer=0,
+    current_forcing::SnowpackForcing=_single_step_forcing_template(sim.forcing),
+)
     progress = Progress(options.years; desc="Running years: ", output=io, showspeed=true)
-    return StepperRuntime(1, 0, _single_step_forcing_template(context.forcing), progress)
-end
-
-function _new_integrator(sim, options::RunOptions, io::IO, timings::StepTimingStats, model_runtime, diagnostics, output, stepper)
+    update!(progress, Int(completed_years))
     return SimulationIntegrator(
         sim,
         options,
@@ -97,17 +45,20 @@ function _new_integrator(sim, options::RunOptions, io::IO, timings::StepTimingSt
         model_runtime,
         diagnostics,
         output,
-        stepper,
+        Int(time_index),
+        Int(completed_years),
+        current_forcing,
+        progress,
         false,
         nothing,
     )
 end
 
 _finished(integrator::SimulationIntegrator) =
-    integrator.stepper.completed_years >= integrator.options.years
+    integrator.completed_years >= integrator.options.years
 
 function _external_forcing_for_runtime(integrator::SimulationIntegrator)
-    forcing = integrator.stepper.current_forcing
+    forcing = integrator.current_forcing
     integrator.options.backend == :gpu || return forcing
     return time_block!(integrator.timings, :gpu_transfer) do
         adapt(gpu_storage_type(), forcing)
@@ -115,7 +66,7 @@ function _external_forcing_for_runtime(integrator::SimulationIntegrator)
 end
 
 _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
-    integrator.model_runtime.runtime.step_fields
+    integrator.model_runtime.backend.step_fields
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_index::Int)
     integrator.finalized && error("Cannot step a finalized integrator.")
@@ -124,7 +75,7 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     model = integrator.sim.model
     state = integrator.sim.now
     model_runtime = integrator.model_runtime
-    runtime = model_runtime.runtime
+    runtime = model_runtime.backend
 
     time_counted_block!(integrator.timings, :model_step_wall, model_runtime.ncol) do
         step_model!(model, state, runtime, forcing, time_index)
@@ -133,18 +84,18 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     accumulate_step_diagnostics!(integrator)
     maybe_write_step_outputs!(integrator)
 
-    if integrator.stepper.time_index == length(integrator.sim.forcing.time_values)
+    if integrator.time_index == length(integrator.sim.forcing.time_values)
         _complete_year!(integrator)
-        integrator.stepper.time_index = 1
+        integrator.time_index = 1
     else
-        integrator.stepper.time_index += 1
+        integrator.time_index += 1
     end
     return nothing
 end
 
 function _step_scheduled!(integrator::SimulationIntegrator)
     forcing = _scheduled_forcing_for_runtime(integrator)
-    return _advance_with_forcing!(integrator, forcing, integrator.stepper.time_index)
+    return _advance_with_forcing!(integrator, forcing, integrator.time_index)
 end
 
 function _step_n!(integrator::SimulationIntegrator, n::Integer)
@@ -158,7 +109,7 @@ end
 function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true)
     force_dt || error("Chion's initialized stepper requires `force_dt=true`, matching the FastIsostasy coupling pattern.")
     Δt_days > 0 || error("`Δt_days` must be positive.")
-    integrator.stepper.current_forcing.dt_days[1] = Float64(Δt_days)
+    integrator.current_forcing.dt_days[1] = Float64(Δt_days)
     forcing = _external_forcing_for_runtime(integrator)
     return _advance_with_forcing!(integrator, forcing, 1)
 end
@@ -169,7 +120,7 @@ function _should_checkpoint_after_year(integrator::SimulationIntegrator, checkpo
     stride >= 0 || error("`checkpoint_year_stride` must be >= 0.")
     stride == 0 && return false
     _finished(integrator) && return false
-    return mod(integrator.stepper.completed_years, stride) == 0
+    return mod(integrator.completed_years, stride) == 0
 end
 
 function _run_integrator!(
@@ -178,9 +129,9 @@ function _run_integrator!(
     checkpoint_year_stride::Integer=1,
 )
     while !_finished(integrator)
-        completed_years_before = integrator.stepper.completed_years
+        completed_years_before = integrator.completed_years
         _step_scheduled!(integrator)
-        if integrator.stepper.completed_years != completed_years_before &&
+        if integrator.completed_years != completed_years_before &&
            _should_checkpoint_after_year(integrator, checkpoint_path, checkpoint_year_stride)
             checkpoint!(integrator, checkpoint_path)
         end
@@ -221,7 +172,7 @@ function _set_forcing!(
     latitude_deg=nothing,
     time_value=nothing,
 )
-    f = integrator.stepper.current_forcing
+    f = integrator.current_forcing
     ncol = integrator.model_runtime.ncol
     has_native = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
     has_user = !isnothing(air_temperature_c) || !isnothing(snowfall_mm_day) || !isnothing(rainfall_mm_day)
@@ -293,7 +244,7 @@ function _finalize_integrator!(integrator::SimulationIntegrator)
     end
 
     finalize_output_runtime!(integrator, status, years_completed)
-    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.runtime, integrator.options, integrator.timings)
+    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.backend, integrator.options, integrator.timings)
 
     run_wall_sec = (time_ns() - integrator.clocks.run_wall_t0) * 1.0e-9
     print_run_report(

@@ -21,9 +21,8 @@ function _validate_model_outputs!(model::AbstractSnowModel, options::RunOptions)
     return nothing
 end
 
-function _validate_integrator_setup!(sim, options::RunOptions)
+function validate_integrator_setup!(sim, options::RunOptions)
     model = sim.model
-    state = sim.now
     forcing = sim.forcing
     grid = _model_grid(model)
     ncol = _model_column_count(model)
@@ -38,7 +37,7 @@ function _validate_integrator_setup!(sim, options::RunOptions)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
     _validate_model_outputs!(model, options)
-    return (model=model, state=state, forcing=forcing, grid=grid, ncol=ncol)
+    return nothing
 end
 
 function _prepare_backend!(timings::StepTimingStats, domain::SnowpackDomain, forcing::SnowpackForcing; is_gpu::Bool)
@@ -103,9 +102,9 @@ function prepare_runtime!(::ITMModel, ::AbstractSnowModelState, ::SnowpackForcin
     error("ITMModel is not yet implemented. Physics coming soon.")
 end
 
-function init_model_runtime!(context, options::RunOptions, timings::StepTimingStats)
-    runtime = prepare_runtime!(context.model, context.state, context.forcing, options, timings)
-    return IntegratorModelRuntime(runtime, context.ncol, context.grid)
+function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
+    backend = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
+    return ModelRuntime(backend, _model_column_count(sim.model), _model_grid(sim.model))
 end
 
 function step_model!(model::BESSIModel, ::BESSIState, runtime, forcing::SnowpackForcing, time_index::Int)

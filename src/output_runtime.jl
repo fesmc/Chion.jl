@@ -38,13 +38,13 @@ function model_layer_grids(::BESSIModel, ::BESSIState, runtime, layout, need_lay
     end
 end
 
-function init_io!(context, model_runtime::IntegratorModelRuntime, diagnostics::DiagnosticsRuntime, options::RunOptions, timings::StepTimingStats)
+function init_io!(sim, model_runtime::ModelRuntime, diagnostics::DiagnosticsRuntime, options::RunOptions, timings::StepTimingStats)
     schedule = nothing
     writer = nothing
     nc_path = ""
     if options.write_netcdf
         schedule = time_block!(timings, :prepare_output_schedule) do
-            _prepare_output_schedule(context.forcing.time_values, options.years)
+            _prepare_output_schedule(sim.forcing.time_values, options.years)
         end
         initial_thickness_vec = copy(diagnostics.prev.thickness)
         initial_thickness = time_block!(timings, :prepare_initial_output_fields_grid) do
@@ -55,8 +55,8 @@ function init_io!(context, model_runtime::IntegratorModelRuntime, diagnostics::D
             init_netcdf(
                 nc_path,
                 options,
-                context.forcing.time_values,
-                model_layer_count(context.model, context.state, model_runtime.runtime),
+                sim.forcing.time_values,
+                model_layer_count(sim.model, sim.now, model_runtime.backend),
                 model_runtime.grid,
                 initial_thickness,
                 schedule.month_of_year,
@@ -77,9 +77,8 @@ end
 function maybe_write_step_outputs!(integrator::SimulationIntegrator)
     diagnostics = integrator.diagnostics
     output = integrator.output
-    stepper = integrator.stepper
     diagnostics.need_step_outputs || return nothing
-    output.schedule.annual_output.write_output[stepper.time_index] || return nothing
+    output.schedule.annual_output.write_output[integrator.time_index] || return nothing
 
     output.steps_written += 1
     if output.writer !== nothing
@@ -108,7 +107,7 @@ function finalize_output_runtime!(integrator::SimulationIntegrator, status::Symb
         _scatter_model_final_grids(
             integrator.sim.model,
             integrator.sim.now,
-            model_runtime.runtime,
+            model_runtime.backend,
             final_state,
             diagnostics.deltas,
             model_runtime.grid,
@@ -117,7 +116,7 @@ function finalize_output_runtime!(integrator::SimulationIntegrator, status::Symb
     layer_grids = model_layer_grids(
         integrator.sim.model,
         integrator.sim.now,
-        model_runtime.runtime,
+        model_runtime.backend,
         model_runtime.grid,
         diagnostics.need_layer_outputs,
         integrator.timings,

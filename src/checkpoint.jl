@@ -1,6 +1,6 @@
 """Checkpoint and restart helpers for initialized `Simulation` runs."""
 
-const CHECKPOINT_FORMAT_VERSION = 1
+const CHECKPOINT_FORMAT_VERSION = 2
 
 function _checkpoint_run_options(options::RunOptions)
     return (
@@ -150,8 +150,8 @@ end
 
 function _new_restart_netcdf_writer(
     nc_path::AbstractString,
-    context,
-    model_runtime::IntegratorModelRuntime,
+    sim,
+    model_runtime::ModelRuntime,
     diagnostics::DiagnosticsRuntime,
     options::RunOptions,
     schedule,
@@ -160,8 +160,8 @@ function _new_restart_netcdf_writer(
     return init_netcdf(
         nc_path,
         options,
-        context.forcing.time_values,
-        model_layer_count(context.model, context.state, model_runtime.runtime),
+        sim.forcing.time_values,
+        model_layer_count(sim.model, sim.now, model_runtime.backend),
         model_runtime.grid,
         initial_thickness,
         schedule.month_of_year,
@@ -171,8 +171,8 @@ function _new_restart_netcdf_writer(
     )
 end
 
-function _restart_output_runtime(context, model_runtime::IntegratorModelRuntime, diagnostics::DiagnosticsRuntime, options::RunOptions, checkpoint)
-    schedule = options.write_netcdf ? _prepare_output_schedule(context.forcing.time_values, options.years) : nothing
+function _restart_output_runtime(sim, model_runtime::ModelRuntime, diagnostics::DiagnosticsRuntime, options::RunOptions, checkpoint)
+    schedule = options.write_netcdf ? _prepare_output_schedule(sim.forcing.time_values, options.years) : nothing
     writer = nothing
     nc_path = checkpoint.nc_path
     if options.write_netcdf
@@ -183,7 +183,7 @@ function _restart_output_runtime(context, model_runtime::IntegratorModelRuntime,
             if diagnostics.need_step_outputs && checkpoint.steps_written > 0
                 error("Cannot move checkpointed step NetCDF output to a new file because earlier step grids are not stored in the checkpoint.")
             end
-            writer = _new_restart_netcdf_writer(nc_path, context, model_runtime, diagnostics, options, schedule)
+            writer = _new_restart_netcdf_writer(nc_path, sim, model_runtime, diagnostics, options, schedule)
         else
             try
                 writer = _reopen_netcdf_writer(checkpoint.nc_path, options, schedule)
@@ -196,7 +196,7 @@ function _restart_output_runtime(context, model_runtime::IntegratorModelRuntime,
                     error("Cannot auto-create continued NetCDF with step outputs because earlier step grids are not stored in the checkpoint. Pass --no-nc or omit step outputs.")
                 end
                 println("Restart NetCDF extension: writing continued output to $(nc_path)")
-                writer = _new_restart_netcdf_writer(nc_path, context, model_runtime, diagnostics, options, schedule)
+                writer = _new_restart_netcdf_writer(nc_path, sim, model_runtime, diagnostics, options, schedule)
             end
         end
     end
@@ -216,7 +216,7 @@ function _sync_checkpoint_state!(integrator::SimulationIntegrator)
     finalize_state!(
         integrator.sim.model,
         integrator.sim.now,
-        integrator.model_runtime.runtime,
+        integrator.model_runtime.backend,
         integrator.options,
         integrator.timings,
     )
@@ -239,11 +239,9 @@ function _checkpoint_payload(integrator::SimulationIntegrator)
         version=CHECKPOINT_FORMAT_VERSION,
         sim=deepcopy(integrator.sim),
         options=_checkpoint_run_options(integrator.options),
-        stepper=(
-            time_index=integrator.stepper.time_index,
-            completed_years=integrator.stepper.completed_years,
-            current_forcing=deepcopy(integrator.stepper.current_forcing),
-        ),
+        time_index=integrator.time_index,
+        completed_years=integrator.completed_years,
+        current_forcing=deepcopy(integrator.current_forcing),
         diagnostics=_checkpoint_diagnostics(integrator.diagnostics),
         output=_checkpoint_output(integrator.output),
     )
@@ -293,17 +291,23 @@ function _restart_integrator_from_checkpoint(checkpoint; io::IO=stdout, sim_tran
     sim = sim_transform(deepcopy(checkpoint.sim))
     options = options_transform(_run_options_from_checkpoint(checkpoint.options), checkpoint)
     timings = StepTimingStats()
-    context = init_problem!(sim, options)
-    model_runtime = init_model_runtime!(context, options, timings)
-    diagnostics = init_diagnostics!(context, model_runtime, options, timings)
+    init_problem!(sim, options)
+    model_runtime = init_model_runtime!(sim, options, timings)
+    diagnostics = init_diagnostics!(sim, model_runtime, options, timings)
     _restore_diagnostics!(diagnostics, checkpoint.diagnostics)
-    output = _restart_output_runtime(context, model_runtime, diagnostics, options, checkpoint.output)
-    stepper = init_stepper_state!(context, options, io)
-    stepper.time_index = checkpoint.stepper.time_index
-    stepper.completed_years = checkpoint.stepper.completed_years
-    stepper.current_forcing = deepcopy(checkpoint.stepper.current_forcing)
-    update!(stepper.progress, stepper.completed_years)
-    return _new_integrator(sim, options, io, timings, model_runtime, diagnostics, output, stepper)
+    output = _restart_output_runtime(sim, model_runtime, diagnostics, options, checkpoint.output)
+    return _new_integrator(
+        sim,
+        options,
+        io,
+        timings,
+        model_runtime,
+        diagnostics,
+        output;
+        time_index=checkpoint.time_index,
+        completed_years=checkpoint.completed_years,
+        current_forcing=deepcopy(checkpoint.current_forcing),
+    )
 end
 
 function restart_integrator(path::AbstractString; io::IO=stdout, sim_transform=identity, options_transform=(options, checkpoint) -> options)

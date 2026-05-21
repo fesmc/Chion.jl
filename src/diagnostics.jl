@@ -90,10 +90,10 @@ function _update_year_smb_delta!(last_delta::Vector{Float64}, previous_year_smb_
     return nothing
 end
 
-function init_diagnostics!(context, model_runtime::IntegratorModelRuntime, options::RunOptions, timings::StepTimingStats)
-    model = context.model
-    state = context.state
-    runtime = model_runtime.runtime
+function init_diagnostics!(sim, model_runtime::ModelRuntime, options::RunOptions, timings::StepTimingStats)
+    model = sim.model
+    state = sim.now
+    runtime = model_runtime.backend
     ncol = model_runtime.ncol
     prev = allocate_year_summary_buffers(ncol)
     final = allocate_year_summary_buffers(ncol)
@@ -130,7 +130,6 @@ function init_diagnostics!(context, model_runtime::IntegratorModelRuntime, optio
     previous_year_smb_ice = need_last_year_smb_delta ? _model_smb_ice_vector(model, state, runtime) : Float64[]
 
     return DiagnosticsRuntime(
-        selected,
         need_step_outputs,
         need_monthly_outputs,
         need_layer_outputs,
@@ -156,10 +155,9 @@ function accumulate_step_diagnostics!(integrator::SimulationIntegrator)
     state = integrator.sim.now
     model_runtime = integrator.model_runtime
     output = integrator.output
-    stepper = integrator.stepper
-    runtime = model_runtime.runtime
+    runtime = model_runtime.backend
     month_idx = diagnostics.need_monthly_outputs ?
-        stepper.completed_years * output.schedule.nmonth_per_year + output.schedule.step_month[stepper.time_index] :
+        integrator.completed_years * output.schedule.nmonth_per_year + output.schedule.step_month[integrator.time_index] :
         0
     time_counted_block!(integrator.timings, :step_diagnostics, model_runtime.ncol) do
         summarize_step_state!(diagnostics.backend_step_summary, model, state, runtime)
@@ -183,9 +181,8 @@ function _complete_year!(integrator::SimulationIntegrator)
     state = integrator.sim.now
     model_runtime = integrator.model_runtime
     diagnostics = integrator.diagnostics
-    stepper = integrator.stepper
-    runtime = model_runtime.runtime
-    year = stepper.completed_years + 1
+    runtime = model_runtime.backend
+    year = integrator.completed_years + 1
 
     time_block!(integrator.timings, :summarize_columns_year) do
         summarize_year_state!(diagnostics.backend_year_summary, model, state, runtime)
@@ -227,15 +224,15 @@ function _complete_year!(integrator::SimulationIntegrator)
     end
 
     diagnostics.prev, diagnostics.final = diagnostics.final, diagnostics.prev
-    stepper.completed_years = year
-    next!(stepper.progress)
+    integrator.completed_years = year
+    next!(integrator.progress)
     return nothing
 end
 
 function _current_year_summary!(integrator::SimulationIntegrator)
     model = integrator.sim.model
     state = integrator.sim.now
-    runtime = integrator.model_runtime.runtime
+    runtime = integrator.model_runtime.backend
     diagnostics = integrator.diagnostics
     time_block!(integrator.timings, :summarize_columns_final) do
         summarize_year_state!(diagnostics.backend_year_summary, model, state, runtime)
