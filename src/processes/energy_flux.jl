@@ -284,8 +284,9 @@ function _go_energy_flux_resolved!(
     longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * surface_temperature_cube
     sensible_heat_flux_constant = use_q_sh ? q_sh_value : air_temperature * c.D_sh
     sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : c.D_sh
-    latent_heat_flux_constant = use_q_lh ? q_lh_value : latent_heat_constant_term_eff
-    latent_heat_flux_linear = use_q_lh ? zero(dt_seconds) : latent_heat_linear_coefficient_eff
+    turbulent_latent_heat_flux = use_q_lh ? q_lh_value : zero(dt_seconds)
+    latent_heat_flux_constant = latent_heat_constant_term_eff + turbulent_latent_heat_flux
+    latent_heat_flux_linear = latent_heat_linear_coefficient_eff
 
     surface_flux_constant = sensible_heat_flux_constant + longwave_flux_constant + absorbed_shortwave + latent_heat_flux_constant
     surface_flux_linear = sensible_heat_flux_linear + longwave_flux_linear + latent_heat_flux_linear
