@@ -5,7 +5,7 @@ _model_column_count(model::AbstractSnowModel) = ncols(_model_grid(model))
 model_layer_count(::AbstractSnowModel, ::AbstractSnowModelState, runtime) = 0
 model_layer_count(::BESSIModel, ::BESSIState, runtime) = runtime.domain.Ntot
 
-model_output_groups(::BESSIModel) = (:final, :layers, :history, :monthly, :step)
+model_output_groups(::BESSIModel) = (:final, :layers, :history, :monthly, :step, :daily)
 model_output_groups(::PDDModel) = (:final, :history, :step)
 model_output_groups(::ITMModel) = ()
 
@@ -116,6 +116,9 @@ _backend_active_indices(indices::Vector{Int}, backend) =
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -141,6 +144,9 @@ _backend_active_indices(indices::Vector{Int}, backend) =
         runoff[idx] = zero(density_init)
         melt[idx] = zero(density_init)
         refreezing[idx] = zero(density_init)
+        vapor_mass[idx] = zero(density_init)
+        sublimation[idx] = zero(density_init)
+        latent_heat_flux_sum[idx] = zero(density_init)
         Tsrf[idx] = surface_temperature_init
         snow_cover[idx] = zero(density_init)
         albedo_dynamic[idx] = albedo_init
@@ -162,6 +168,9 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
         runtime.domain.runoff,
         runtime.domain.melt,
         runtime.domain.refreezing,
+        runtime.domain.vapor_mass,
+        runtime.domain.sublimation,
+        runtime.domain.latent_heat_flux_sum,
         runtime.domain.Tsrf,
         runtime.domain.snow_cover,
         runtime.domain.albedo_dynamic,

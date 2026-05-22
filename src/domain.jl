@@ -185,6 +185,9 @@ mutable struct SnowpackDomain{
     runoff::VT
     melt::VT
     refreezing::VT
+    vapor_mass::VT
+    sublimation::VT
+    latent_heat_flux_sum::VT
     Tsrf::VT
     snow_cover::VT
     albedo_dynamic::VT
@@ -230,6 +233,9 @@ function SnowpackDomain(;
         zeros(NF, ncol),
         zeros(NF, ncol),
         zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
         fill(c.T0, ncol),
         zeros(NF, ncol),
         fill(c.alpha_dry, ncol),
@@ -253,6 +259,9 @@ function SnowpackDomain(
     runoff::AbstractVector{NF},
     melt::AbstractVector{NF},
     refreezing::AbstractVector{NF},
+    vapor_mass::AbstractVector{NF},
+    sublimation::AbstractVector{NF},
+    latent_heat_flux_sum::AbstractVector{NF},
     Tsrf::AbstractVector{NF},
     snow_cover::AbstractVector{NF},
     albedo_dynamic::AbstractVector{NF};
@@ -277,6 +286,9 @@ function SnowpackDomain(
         ("runoff", runoff),
         ("melt", melt),
         ("refreezing", refreezing),
+        ("vapor_mass", vapor_mass),
+        ("sublimation", sublimation),
+        ("latent_heat_flux_sum", latent_heat_flux_sum),
         ("Tsrf", Tsrf),
         ("snow_cover", snow_cover),
         ("albedo_dynamic", albedo_dynamic),
@@ -302,6 +314,9 @@ function SnowpackDomain(
         runoff,
         melt,
         refreezing,
+        vapor_mass,
+        sublimation,
+        latent_heat_flux_sum,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -467,7 +482,7 @@ Domain-wide summary helpers.
 """
 
 const _DOMAIN_SUMMARY_FIELDS =
-    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :melt, :refreezing, :albedo)
+    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :melt, :refreezing, :vapor_mass, :sublimation, :latent_heat_flux_sum, :albedo)
 
 @inline function _column_summary(N, mass, mass_w, density, idx, sample)
     n = N[idx]
@@ -521,6 +536,9 @@ output arrays are mutated in-place.
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     albedo,
     N,
     mass,
@@ -531,6 +549,9 @@ output arrays are mutated in-place.
     runoff_state,
     melt_state,
     refreezing_state,
+    vapor_mass_state,
+    sublimation_state,
+    latent_heat_flux_sum_state,
     albedo_state,
 )
     idx = @index(Global)
@@ -546,6 +567,9 @@ output arrays are mutated in-place.
         runoff[idx] = runoff_state[idx]
         melt[idx] = melt_state[idx]
         refreezing[idx] = refreezing_state[idx]
+        vapor_mass[idx] = vapor_mass_state[idx]
+        sublimation[idx] = sublimation_state[idx]
+        latent_heat_flux_sum[idx] = latent_heat_flux_sum_state[idx]
         albedo[idx] = albedo_state[idx]
     end
 end
@@ -580,7 +604,7 @@ in-place.
 end
 
 """
-    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, melt, refreezing, albedo, domain)
+    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum, albedo, domain)
 
 Fill preallocated summary arrays with one-column diagnostics from `domain`.
 Outputs are column-wise totals or aggregates in SI-like model units.
@@ -595,6 +619,9 @@ function summarize_domain_state!(
     runoff::AbstractVector,
     melt::AbstractVector,
     refreezing::AbstractVector,
+    vapor_mass::AbstractVector,
+    sublimation::AbstractVector,
+    latent_heat_flux_sum::AbstractVector,
     albedo::AbstractVector,
     domain::AbstractSnowpackDomain,
 )
@@ -610,6 +637,9 @@ function summarize_domain_state!(
         runoff,
         melt,
         refreezing,
+        vapor_mass,
+        sublimation,
+        latent_heat_flux_sum,
         albedo,
         domain.N,
         domain.mass,
@@ -620,6 +650,9 @@ function summarize_domain_state!(
         domain.runoff,
         domain.melt,
         domain.refreezing,
+        domain.vapor_mass,
+        domain.sublimation,
+        domain.latent_heat_flux_sum,
         domain.albedo_dynamic,
     )
 end

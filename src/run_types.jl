@@ -16,6 +16,7 @@ end
 mutable struct DiagnosticsRuntime
     need_step_outputs::Bool
     need_monthly_outputs::Bool
+    need_daily_outputs::Bool
     need_layer_outputs::Bool
     need_last_year_smb_delta::Bool
     need_step_diagnostics::Bool
@@ -37,6 +38,8 @@ mutable struct OutputRuntime
     monthly_sums
     monthly_count::Vector{Int32}
     step_vectors
+    daily_vectors
+    daily_written::Int
     steps_written::Int
 end
 

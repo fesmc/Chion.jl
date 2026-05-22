@@ -71,7 +71,27 @@ function init_io!(sim, model_runtime::ModelRuntime, diagnostics::DiagnosticsRunt
     monthly_sums = _allocate_monthly_sums(diagnostics.need_monthly_outputs, monthly_total, model_runtime.ncol)
     monthly_count = diagnostics.need_monthly_outputs ? zeros(Int32, monthly_total) : Int32[]
     step_vectors = _allocate_step_vectors(diagnostics.need_step_outputs, model_runtime.ncol)
-    return OutputRuntime(schedule, writer, nc_path, monthly_sums, monthly_count, step_vectors, 0)
+    daily_vectors = _allocate_daily_vectors(diagnostics.need_daily_outputs, model_runtime.ncol)
+    return OutputRuntime(schedule, writer, nc_path, monthly_sums, monthly_count, step_vectors, daily_vectors, 0, 0)
+end
+
+function maybe_write_daily_outputs!(integrator::SimulationIntegrator)
+    diagnostics = integrator.diagnostics
+    output = integrator.output
+    diagnostics.need_daily_outputs || return nothing
+
+    output.daily_written += 1
+    if output.writer !== nothing
+        daily_grids = time_block!(integrator.timings, :daily_output_prepare) do
+            _daily_output_grids(output.daily_vectors, integrator.model_runtime.grid)
+        end
+        time_block!(integrator.timings, :daily_output_write) do
+            for key in OUTPUT_GROUPS.daily
+                maybe_write_daily_output!(output.writer, output.daily_written, key, getfield(daily_grids, key))
+            end
+        end
+    end
+    return nothing
 end
 
 function maybe_write_step_outputs!(integrator::SimulationIntegrator)
@@ -125,7 +145,7 @@ function finalize_output_runtime!(integrator::SimulationIntegrator, status::Symb
         _finalize_monthly_grids(output.monthly_sums, output.monthly_count, model_runtime.grid)
     end : empty_monthly_grids()
     time_block!(integrator.timings, :write_netcdf) do
-        finalize_netcdf!(output.writer, final_grids, layer_grids, history, monthly_grids, status, years_completed, output.steps_written)
+        finalize_netcdf!(output.writer, final_grids, layer_grids, history, monthly_grids, status, years_completed, output.daily_written, output.steps_written)
     end
     return nothing
 end

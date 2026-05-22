@@ -451,6 +451,9 @@ function _step_diurnal_shortwave_interval_resolved!(
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -504,6 +507,9 @@ function _step_diurnal_shortwave_interval_resolved!(
         runoff,
         melt,
         refreezing,
+        vapor_mass,
+        sublimation,
+        latent_heat_flux_sum,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -537,6 +543,9 @@ function _step_state_resolved!(
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -571,7 +580,7 @@ function _step_state_resolved!(
                 hour_angle_end = substep_index == n_substeps ? day_end : hour_angle_start + substep_width
                 _step_diurnal_shortwave_interval_resolved!(
                     N_storage, mass, mass_w, density, temperature,
-                    mass_base, smb_ice, runoff, melt, refreezing, Tsrf, snow_cover, albedo_dynamic,
+                    mass_base, smb_ice, runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum, Tsrf, snow_cover, albedo_dynamic,
                     idx, c, Ntot, mass_max, mass_split, mass_min, forcing,
                     workspace, hour_angle_start, hour_angle_end, update_snow_cover && substep_index == n_substeps,
                 )
@@ -591,6 +600,9 @@ function _step_state_resolved!(
         runoff,
         melt,
         refreezing,
+        vapor_mass,
+        sublimation,
+        latent_heat_flux_sum,
         Tsrf,
         snow_cover,
         albedo_dynamic,
@@ -617,6 +629,9 @@ function _step_state_core_resolved!(
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -677,6 +692,9 @@ function _step_state_core_resolved!(
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
         _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
         _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_fluxes.melt_mass)
+        _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_ice_fluxes.vapor_mass)
+        _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_ice_fluxes.sublimation_mass)
+        _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + bare_ice_fluxes.latent_heat_flux * forcing.dt_days)
         return nothing
     end
 
@@ -757,7 +775,7 @@ function _step_state_core_resolved!(
         forcing.air_pressure,
     )
 
-    _apply_snow_surface_vapor_mass_flux!(
+    snow_vapor_fluxes = _apply_snow_surface_vapor_mass_flux!(
         N_storage,
         mass,
         mass_w,
@@ -773,6 +791,9 @@ function _step_state_core_resolved!(
         mass_split,
         mass_min,
     )
+    _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
+    _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + snow_vapor_fluxes.sublimation_mass)
+    _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + snow_vapor_fluxes.latent_heat_flux * forcing.dt_days)
 
     if energy.needs_melt
         melt_mass = energy.melt_energy_available / c.Lm
@@ -878,6 +899,9 @@ and advances each column independently in-place.
     runoff,
     melt,
     refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
     Tsrf,
     snow_cover,
     albedo_dynamic,
@@ -959,6 +983,9 @@ and advances each column independently in-place.
             runoff,
             melt,
             refreezing,
+            vapor_mass,
+            sublimation,
+            latent_heat_flux_sum,
             Tsrf,
             snow_cover,
             albedo_dynamic,
@@ -1007,6 +1034,9 @@ return the KernelAbstractions event.
         domain.runoff,
         domain.melt,
         domain.refreezing,
+        domain.vapor_mass,
+        domain.sublimation,
+        domain.latent_heat_flux_sum,
         domain.Tsrf,
         domain.snow_cover,
         domain.albedo_dynamic,

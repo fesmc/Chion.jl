@@ -1,6 +1,6 @@
 """Runtime summaries, step diagnostics, history, and yearly deltas."""
 
-const SUMMARY_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :pdd, :melt, :refreezing, :albedo)
+const SUMMARY_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :pdd, :melt, :refreezing, :vapor_mass, :sublimation, :latent_heat_flux_sum, :albedo)
 const YEAR_BUFFER_NAMES = (:thickness, :wet_mass, :bulk_density, :base_mass)
 
 _named_buffers(names::NTuple{N, Symbol}, build::F) where {N, F <: Function} = NamedTuple{names}(ntuple(_ -> build(), N))
@@ -50,6 +50,9 @@ function summarize_step_state!(summary, ::BESSIModel, ::BESSIState, runtime)
         summary.runoff,
         summary.melt,
         summary.refreezing,
+        summary.vapor_mass,
+        summary.sublimation,
+        summary.latent_heat_flux_sum,
         summary.albedo,
         runtime.domain,
     )
@@ -68,6 +71,9 @@ function summarize_step_state!(summary, ::PDDModel, ::PDDState, runtime)
     summary.pdd .= runtime.pdd_sum
     fill!(summary.melt, NaN)
     fill!(summary.refreezing, NaN)
+    fill!(summary.vapor_mass, NaN)
+    fill!(summary.sublimation, NaN)
+    fill!(summary.latent_heat_flux_sum, NaN)
     fill!(summary.albedo, NaN)
     return summary
 end
@@ -78,10 +84,9 @@ _model_runoff_vector(::BESSIModel, ::BESSIState, runtime) = _host_vector(runtime
 _model_runoff_vector(::PDDModel, ::PDDState, runtime) = _host_vector(runtime.runoff; copy_array=true)
 _model_pdd_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
 _model_pdd_vector(::PDDModel, ::PDDState, runtime, ncol::Int) = _host_vector(runtime.pdd_sum; copy_array=true)
-_model_melt_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
-_model_melt_vector(::BESSIModel, ::BESSIState, runtime, ncol::Int) = _host_vector(runtime.domain.melt; copy_array=true)
-_model_refreezing_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int) = zeros(Float64, ncol)
-_model_refreezing_vector(::BESSIModel, ::BESSIState, runtime, ncol::Int) = _host_vector(runtime.domain.refreezing; copy_array=true)
+_model_cumulative_vector(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ncol::Int, field::Symbol) = zeros(Float64, ncol)
+_model_cumulative_vector(::BESSIModel, ::BESSIState, runtime, ncol::Int, field::Symbol) =
+    _host_vector(getfield(runtime.domain, field); copy_array=true)
 
 function _update_year_smb_delta!(last_delta::Vector{Float64}, previous_year_smb_ice::Vector{Float64}, model::AbstractSnowModel, state::AbstractSnowModelState, runtime)
     current = _model_smb_ice_vector(model, state, runtime)
@@ -106,9 +111,10 @@ function init_diagnostics!(sim, model_runtime::ModelRuntime, options::RunOptions
     selected = Set(options.netcdf_variables)
     need_step_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.step)
     need_monthly_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.monthly)
+    need_daily_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.daily)
     need_layer_outputs = options.write_netcdf && any(var -> var in selected, OUTPUT_GROUPS.layers)
     need_last_year_smb_delta = options.write_netcdf && (:last_year_delta_ice_sheet_smb in selected)
-    need_step_diagnostics = need_step_outputs || need_monthly_outputs
+    need_step_diagnostics = need_step_outputs || need_monthly_outputs || need_daily_outputs
 
     step_summary = need_step_diagnostics ? allocate_summary_buffers(ncol) : nothing
     backend_step_summary = need_step_diagnostics ? _allocate_step_backend_buffers(model, state, runtime, ncol) : nothing
@@ -124,14 +130,18 @@ function init_diagnostics!(sim, model_runtime::ModelRuntime, options::RunOptions
         smb_ice=_model_smb_ice_vector(model, state, runtime),
         runoff=_model_runoff_vector(model, state, runtime),
         pdd=_model_pdd_vector(model, state, runtime, ncol),
-        melt=_model_melt_vector(model, state, runtime, ncol),
-        refreezing=_model_refreezing_vector(model, state, runtime, ncol),
+        melt=_model_cumulative_vector(model, state, runtime, ncol, :melt),
+        refreezing=_model_cumulative_vector(model, state, runtime, ncol, :refreezing),
+        vapor_mass=_model_cumulative_vector(model, state, runtime, ncol, :vapor_mass),
+        sublimation=_model_cumulative_vector(model, state, runtime, ncol, :sublimation),
+        latent_heat_flux_sum=_model_cumulative_vector(model, state, runtime, ncol, :latent_heat_flux_sum),
     )
     previous_year_smb_ice = need_last_year_smb_delta ? _model_smb_ice_vector(model, state, runtime) : Float64[]
 
     return DiagnosticsRuntime(
         need_step_outputs,
         need_monthly_outputs,
+        need_daily_outputs,
         need_layer_outputs,
         need_last_year_smb_delta,
         need_step_diagnostics,
@@ -167,9 +177,11 @@ function accumulate_step_diagnostics!(integrator::SimulationIntegrator)
             diagnostics.previous,
             output.monthly_sums,
             output.step_vectors,
+            output.daily_vectors,
             month_idx,
             diagnostics.need_monthly_outputs,
             diagnostics.need_step_outputs,
+            diagnostics.need_daily_outputs,
         )
     end
     diagnostics.need_monthly_outputs && (output.monthly_count[month_idx] += 1)

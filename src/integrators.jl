@@ -85,6 +85,7 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     end
 
     accumulate_step_diagnostics!(integrator)
+    maybe_write_daily_outputs!(integrator)
     maybe_write_step_outputs!(integrator)
 
     if integrator.time_index == length(integrator.sim.forcing.time_values)

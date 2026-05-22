@@ -61,6 +61,8 @@ function _checkpoint_output(output::OutputRuntime)
         monthly_sums=deepcopy(output.monthly_sums),
         monthly_count=copy(output.monthly_count),
         step_vectors=deepcopy(output.step_vectors),
+        daily_vectors=deepcopy(output.daily_vectors),
+        daily_written=output.daily_written,
         steps_written=output.steps_written,
     )
 end
@@ -81,6 +83,9 @@ function _netcdf_can_store_restart(ds, options::RunOptions, schedule)
     _netcdf_dim_capacity(ds, "year") >= options.years || return false
     schedule === nothing && return true
     _netcdf_dim_capacity(ds, "month") >= schedule.nmonth_total || return false
+    if any(key -> key in options.netcdf_variables, OUTPUT_GROUPS.daily)
+        _netcdf_dim_capacity(ds, "day") >= options.years * schedule.nstep_per_year || return false
+    end
     expected_steps = options.years * length(schedule.annual_output.source_indices)
     _netcdf_dim_capacity(ds, "step") >= expected_steps || return false
     return true
@@ -115,8 +120,10 @@ function _reopen_netcdf_writer(nc_path::AbstractString, options::RunOptions, sch
             !isempty(name) && haskey(ds, name) && (vars[key] = ds[name])
         end
         haskey(ds, "step_valid") && (vars[:step_valid] = ds["step_valid"])
+        haskey(ds, "day_valid") && (vars[:day_valid] = ds["day_valid"])
         max_steps = haskey(ds, "step") ? length(ds["step"]) : options.years
-        return NetCDFWriter(ds, vars, max_steps, options.years)
+        max_days = haskey(ds, "day") ? length(ds["day"]) : options.years * (schedule === nothing ? 0 : schedule.nstep_per_year)
+        return NetCDFWriter(ds, vars, max_steps, max_days, options.years)
     catch
         close(ds)
         rethrow()
@@ -183,6 +190,9 @@ function _restart_output_runtime(sim, model_runtime::ModelRuntime, diagnostics::
             if diagnostics.need_step_outputs && checkpoint.steps_written > 0
                 error("Cannot move checkpointed step NetCDF output to a new file because earlier step grids are not stored in the checkpoint.")
             end
+            if diagnostics.need_daily_outputs && hasproperty(checkpoint, :daily_written) && checkpoint.daily_written > 0
+                error("Cannot move checkpointed daily NetCDF output to a new file because earlier daily grids are not stored in the checkpoint.")
+            end
             writer = _new_restart_netcdf_writer(nc_path, sim, model_runtime, diagnostics, options, schedule)
         else
             try
@@ -194,6 +204,9 @@ function _restart_output_runtime(sim, model_runtime::ModelRuntime, diagnostics::
                 nc_path = _continued_netcdf_path(checkpoint.nc_path, options.years)
                 if diagnostics.need_step_outputs && checkpoint.steps_written > 0
                     error("Cannot auto-create continued NetCDF with step outputs because earlier step grids are not stored in the checkpoint. Pass --no-nc or omit step outputs.")
+                end
+                if diagnostics.need_daily_outputs && hasproperty(checkpoint, :daily_written) && checkpoint.daily_written > 0
+                    error("Cannot auto-create continued NetCDF with daily outputs because earlier daily grids are not stored in the checkpoint. Pass --no-nc or omit daily outputs.")
                 end
                 println("Restart NetCDF extension: writing continued output to $(nc_path)")
                 writer = _new_restart_netcdf_writer(nc_path, sim, model_runtime, diagnostics, options, schedule)
@@ -208,6 +221,8 @@ function _restart_output_runtime(sim, model_runtime::ModelRuntime, diagnostics::
         _extend_monthly_sums(checkpoint.monthly_sums, diagnostics.need_monthly_outputs, nmonth_total, model_runtime.ncol),
         _extend_monthly_count(checkpoint.monthly_count, diagnostics.need_monthly_outputs, nmonth_total),
         deepcopy(checkpoint.step_vectors),
+        hasproperty(checkpoint, :daily_vectors) ? deepcopy(checkpoint.daily_vectors) : _allocate_daily_vectors(diagnostics.need_daily_outputs, model_runtime.ncol),
+        hasproperty(checkpoint, :daily_written) ? checkpoint.daily_written : 0,
         checkpoint.steps_written,
     )
 end
