@@ -29,9 +29,9 @@ function output_dir_for(slug::AbstractString)
 end
 
 """
-    seed_domain!(model; surface_mass, density, temperature_c) -> BESSIState
+    seed_domain!(model; surface_mass, density, temperature_c) -> CurrentState
 
-Initialise the first layer of every column in a new `BESSIState` with the given
+Initialise the first layer of every column in a new `CurrentState` with the given
 surface mass, density, and temperature.
 """
 function seed_domain!(
@@ -45,12 +45,12 @@ function seed_domain!(
 end
 
 function seed_domain!(
-    state::Chion.BESSIState;
+    state::Chion.CurrentState;
     surface_mass,
-    density::Real=state.domain.c.rho_s,
+    density::Real=state.c.rho_s,
     temperature_c::Real=-10.0,
 )
-    domain = state.domain
+    domain = state
     fill!(domain.N, 0)
     fill!(domain.mass, 0.0)
     fill!(domain.mass_w, 0.0)
@@ -123,15 +123,14 @@ function result_domain_cpu(::Chion.SimulationResult)
     error("Access the domain via simulation.now instead of the result.")
 end
 
-function result_domain_cpu(domain::SM.SnowpackDomain)
-    return domain.mass isa Array ? domain : Chion.cpu_domain(domain)
+function result_domain_cpu(domain::Chion.CurrentState)
+    return domain.mass isa Array ? domain : Chion.cpu_state(domain)
 end
 
-result_domain_cpu(state::Chion.BESSIState) = result_domain_cpu(state.domain)
 result_domain_cpu(simulation::Chion.Simulation) = result_domain_cpu(simulation.now)
 
 function summarize_column(model_or_domain, idx::Integer=1)
-    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a CurrentState or Simulation.")
     domain = result_domain_cpu(model_or_domain)
     state = Chion.get_state(domain, Int(idx))
     return (
@@ -185,7 +184,7 @@ function _layout_grid(grid::Chion.SnowpackGrid, values::AbstractVector{<:Real})
 end
 
 function _domain_summary(model_or_domain)
-    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a CurrentState or Simulation.")
     domain = result_domain_cpu(model_or_domain)
     return SM.summarize_domain_state(domain)
 end
@@ -244,7 +243,7 @@ end
 
 function column_profile_plot(model_or_domain, idx::Integer=1; title::AbstractString="Final column profile")
     P = _plots_module()
-    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a BESSIState or Simulation.")
+    model_or_domain isa Chion.BESSIModel && error("BESSIModel is configuration-only; pass a CurrentState or Simulation.")
     domain = result_domain_cpu(model_or_domain)
     state = Chion.get_state(domain, Int(idx))
     layer_density = Float64.(state["density"])

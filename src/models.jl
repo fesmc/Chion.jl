@@ -29,7 +29,7 @@ _fresh_snow_symbol(::ParameterizedFreshSnowDensity) = :parameterized
     BESSIModel(grid; albedo=DynamicAlbedo(), densification=BESSIDensification(), ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`BESSIState` and owned by `Simulation.now`.
+`CurrentState` and owned by `Simulation.now`.
 """
 struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel{G}
     grid::G
@@ -100,6 +100,27 @@ function BESSIModel(
         Float64(diurnal_temperature_amplitude_c),
     )
 end
+
+function SnowpackDomain(model::BESSIModel)
+    grid = model.grid
+    return SnowpackDomain(;
+        c=model.c,
+        Ntot=model.Ntot,
+        ncol=ncols(grid),
+        mass_max=model.mass_max,
+        mass_split=model.mass_split,
+        mass_min=model.mass_min,
+        rho_max=model.rho_max,
+        x=grid.x,
+        y=grid.y,
+        js=grid.js,
+        is=grid.is,
+        mask=grid.mask,
+    )
+end
+
+model_domain(model::BESSIModel) = SnowpackDomain(model)
+model_domain(model::AbstractSnowModel) = model.grid
 
 """PISM-style expectation-integral monthly PDD parameterization."""
 struct StochasticMonthlyPDD

@@ -135,10 +135,7 @@ function _run_integrator!(
     while !_finished(integrator)
         completed_years_before = integrator.completed_years
         _step_scheduled!(integrator)
-        if integrator.completed_years != completed_years_before &&
-           _should_checkpoint_after_year(integrator, checkpoint_path, checkpoint_year_stride)
-            checkpoint!(integrator, checkpoint_path)
-        end
+        checkpoint_path == "" || error("Checkpointing was removed with the simplified state/output runtime.")
     end
     return nothing
 end

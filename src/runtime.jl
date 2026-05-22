@@ -2,8 +2,8 @@
 
 _model_grid(model::AbstractSnowModel) = model.grid
 _model_column_count(model::AbstractSnowModel) = ncols(_model_grid(model))
-model_layer_count(::AbstractSnowModel, ::AbstractSnowModelState, runtime) = 0
-model_layer_count(::BESSIModel, ::BESSIState, runtime) = runtime.domain.Ntot
+model_layer_count(::AbstractSnowModel, ::AbstractState, runtime) = 0
+model_layer_count(::BESSIModel, ::CurrentState, runtime) = runtime.state.Ntot
 
 model_output_groups(::BESSIModel) = (:final, :layers, :history, :monthly, :step, :daily)
 model_output_groups(::PDDModel) = (:final, :history, :step)
@@ -11,20 +11,18 @@ model_output_groups(::ITMModel) = ()
 
 function _validate_model_outputs!(model::AbstractSnowModel, options::RunOptions)
     options.write_netcdf || return nothing
-    supported = model_output_groups(model)
-    allowed = Symbol[]
-    for group in supported
-        append!(allowed, getproperty(OUTPUT_GROUPS, group))
-    end
+    allowed = copy(NETCDF_VARIABLES)
+    append!(allowed, keys(STATE_OUTPUT_ALIASES))
+    append!(allowed, (:all, :none, :final, :layers, :monthly, :step, :daily, :history))
     unsupported = setdiff(options.netcdf_variables, allowed)
-    isempty(unsupported) || error("$(typeof(model)) output supports only $(join(string.(supported), ", ")) NetCDF groups; unsupported: $(join(string.(unsupported), ", ")).")
+    isempty(unsupported) || error("Unsupported NetCDF variables: $(join(string.(unsupported), ", ")).")
     return nothing
 end
 
 function validate_integrator_setup!(sim, options::RunOptions)
     model = sim.model
     forcing = sim.forcing
-    grid = _model_grid(model)
+    grid = sim.domain
     ncol = _model_column_count(model)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the model column count.")
     if model isa BESSIModel && model.diurnal_shortwave_substeps
@@ -40,29 +38,29 @@ function validate_integrator_setup!(sim, options::RunOptions)
     return nothing
 end
 
-function _prepare_backend!(timings::StepTimingStats, domain::SnowpackDomain, forcing::SnowpackForcing; is_gpu::Bool)
+function _prepare_backend!(timings::StepTimingStats, state::CurrentState, forcing::SnowpackForcing; is_gpu::Bool)
     step_fields = forcing
     if is_gpu
         cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-        domain = time_block!(timings, :gpu_transfer) do
-            gpu_domain(domain)
+        state = time_block!(timings, :gpu_transfer) do
+            gpu_state(state)
         end
         step_fields = time_block!(timings, :gpu_transfer) do
             adapt(gpu_storage_type(), forcing)
         end
         workspace = time_block!(timings, :gpu_transfer) do
-            ColumnarStepWorkspace(domain)
+            ColumnarStepWorkspace(state)
         end
-        return (domain=domain, step_fields=step_fields, workspace=workspace, is_gpu=true)
+        return (state=state, step_fields=step_fields, workspace=workspace, is_gpu=true)
     end
     workspace = time_block!(timings, :create_workspaces) do
-        ColumnarStepWorkspace(domain)
+        ColumnarStepWorkspace(state)
     end
-    return (domain=domain, step_fields=step_fields, workspace=workspace, is_gpu=false)
+    return (state=state, step_fields=step_fields, workspace=workspace, is_gpu=false)
 end
 
-function prepare_runtime!(model::BESSIModel, state::BESSIState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
-    return _prepare_backend!(timings, state.domain, forcing; is_gpu=options.backend == :gpu)
+function prepare_runtime!(model::BESSIModel, state::CurrentState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
+    return _prepare_backend!(timings, state, forcing; is_gpu=options.backend == :gpu)
 end
 
 function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
@@ -98,7 +96,7 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
     return (snowpack_swe=state.snowpack_swe, smb_ice=state.smb_ice, runoff=state.runoff, pdd_sum=state.pdd_sum, step_fields=forcing, scratch=scratch, is_gpu=false)
 end
 
-function prepare_runtime!(::ITMModel, ::AbstractSnowModelState, ::SnowpackForcing, ::RunOptions, ::StepTimingStats)
+function prepare_runtime!(::ITMModel, ::AbstractState, ::SnowpackForcing, ::RunOptions, ::StepTimingStats)
     error("ITMModel is not yet implemented. Physics coming soon.")
 end
 
@@ -153,33 +151,33 @@ _backend_active_indices(indices::Vector{Int}, backend) =
     end
 end
 
-function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactive_indices::Vector{Int})
+function _reset_model_columns!(model::BESSIModel, ::CurrentState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
     backend_indices = _backend_active_indices(inactive_indices, runtime)
-    kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.domain.mass))
+    kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.state.mass))
     event = kernel!(
-        runtime.domain.N,
-        runtime.domain.mass,
-        runtime.domain.mass_w,
-        runtime.domain.density,
-        runtime.domain.temperature,
-        runtime.domain.mass_base,
-        runtime.domain.smb_ice,
-        runtime.domain.runoff,
-        runtime.domain.melt,
-        runtime.domain.refreezing,
-        runtime.domain.vapor_mass,
-        runtime.domain.sublimation,
-        runtime.domain.latent_heat_flux_sum,
-        runtime.domain.Tsrf,
-        runtime.domain.snow_cover,
-        runtime.domain.albedo_dynamic,
+        runtime.state.N,
+        runtime.state.mass,
+        runtime.state.mass_w,
+        runtime.state.density,
+        runtime.state.temperature,
+        runtime.state.mass_base,
+        runtime.state.smb_ice,
+        runtime.state.runoff,
+        runtime.state.melt,
+        runtime.state.refreezing,
+        runtime.state.vapor_mass,
+        runtime.state.sublimation,
+        runtime.state.latent_heat_flux_sum,
+        runtime.state.Tsrf,
+        runtime.state.snow_cover,
+        runtime.state.albedo_dynamic,
         backend_indices,
-        runtime.domain.Ntot,
-        convert(eltype(runtime.domain.mass), model.density_init),
-        convert(eltype(runtime.domain.mass), model.temperature_init),
-        runtime.domain.c.T0,
-        runtime.domain.c.alpha_dry;
+        runtime.state.Ntot,
+        convert(eltype(runtime.state.mass), model.density_init),
+        convert(eltype(runtime.state.mass), model.temperature_init),
+        runtime.state.c.T0,
+        runtime.state.c.alpha_dry;
         ndrange=length(inactive_indices),
     )
     _wait_kernel(event)
@@ -219,7 +217,7 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     return nothing
 end
 
-_reset_model_columns!(::AbstractSnowModel, ::AbstractSnowModelState, runtime, inactive_indices::Vector{Int}) = nothing
+_reset_model_columns!(::AbstractSnowModel, ::AbstractState, runtime, inactive_indices::Vector{Int}) = nothing
 
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
     length(active) == model_runtime.ncol || error("Active mask length must match the model column count.")
@@ -236,13 +234,13 @@ function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
     ncol = _model_column_count(sim.model)
     active = trues(ncol)
     active_indices = _backend_active_indices(collect(1:ncol), backend)
-    return ModelRuntime(backend, ncol, _model_grid(sim.model), active, active_indices)
+    return ModelRuntime(backend, ncol, sim.domain, active, active_indices)
 end
 
-function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
     runtime = model_runtime.backend
     step!(
-        runtime.domain,
+        runtime.state,
         forcing,
         time_index,
         runtime.workspace,
@@ -315,13 +313,15 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
     return nothing
 end
 
-finalize_state!(::AbstractSnowModel, ::AbstractSnowModelState, runtime, ::RunOptions, ::StepTimingStats) = nothing
+finalize_state!(::AbstractSnowModel, ::AbstractState, runtime, ::RunOptions, ::StepTimingStats) = nothing
 
-function finalize_state!(::BESSIModel, state::BESSIState, runtime, options::RunOptions, timings::StepTimingStats)
-    runtime.is_gpu || return nothing
-    time_block!(timings, :gpu_transfer) do
-        _copy_domain_state!(state.domain, cpu_domain(runtime.domain))
+function finalize_state!(::BESSIModel, state::CurrentState, runtime, options::RunOptions, timings::StepTimingStats)
+    if runtime.is_gpu
+        time_block!(timings, :gpu_transfer) do
+            _copy_current_state!(state, cpu_state(runtime.state))
+        end
     end
+    update_diagnostics!(state)
     return nothing
 end
 

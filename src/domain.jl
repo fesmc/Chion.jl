@@ -4,6 +4,7 @@ Abstract types shared across Chion's public simulation-first API.
 
 abstract type AbstractSnowpackGrid end
 abstract type AbstractSnowModel{G <: AbstractSnowpackGrid} end
+abstract type AbstractState end
 
 ncols(g::AbstractSnowpackGrid) = g.ncol
 
@@ -13,7 +14,7 @@ ncols(g::AbstractSnowpackGrid) = g.ncol
 Abstract supertype for array-backed snowpack state containers that expose the
 core layer arrays and auxiliary diagnostics used by the process kernels.
 """
-abstract type AbstractSnowpackDomain{NF} end
+abstract type AbstractSnowpackDomain{NF} <: AbstractState end
 
 """
     cuda_available()
@@ -156,18 +157,18 @@ end
 end
 
 """
-    SnowpackDomain{NF,...}
+    SnowpackDomain
 
-Mutable array-backed snowpack state for one or more columns. Each column stores
-layer-wise solid mass, liquid water, density, and temperature together with
-auxiliary diagnostics such as runoff, snow cover, and surface albedo.
+Metadata for the compact BESSI snowpack domain. Evolving model arrays live in
+`CurrentState`; this type only stores constants, layer-management thresholds,
+column count, and optional gridded coordinate/index metadata.
 """
-mutable struct SnowpackDomain{
+struct SnowpackDomain{
         NF <: AbstractFloat,
-        NI <: AbstractVector{<:Integer},
-        MT <: AbstractMatrix{NF},
-        VT <: AbstractVector{NF},
-    } <: AbstractSnowpackDomain{NF}
+        XV <: Union{Nothing, AbstractVector{Float64}},
+        IV <: Union{Nothing, AbstractVector{Int}},
+        BM <: Union{Nothing, AbstractMatrix{Float64}},
+    }
     c::SnowpackPhysicalConstants{NF}
     Ntot::Int
     ncol::Int
@@ -175,30 +176,17 @@ mutable struct SnowpackDomain{
     mass_split::NF
     mass_min::NF
     rho_max::NF
-    N::NI
-    mass::MT
-    mass_w::MT
-    density::MT
-    temperature::MT
-    mass_base::VT
-    smb_ice::VT
-    runoff::VT
-    melt::VT
-    refreezing::VT
-    vapor_mass::VT
-    sublimation::VT
-    latent_heat_flux_sum::VT
-    Tsrf::VT
-    snow_cover::VT
-    albedo_dynamic::VT
+    x::XV
+    y::XV
+    js::IV
+    is::IV
+    mask::BM
 end
 
 """
     SnowpackDomain(; c=SnowpackPhysicalConstants(), Ntot=DEFAULT_NTOT, ncol=1, ...)
 
-Allocate a new array-backed snowpack domain with `ncol` columns and `Ntot`
-maximum layers per column. State arrays are initialized to simple defaults and
-mutated in-place by the model.
+Build BESSI domain metadata. State arrays are allocated by `CurrentState`.
 """
 function SnowpackDomain(;
     c::SnowpackPhysicalConstants=SnowpackPhysicalConstants(),
@@ -208,13 +196,17 @@ function SnowpackDomain(;
     mass_split::Real=DEFAULT_MASS_SPLIT,
     mass_min::Real=DEFAULT_MASS_MIN,
     rho_max::Real=DEFAULT_RHO_MAX,
-    density_init::Real=DEFAULT_DENSITY_INIT,
-    temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
+    x=nothing,
+    y=nothing,
+    js=nothing,
+    is=nothing,
+    mask=nothing,
 )
     ncol > 0 || error("`ncol` must be positive.")
     NF = number_type(c)
     mass_max, mass_split, mass_min, rho_max =
         _domain_thresholds(NF, mass_max, mass_split, mass_min, rho_max)
+    grid = SnowpackGrid(ncol; x=x, y=y, js=js, is=is, mask=mask)
     return SnowpackDomain(
         c,
         Ntot,
@@ -223,125 +215,17 @@ function SnowpackDomain(;
         mass_split,
         mass_min,
         rho_max,
-        zeros(Int, ncol),
-        zeros(NF, Ntot, ncol),
-        zeros(NF, Ntot, ncol),
-        fill(convert(NF, density_init), Ntot, ncol),
-        fill(convert(NF, temperature_init), Ntot, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        fill(c.T0, ncol),
-        zeros(NF, ncol),
-        fill(c.alpha_dry, ncol),
+        grid.x,
+        grid.y,
+        grid.js,
+        grid.is,
+        grid.mask,
     )
 end
 
-"""
-    SnowpackDomain(N, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, melt, refreezing, Tsrf, snow_cover, albedo_dynamic; c=..., ...)
-
-Wrap existing state arrays as a `SnowpackDomain`. Array shapes and per-column
-vector lengths are validated but the input arrays are not copied.
-"""
-function SnowpackDomain(
-    N::AbstractVector{<:Integer},
-    mass::AbstractMatrix{NF},
-    mass_w::AbstractMatrix{NF},
-    density::AbstractMatrix{NF},
-    temperature::AbstractMatrix{NF},
-    mass_base::AbstractVector{NF},
-    smb_ice::AbstractVector{NF},
-    runoff::AbstractVector{NF},
-    melt::AbstractVector{NF},
-    refreezing::AbstractVector{NF},
-    vapor_mass::AbstractVector{NF},
-    sublimation::AbstractVector{NF},
-    latent_heat_flux_sum::AbstractVector{NF},
-    Tsrf::AbstractVector{NF},
-    snow_cover::AbstractVector{NF},
-    albedo_dynamic::AbstractVector{NF};
-    c::SnowpackPhysicalConstants{NF}=SnowpackPhysicalConstants(NF),
-    mass_max::Real=DEFAULT_MASS_MAX,
-    mass_split::Real=DEFAULT_MASS_SPLIT,
-    mass_min::Real=DEFAULT_MASS_MIN,
-    rho_max::Real=DEFAULT_RHO_MAX,
-) where {NF <: AbstractFloat}
-    ncol = length(N)
-    size(mass, 2) == ncol || error("`mass` must have one column per entry of `N`.")
-    _validate_matching_domain_matrices(
-        size(mass),
-        ("mass_w", mass_w),
-        ("density", density),
-        ("temperature", temperature),
-    )
-    _validate_domain_vectors(
-        ncol,
-        ("mass_base", mass_base),
-        ("smb_ice", smb_ice),
-        ("runoff", runoff),
-        ("melt", melt),
-        ("refreezing", refreezing),
-        ("vapor_mass", vapor_mass),
-        ("sublimation", sublimation),
-        ("latent_heat_flux_sum", latent_heat_flux_sum),
-        ("Tsrf", Tsrf),
-        ("snow_cover", snow_cover),
-        ("albedo_dynamic", albedo_dynamic),
-    )
-    mass_max, mass_split, mass_min, rho_max =
-        _domain_thresholds(NF, mass_max, mass_split, mass_min, rho_max)
-
-    return SnowpackDomain(
-        c,
-        size(mass, 1),
-        ncol,
-        mass_max,
-        mass_split,
-        mass_min,
-        rho_max,
-        N,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        mass_base,
-        smb_ice,
-        runoff,
-        melt,
-        refreezing,
-        vapor_mass,
-        sublimation,
-        latent_heat_flux_sum,
-        Tsrf,
-        snow_cover,
-        albedo_dynamic,
-    )
-end
-
-"""
-    cpu_domain(domain)
-
-Return a copy of `domain` adapted to CPU `Array` storage.
-"""
-cpu_domain(domain::SnowpackDomain) = adapt(Array, domain)
-
-"""
-    gpu_domain(domain)
-
-Return a copy of `domain` adapted to the default GPU storage type. Throws if
-CUDA is not functional in the current session.
-"""
-function gpu_domain(domain::SnowpackDomain, storage_type=gpu_storage_type())
-    cuda_available() || error("CUDA is not functional in the current environment.")
-    return adapt(storage_type, domain)
-end
-
-@adapt_structure SnowpackDomain
+has_spatial_coords(d::SnowpackDomain) =
+    !isnothing(d.x) && !isnothing(d.y) && !isnothing(d.js) && !isnothing(d.is) && !isnothing(d.mask)
+ncols(d::SnowpackDomain) = d.ncol
 
 """
 State accessors and formatted state output.

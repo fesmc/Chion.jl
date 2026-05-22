@@ -38,10 +38,7 @@ include("state.jl")
 include("processes/pdd.jl")
 include("run_types.jl")
 include("runtime.jl")
-include("diagnostics.jl")
-include("output_runtime.jl")
 include("integrators.jl")
-include("checkpoint.jl")
 include("simulation.jl")
 
 # ---------------------------------------------------------------------------
@@ -53,7 +50,7 @@ export SnowpackGrid
 
 # Models
 export BESSIModel, PDDModel, ITMModel, StochasticMonthlyPDD
-export AbstractSnowModelState, BESSIState, PDDState, ITMState
+export AbstractState, AbstractSnowModelState, ReferenceState, CurrentState, PDDState, ITMState
 export build_model, initial_state
 export DynamicAlbedo, ConstantAlbedo, PrescribedAlbedo
 export BESSIDensification, HTESSELDensification
@@ -65,8 +62,8 @@ export SnowpackForcing
 # Simulation
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
 export SimulationIntegrator
+export AbstractOutput, NetcdfOutput, NativeOutput, MonthlyState, io_dict, write_nc!
 export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_forcing!, set_active_mask!, state
-export checkpoint!, restart_integrator, load_checkpoint
 
 # Data loading
 export load_forcing_file
@@ -74,6 +71,8 @@ export load_forcing_file
 # Low-level / power-user exports
 export step!
 export ColumnarStepWorkspace
+export update_diagnostics!
+export cpu_state, gpu_state
 export continuous_bottom_deplete!
 export update_surface_albedo!
 export get_state, print_state

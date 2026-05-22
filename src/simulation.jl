@@ -11,10 +11,11 @@ Simulation orchestration for Chion.
 Couple a model configuration with forcing, reference state, current state, and
 execution/output options.
 """
-mutable struct Simulation{M <: AbstractSnowModel, S <: AbstractSnowModelState}
+mutable struct Simulation{M <: AbstractSnowModel, D, R <: AbstractState, S <: AbstractState}
     model::M
+    domain::D
     forcing::SnowpackForcing
-    ref::S
+    ref::R
     now::S
     options::SimulationOptions
     output::OutputOptions
@@ -23,7 +24,7 @@ end
 function Simulation(
     model::AbstractSnowModel;
     forcing::SnowpackForcing,
-    state::Union{Nothing, AbstractSnowModelState}=nothing,
+    state::Union{Nothing, AbstractState}=nothing,
     options::SimulationOptions=SimulationOptions(),
     output::OutputOptions=OutputOptions(),
     years::Union{Nothing, Integer}=nothing,
@@ -58,10 +59,12 @@ function Simulation(
     end
 
     now_state = isnothing(state) ? initial_state(model) : state
-    return Simulation(model, forcing, deepcopy(now_state), now_state, resolved_options, resolved_output)
+    return Simulation(model, model_domain(model), forcing, reference_state(now_state), now_state, resolved_options, resolved_output)
 end
 
 state(sim::Simulation) = sim.now
+get_state(sim::Simulation, idx::Int=1) = get_state(sim.now, idx)
+print_state(sim::Simulation, idx::Int=1) = print_state(sim.now, idx)
 
 function _normalize_model_name(model)
     name = lowercase(strip(String(model)))
@@ -94,6 +97,7 @@ function Base.show(io::IO, ::MIME"text/plain", sim::Simulation)
     println(io, "  model: ", typeof(sim.model))
     println(io, "  ref: ", typeof(sim.ref))
     println(io, "  now: ", typeof(sim.now))
+    println(io, "  domain: ", typeof(sim.domain))
     println(io, "  columns: ", ncols(sim.model.grid))
     println(io, "  forcing steps: ", length(sim.forcing.time_values))
     println(io, "  backend: ", sim.options.backend)
@@ -149,8 +153,8 @@ step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
 step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
     _step_external!(integrator, Δt_days, force_dt)
 
-_surface_temperature_vector(::BESSIModel, ::BESSIState, runtime) =
-    _host_vector(runtime.domain.Tsrf; copy_array=true)
+_surface_temperature_vector(::BESSIModel, ::CurrentState, runtime) =
+    _host_vector(runtime.state.Tsrf; copy_array=true)
 
 function _yearly_grid(values::Vector{Float64}, grid::AbstractSnowpackGrid)
     has_spatial_coords(grid) || return Matrix{Float64}(undef, 0, 0)
@@ -170,6 +174,157 @@ function _mask_inactive_yearly_outputs!(
         end
     end
     return nothing
+end
+
+function _bessi_output_from_options(sim::Simulation, options::RunOptions)
+    options.write_netcdf || return nothing
+    monthly_mode = :monthly in options.netcdf_variables
+    monthly_mode && length(options.netcdf_variables) > 1 &&
+        error("`monthly` NetCDF output cannot currently be combined with other selectors.")
+    vars = monthly_mode ? MONTHLY_OUTPUT_VARS : state_output_vars(options.netcdf_variables)
+    isempty(vars) && return nothing
+    return init_state_netcdf(
+        resolve_netcdf_path(options),
+        options,
+        sim.forcing.time_values,
+        sim.domain,
+        sim.now,
+        vars,
+        ntime=monthly_mode ? options.years * 12 : options.years * length(sim.forcing.time_values),
+        nlayer=sim.now.Ntot,
+    )
+end
+
+function _bessi_step_kwargs(model::BESSIModel)
+    return (
+        diurnal_shortwave_substeps=model.diurnal_shortwave_substeps,
+        diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
+        diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
+        diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle=model.diurnal_temperature_cycle,
+        diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
+    )
+end
+
+function _sync_bessi_state!(sim::Simulation{<:BESSIModel}, backend_state, is_gpu::Bool, timings::StepTimingStats)
+    if is_gpu
+        time_block!(timings, :gpu_transfer) do
+            _copy_current_state!(sim.now, cpu_state(backend_state))
+        end
+    end
+    update_diagnostics!(sim.now)
+    return nothing
+end
+
+@inline function _is_month_boundary(time_values::Vector{DateTime}, k::Int)
+    k == length(time_values) && return true
+    return month(time_values[k + 1]) != month(time_values[k])
+end
+
+function run!(
+    sim::Simulation{<:BESSIModel};
+    options::SimulationOptions=sim.options,
+    output::OutputOptions=sim.output,
+    io::IO=stdout,
+    checkpoint_path::AbstractString="",
+    checkpoint_year_stride::Integer=1,
+)
+    run_options = _run_options(options, output)
+    checkpoint_path == "" || error("Checkpointing was removed with the simplified BESSI state/output runtime. Re-run without `--checkpoint-path`.")
+    checkpoint_year_stride >= 1 || error("`checkpoint_year_stride` must be positive.")
+    init_problem!(sim, run_options)
+    timings = StepTimingStats()
+    clocks = IntegratorClocks(time_ns(), time_ns())
+    backend_state = sim.now
+    backend_forcing = sim.forcing
+    is_gpu = run_options.backend == :gpu
+    if is_gpu
+        backend_state = time_block!(timings, :gpu_transfer) do
+            gpu_state(sim.now)
+        end
+        backend_forcing = time_block!(timings, :gpu_transfer) do
+            adapt(gpu_storage_type(), sim.forcing)
+        end
+    end
+    workspace = time_block!(timings, :create_workspaces) do
+        ColumnarStepWorkspace(backend_state)
+    end
+    active_indices = is_gpu ? adapt(gpu_storage_type(), collect(1:sim.domain.ncol)) : 1:sim.domain.ncol
+    nc = _bessi_output_from_options(sim, run_options)
+    monthly_mode = nc !== nothing && (:monthly in run_options.netcdf_variables)
+    monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
+    monthly_year_state = monthly_mode ? MonthlyYearState(backend_state; nmonth=run_options.years * 12) : nothing
+    record_index = 0
+    kwargs = _bessi_step_kwargs(sim.model)
+    nsteps = length(sim.forcing.time_values)
+    progress_step_stride = max(1, nsteps ÷ 4)
+    println(io, "Running BESSI: years=$(run_options.years), steps/year=$nsteps, columns=$(sim.domain.ncol), backend=$(run_options.backend), netcdf=$(nc === nothing ? "off" : "on")")
+    flush(io)
+    for year in 1:run_options.years
+        for k in eachindex(sim.forcing.time_values)
+            time_counted_block!(timings, :model_step_wall, sim.domain.ncol) do
+                step!(backend_state, backend_forcing, k, workspace, active_indices; kwargs...)
+            end
+            if monthly_mode
+                if _is_month_boundary(sim.forcing.time_values, Int(k))
+                    time_block!(timings, :write_netcdf) do
+                        snapshot_monthly!(monthly_state, backend_state)
+                        store_monthly!(monthly_year_state, monthly_state)
+                    end
+                    reset_monthly!(monthly_state)
+                end
+            elseif nc !== nothing
+                _sync_bessi_state!(sim, backend_state, is_gpu, timings)
+                record_index += 1
+                time_block!(timings, :write_netcdf) do
+                    write_nc!(nc, sim.now, record_index, sim.domain)
+                end
+            end
+            if mod(Int(k), progress_step_stride) == 0 || Int(k) == nsteps
+                println(io, "BESSI progress: year $year / $(run_options.years), step $(Int(k)) / $nsteps")
+                flush(io)
+            end
+        end
+        println(io, "Completed BESSI year $year / $(run_options.years)")
+        flush(io)
+    end
+    if monthly_mode
+        time_block!(timings, :write_netcdf) do
+            write_monthly_year_nc!(nc, monthly_year_state, 1, sim.domain)
+        end
+        record_index = monthly_year_state.count
+    end
+    _sync_bessi_state!(sim, backend_state, is_gpu, timings)
+    status = :complete
+    nc_path = nc === nothing ? "" : resolve_netcdf_path(run_options)
+    nc !== nothing && close_output!(nc, status, record_index)
+    run_wall_sec = (time_ns() - clocks.run_wall_t0) * 1.0e-9
+    simulation_wall_sec = (time_ns() - clocks.simulation_wall_t0) * 1.0e-9
+    result = SimulationResult(
+        NamedTuple[],
+        status,
+        run_options.years,
+        timings,
+        simulation_wall_sec,
+        run_wall_sec,
+        nc_path,
+        "",
+        "",
+    )
+    print_run_report(
+        io,
+        run_options,
+        sim.forcing.time_values,
+        result.history,
+        status,
+        simulation_wall_sec,
+        run_wall_sec,
+        timings;
+        nc_path=nc_path,
+        summary_path="",
+        history_csv_path="",
+    )
+    return result
 end
 
 """
