@@ -45,8 +45,8 @@ end
 
 @inline function _bessi_water_saturation_vapor_pressure(temperature, T0)
     temperature_c = temperature - T0
-    return oftype(temperature, 610.8) *
-           exp(oftype(temperature, 17.27) * temperature_c / (temperature_c + oftype(temperature, 237.3)))
+    return oftype(temperature, 611.2) *
+           exp(oftype(temperature, 17.27) * temperature_c / (temperature_c + oftype(temperature, 243.12)))
 end
 
 @inline function _bessi_air_vapor_pressure(air_temperature, relative_humidity, T0)
