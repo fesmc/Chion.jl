@@ -1,5 +1,5 @@
 """
-FastIsostasy-style simulation orchestration for Chion.
+Simulation orchestration for Chion.
 
 `Simulation` owns reference and current model state (`ref` and `now`), while
 `SimulationIntegrator` owns initialized runtime state for explicit stepping.

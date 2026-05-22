@@ -143,17 +143,14 @@ function _empty_layer_grids()
     )
 end
 
-_allocate_step_vectors(active::Bool, ncol::Int) = NamedTuple{OUTPUT_GROUPS.step}(ntuple(_ -> active ? zeros(Float64, ncol) : Float64[], length(OUTPUT_GROUPS.step)))
-_allocate_daily_vectors(active::Bool, ncol::Int) = NamedTuple{DAILY_GRID_KEYS}(ntuple(_ -> active ? zeros(Float64, ncol) : Float64[], length(DAILY_GRID_KEYS)))
+_allocate_output_vectors(keys::Tuple, active::Bool, ncol::Int) =
+    NamedTuple{keys}(ntuple(_ -> active ? zeros(Float64, ncol) : Float64[], length(keys)))
+_allocate_step_vectors(active::Bool, ncol::Int) = _allocate_output_vectors(OUTPUT_GROUPS.step, active, ncol)
+_allocate_daily_vectors(active::Bool, ncol::Int) = _allocate_output_vectors(DAILY_GRID_KEYS, active, ncol)
 _allocate_monthly_sums(active::Bool, nmonth_total::Int, ncol::Int) = NamedTuple{MONTHLY_GRID_KEYS}(ntuple(_ -> active ? zeros(Float64, nmonth_total, ncol) : Matrix{Float64}(undef, 0, 0), length(MONTHLY_GRID_KEYS)))
 
-function _step_output_grids(step_vectors, layout)
-    return NamedTuple{OUTPUT_GROUPS.step}(ntuple(i -> scatter_to_grid(getfield(step_vectors, OUTPUT_GROUPS.step[i]), layout.js, layout.is, _grid_shape(layout)), length(OUTPUT_GROUPS.step)))
-end
-
-function _daily_output_grids(daily_vectors, layout)
-    return NamedTuple{DAILY_GRID_KEYS}(ntuple(i -> scatter_to_grid(getfield(daily_vectors, DAILY_GRID_KEYS[i]), layout.js, layout.is, _grid_shape(layout)), length(DAILY_GRID_KEYS)))
-end
+_record_output_grids(vectors, keys::Tuple, layout) =
+    NamedTuple{keys}(ntuple(i -> scatter_to_grid(getfield(vectors, keys[i]), layout.js, layout.is, _grid_shape(layout)), length(keys)))
 
 function _reset_step_vectors!(step_vectors)
     for key in OUTPUT_GROUPS.step
@@ -386,11 +383,8 @@ end
 @inline _write_dataset_var!(var, data::AbstractMatrix) = (var[:, :] = eltype(var) <: Integer ? permutedims(data, (2, 1)) : Float32.(permutedims(data, (2, 1))))
 @inline _write_dataset_var!(var, data::AbstractArray{<:Real, 3}) = (var[:, :, :] = Float32.(permutedims(data, (1, 3, 2))))
 
-maybe_write_step_output!(writer::NetCDFWriter, step_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
-    (haskey(writer.vars, key) && (writer.vars[key][step_index, :, :] = Float32.(permutedims(data, (2, 1))); nothing))
-
-maybe_write_daily_output!(writer::NetCDFWriter, day_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
-    (haskey(writer.vars, key) && (writer.vars[key][day_index, :, :] = Float32.(permutedims(data, (2, 1))); nothing))
+maybe_write_indexed_output!(writer::NetCDFWriter, record_index::Int, key::Symbol, data::AbstractMatrix{<:Real}) =
+    (haskey(writer.vars, key) && (writer.vars[key][record_index, :, :] = Float32.(permutedims(data, (2, 1))); nothing))
 
 maybe_write_output!(writer::NetCDFWriter, key::Symbol, data) = (haskey(writer.vars, key) && (_write_dataset_var!(writer.vars[key], data); nothing))
 

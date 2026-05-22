@@ -75,43 +75,47 @@ function init_io!(sim, model_runtime::ModelRuntime, diagnostics::DiagnosticsRunt
     return OutputRuntime(schedule, writer, nc_path, monthly_sums, monthly_count, step_vectors, daily_vectors, 0, 0)
 end
 
-function maybe_write_daily_outputs!(integrator::SimulationIntegrator)
-    diagnostics = integrator.diagnostics
+function _write_indexed_outputs!(integrator::SimulationIntegrator, keys::Tuple, vectors, record_index::Int, prepare_timer::Symbol, write_timer::Symbol)
     output = integrator.output
-    diagnostics.need_daily_outputs || return nothing
-
-    output.daily_written += 1
-    if output.writer !== nothing
-        daily_grids = time_block!(integrator.timings, :daily_output_prepare) do
-            _daily_output_grids(output.daily_vectors, integrator.model_runtime.grid)
-        end
-        time_block!(integrator.timings, :daily_output_write) do
-            for key in OUTPUT_GROUPS.daily
-                maybe_write_daily_output!(output.writer, output.daily_written, key, getfield(daily_grids, key))
-            end
+    output.writer === nothing && return nothing
+    grids = time_block!(integrator.timings, prepare_timer) do
+        _record_output_grids(vectors, keys, integrator.model_runtime.grid)
+    end
+    time_block!(integrator.timings, write_timer) do
+        for key in keys
+            maybe_write_indexed_output!(output.writer, record_index, key, getfield(grids, key))
         end
     end
     return nothing
 end
 
-function maybe_write_step_outputs!(integrator::SimulationIntegrator)
-    diagnostics = integrator.diagnostics
-    output = integrator.output
-    diagnostics.need_step_outputs || return nothing
-    output.schedule.annual_output.write_output[integrator.time_index] || return nothing
+function maybe_write_daily_outputs!(integrator::SimulationIntegrator)
+    integrator.diagnostics.need_daily_outputs || return nothing
+    integrator.output.daily_written += 1
+    return _write_indexed_outputs!(
+        integrator,
+        OUTPUT_GROUPS.daily,
+        integrator.output.daily_vectors,
+        integrator.output.daily_written,
+        :daily_output_prepare,
+        :daily_output_write,
+    )
+end
 
-    output.steps_written += 1
-    if output.writer !== nothing
-        step_grids = time_block!(integrator.timings, :step_output_prepare) do
-            _step_output_grids(output.step_vectors, integrator.model_runtime.grid)
-        end
-        time_block!(integrator.timings, :step_output_write) do
-            for key in OUTPUT_GROUPS.step
-                maybe_write_step_output!(output.writer, output.steps_written, key, getfield(step_grids, key))
-            end
-        end
-        _reset_step_vectors!(output.step_vectors)
-    end
+function maybe_write_step_outputs!(integrator::SimulationIntegrator)
+    integrator.diagnostics.need_step_outputs || return nothing
+    integrator.output.schedule.annual_output.write_output[integrator.time_index] || return nothing
+
+    integrator.output.steps_written += 1
+    _write_indexed_outputs!(
+        integrator,
+        OUTPUT_GROUPS.step,
+        integrator.output.step_vectors,
+        integrator.output.steps_written,
+        :step_output_prepare,
+        :step_output_write,
+    )
+    _reset_step_vectors!(integrator.output.step_vectors)
     return nothing
 end
 
