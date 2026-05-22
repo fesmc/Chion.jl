@@ -36,10 +36,11 @@ include("reporting.jl")
 include("models.jl")
 include("state.jl")
 include("processes/pdd.jl")
-include("integrators.jl")
+include("run_types.jl")
 include("runtime.jl")
 include("diagnostics.jl")
 include("output_runtime.jl")
+include("integrators.jl")
 include("checkpoint.jl")
 include("simulation.jl")
 
@@ -64,7 +65,7 @@ export SnowpackForcing
 # Simulation
 export Simulation, SimulationResult, SimulationOptions, OutputOptions
 export SimulationIntegrator
-export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_forcing!, state
+export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_forcing!, set_active_mask!, state
 export checkpoint!, restart_integrator, load_checkpoint
 
 # Data loading

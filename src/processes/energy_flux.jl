@@ -35,6 +35,53 @@ end
 @inline _snow_thermal_conductivity(ρ, Kᵢ) =
     Kᵢ * (ρ * oftype(ρ, 1.0e-3))^oftype(ρ, 1.88)
 
+@inline _bessi_latent_exchange_coefficient(c::SnowpackPhysicalConstants) =
+    c.latent_heat_flux_ratio * c.D_sh / c.cp_air * oftype(c.D_sh, 0.622) * (c.Lv + c.Lm)
+
+@inline function _relative_humidity_fraction(relative_humidity)
+    rh = relative_humidity > one(relative_humidity) ? relative_humidity / oftype(relative_humidity, 100.0) : relative_humidity
+    return clamp(rh, zero(rh), one(rh))
+end
+
+@inline function _bessi_water_saturation_vapor_pressure(temperature, T0)
+    temperature_c = temperature - T0
+    return oftype(temperature, 610.8) *
+           exp(oftype(temperature, 17.27) * temperature_c / (temperature_c + oftype(temperature, 237.3)))
+end
+
+@inline function _bessi_air_vapor_pressure(air_temperature, relative_humidity, T0)
+    return _relative_humidity_fraction(relative_humidity) *
+           _bessi_water_saturation_vapor_pressure(air_temperature, T0)
+end
+
+@inline function _bessi_ice_saturation_vapor_pressure(surface_temperature, T0)
+    surface_c = surface_temperature - T0
+    return oftype(surface_temperature, 611.2) *
+           exp(oftype(surface_temperature, 22.46) * surface_c / (surface_c + oftype(surface_temperature, 272.62)))
+end
+
+@inline function _bessi_ice_saturation_vapor_pressure_derivative(surface_temperature, T0, es)
+    denominator = surface_temperature - T0 + oftype(surface_temperature, 272.62)
+    return es * oftype(surface_temperature, 22.46) * oftype(surface_temperature, 272.62) / _safe_positive(denominator * denominator)
+end
+
+@inline function _bessi_latent_vapor_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
+    exchange = _bessi_latent_exchange_coefficient(c) / _safe_positive(air_pressure)
+    ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
+    es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
+    return exchange * (ea - es)
+end
+
+@inline function _bessi_latent_vapor_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
+    exchange = _bessi_latent_exchange_coefficient(c) / _safe_positive(air_pressure)
+    ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
+    es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
+    des_dT = _bessi_ice_saturation_vapor_pressure_derivative(surface_temperature, c.T0, es)
+    linear = exchange * des_dT
+    constant = exchange * (ea - es + des_dT * surface_temperature)
+    return constant, linear
+end
+
 """
     shortwave_absorbed(shortwave_down; surface_albedo)
 
@@ -247,6 +294,9 @@ function _go_energy_flux_resolved!(
     q_sh_value,
     use_q_lh::Bool,
     q_lh_value,
+    use_relative_humidity::Bool,
+    relative_humidity,
+    air_pressure,
 )
     n_layers = _n_active(N_storage, idx)
     if n_layers <= 0 || _get_layer(mass, 1, idx) <= zero(eltype(mass))
@@ -284,9 +334,15 @@ function _go_energy_flux_resolved!(
     longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * surface_temperature_cube
     sensible_heat_flux_constant = use_q_sh ? q_sh_value : air_temperature * c.D_sh
     sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : c.D_sh
-    turbulent_latent_heat_flux = use_q_lh ? q_lh_value : zero(dt_seconds)
-    latent_heat_flux_constant = latent_heat_constant_term_eff + turbulent_latent_heat_flux
-    latent_heat_flux_linear = latent_heat_linear_coefficient_eff
+    turbulent_latent_heat_constant, turbulent_latent_heat_linear = if use_q_lh
+        q_lh_value, zero(dt_seconds)
+    elseif use_relative_humidity
+        _bessi_latent_vapor_flux_linearized(previous_surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+    else
+        zero(dt_seconds), zero(dt_seconds)
+    end
+    latent_heat_flux_constant = latent_heat_constant_term_eff + turbulent_latent_heat_constant
+    latent_heat_flux_linear = latent_heat_linear_coefficient_eff + turbulent_latent_heat_linear
 
     surface_flux_constant = sensible_heat_flux_constant + longwave_flux_constant + absorbed_shortwave + latent_heat_flux_constant
     surface_flux_linear = sensible_heat_flux_linear + longwave_flux_linear + latent_heat_flux_linear
@@ -472,5 +528,8 @@ function go_energy_flux!(
         isnothing(q_sh) ? zero(dt_seconds) : q_sh,
         !isnothing(q_lh),
         isnothing(q_lh) ? zero(dt_seconds) : q_lh,
+        false,
+        zero(dt_seconds),
+        oftype(dt_seconds, 101_325.0),
     )
 end

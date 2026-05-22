@@ -73,6 +73,8 @@ end
 end
 
 @inline function _solar_longitude_deg_from_calendar_day(day_of_year)
+
+    ##check this again
     days_since_j2000_like_year_start = day_of_year - 1.0
     mean_longitude = 280.46646 + 0.98564736 * days_since_j2000_like_year_start
     mean_anomaly = 357.52911 + 0.98560028 * days_since_j2000_like_year_start
@@ -100,6 +102,9 @@ struct SnowpackForcing
     has_q_sh
     q_lh
     has_q_lh
+    relative_humidity
+    has_relative_humidity
+    air_pressure
     prescribed_albedo
     has_prescribed_albedo
 end
@@ -107,6 +112,7 @@ end
 @adapt_structure SnowpackForcing
 
 @inline function forcing_step_kind(forcing::SnowpackForcing, time_index::Int)
+    ## for monthly pdd
     dt = _step_dt(forcing.dt_days, time_index)
     return 27.0 <= dt <= 32.0 ? :monthly : :scheduled
 end
@@ -128,6 +134,9 @@ function SnowpackForcing(;
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    relative_humidity=nothing,
+    has_relative_humidity=nothing,
+    air_pressure=nothing,
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
     latitude_deg=nothing,
@@ -152,7 +161,7 @@ function SnowpackForcing(;
         if isnothing(latitude_deg) || latitude_deg isa Number
             for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
                 snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh,
-                prescribed_albedo)
+                relative_humidity, air_pressure, prescribed_albedo)
                 isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
             end
         end
@@ -185,6 +194,20 @@ function SnowpackForcing(;
     has_q_sh_m = isnothing(q_sh) ? fill(false, dims) : isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
     q_lh_m = isnothing(q_lh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
     has_q_lh_m = isnothing(q_lh) ? fill(false, dims) : isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
+    relative_humidity_m = if !isnothing(relative_humidity)
+        _forcing_numeric_matrix(relative_humidity, column_count, ntime, "relative_humidity")
+    else
+        zeros(Float64, dims)
+    end
+    has_relative_humidity_m = if isnothing(relative_humidity)
+        fill(false, dims)
+    elseif isnothing(has_relative_humidity)
+        isfinite.(relative_humidity_m)
+    else
+        _forcing_bool_matrix(has_relative_humidity, column_count, ntime, "has_relative_humidity")
+    end
+    relative_humidity_m[.!has_relative_humidity_m] .= 0.0
+    air_pressure_m = isnothing(air_pressure) ? fill(101_325.0, dims) : _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
     prescribed_albedo_m = isnothing(prescribed_albedo) ? zeros(Float64, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
     has_prescribed_albedo_m = isnothing(prescribed_albedo) ? fill(false, dims) : isnothing(has_prescribed_albedo) ? fill(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
 
@@ -200,6 +223,9 @@ function SnowpackForcing(;
         ("has_q_sh", has_q_sh_m),
         ("q_lh", q_lh_m),
         ("has_q_lh", has_q_lh_m),
+        ("relative_humidity", relative_humidity_m),
+        ("has_relative_humidity", has_relative_humidity_m),
+        ("air_pressure", air_pressure_m),
         ("prescribed_albedo", prescribed_albedo_m),
         ("has_prescribed_albedo", has_prescribed_albedo_m),
     )
@@ -228,6 +254,9 @@ function SnowpackForcing(;
         has_q_sh_m,
         q_lh_m,
         has_q_lh_m,
+        relative_humidity_m,
+        has_relative_humidity_m,
+        air_pressure_m,
         prescribed_albedo_m,
         has_prescribed_albedo_m,
     )

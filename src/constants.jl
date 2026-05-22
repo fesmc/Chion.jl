@@ -65,6 +65,9 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     ci::NF
     cw::NF
     Lm::NF
+    Lv::NF
+    cp_air::NF
+    latent_heat_flux_ratio::NF
     D_sh::NF
     alpha_dry::NF
     alpha_wet::NF
@@ -177,6 +180,9 @@ function SnowpackPhysicalConstants(::Type{NF};
     ci::Real=2110.0,
     cw::Real=4181.0,
     Lm::Real=334000.0,
+    Lv::Real=2.501e6,
+    cp_air::Real=1003.0,
+    latent_heat_flux_ratio::Real=1.5,
     D_sh::Real=20.0,
     alpha_dry::Real=0.81,
     alpha_wet::Real=0.70,
@@ -205,6 +211,9 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, ci),
         convert(NF, cw),
         convert(NF, Lm),
+        convert(NF, Lv),
+        convert(NF, cp_air),
+        convert(NF, latent_heat_flux_ratio),
         convert(NF, D_sh),
         convert(NF, alpha_dry),
         convert(NF, alpha_wet),

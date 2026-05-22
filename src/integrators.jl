@@ -16,6 +16,9 @@ function _single_step_forcing_template(forcing::SnowpackForcing)
         has_q_sh=forcing.has_q_sh[:, 1:1],
         q_lh=forcing.q_lh[:, 1:1],
         has_q_lh=forcing.has_q_lh[:, 1:1],
+        relative_humidity=forcing.relative_humidity[:, 1:1],
+        has_relative_humidity=forcing.has_relative_humidity[:, 1:1],
+        air_pressure=forcing.air_pressure[:, 1:1],
         prescribed_albedo=forcing.prescribed_albedo[:, 1:1],
         has_prescribed_albedo=forcing.has_prescribed_albedo[:, 1:1],
         time_values=[first(forcing.time_values)],
@@ -204,6 +207,9 @@ function _set_forcing!(
     has_q_sh=nothing,
     q_lh=nothing,
     has_q_lh=nothing,
+    relative_humidity=nothing,
+    has_relative_humidity=nothing,
+    air_pressure=nothing,
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
     latitude_deg=nothing,
@@ -238,6 +244,13 @@ function _set_forcing!(
         fill!(f.has_q_lh, true)
     end
     _assign_bool_step_field!(f.has_q_lh, has_q_lh, ncol, "has_q_lh")
+    relative_humidity_assigned = _assign_numeric_step_field!(f.relative_humidity, relative_humidity, ncol, "relative_humidity")
+    if relative_humidity_assigned && isnothing(has_relative_humidity)
+        f.has_relative_humidity[:, :] .= isfinite.(f.relative_humidity)
+    end
+    _assign_bool_step_field!(f.has_relative_humidity, has_relative_humidity, ncol, "has_relative_humidity")
+    f.relative_humidity[.!f.has_relative_humidity] .= 0.0
+    _assign_numeric_step_field!(f.air_pressure, air_pressure, ncol, "air_pressure")
     if _assign_numeric_step_field!(f.prescribed_albedo, prescribed_albedo, ncol, "prescribed_albedo") && isnothing(has_prescribed_albedo)
         fill!(f.has_prescribed_albedo, true)
     end

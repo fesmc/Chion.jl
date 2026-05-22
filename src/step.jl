@@ -113,6 +113,9 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     has_q_lw_down::Bool
     has_q_sh::Bool
     has_q_lh::Bool
+    relative_humidity::NF
+    has_relative_humidity::Bool
+    air_pressure::NF
     prescribed_albedo::NF
     has_prescribed_albedo::Bool
     diurnal_shortwave_substeps::Bool
@@ -124,6 +127,65 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     diurnal_shortwave_min_air_temperature::NF
     diurnal_temperature_cycle::Bool
     diurnal_temperature_amplitude::NF
+end
+
+function SnowpackStepForcing(
+    air_temperature,
+    precipitation_rate,
+    dt_days,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed,
+    q_sw_net,
+    q_lw_down,
+    q_sh,
+    q_lh,
+    has_q_sw_net::Bool,
+    has_q_lw_down::Bool,
+    has_q_sh::Bool,
+    has_q_lh::Bool,
+    relative_humidity,
+    has_relative_humidity::Bool,
+    air_pressure,
+    prescribed_albedo,
+    has_prescribed_albedo::Bool,
+    diurnal_shortwave_substeps::Bool,
+    latitude_deg,
+    day_of_year,
+    solar_longitude_deg,
+)
+    return SnowpackStepForcing(
+        air_temperature,
+        precipitation_rate,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        q_sw_net,
+        q_lw_down,
+        q_sh,
+        q_lh,
+        has_q_sw_net,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        relative_humidity,
+        has_relative_humidity,
+        air_pressure,
+        prescribed_albedo,
+        has_prescribed_albedo,
+        diurnal_shortwave_substeps,
+        latitude_deg,
+        day_of_year,
+        solar_longitude_deg,
+        zero(air_temperature),
+        3,
+        oftype(air_temperature, 265.15),
+        false,
+        zero(air_temperature),
+    )
 end
 
 function SnowpackStepForcing(
@@ -165,17 +227,68 @@ function SnowpackStepForcing(
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        zero(air_temperature),
+        false,
+        oftype(air_temperature, 101_325.0),
         prescribed_albedo,
         has_prescribed_albedo,
         diurnal_shortwave_substeps,
         latitude_deg,
         day_of_year,
         solar_longitude_deg,
-        zero(air_temperature),
-        3,
-        oftype(air_temperature, 265.15),
-        false,
-        zero(air_temperature),
+    )
+end
+
+function SnowpackStepForcing(
+    air_temperature,
+    precipitation_rate,
+    dt_days,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed,
+    q_sw_net,
+    q_lw_down,
+    q_sh,
+    q_lh,
+    has_q_sw_net::Bool,
+    has_q_lw_down::Bool,
+    has_q_sh::Bool,
+    has_q_lh::Bool,
+    relative_humidity,
+    has_relative_humidity::Bool,
+    air_pressure,
+    prescribed_albedo,
+    has_prescribed_albedo::Bool,
+    diurnal_shortwave_substeps::Bool,
+    latitude_deg,
+    day_of_year,
+)
+    return SnowpackStepForcing(
+        air_temperature,
+        precipitation_rate,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        q_sw_net,
+        q_lw_down,
+        q_sh,
+        q_lh,
+        has_q_sw_net,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        relative_humidity,
+        has_relative_humidity,
+        air_pressure,
+        prescribed_albedo,
+        has_prescribed_albedo,
+        diurnal_shortwave_substeps,
+        latitude_deg,
+        day_of_year,
+        _solar_longitude_deg_from_calendar_day(day_of_year),
     )
 end
 
@@ -217,12 +330,14 @@ function SnowpackStepForcing(
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        zero(air_temperature),
+        false,
+        oftype(air_temperature, 101_325.0),
         prescribed_albedo,
         has_prescribed_albedo,
         diurnal_shortwave_substeps,
         latitude_deg,
         day_of_year,
-        _solar_longitude_deg_from_calendar_day(day_of_year),
     )
 end
 
@@ -262,6 +377,9 @@ sets precipitation rate to snowfall plus rainfall.
     has_q_sh::Bool,
     q_lh,
     has_q_lh::Bool,
+    relative_humidity,
+    has_relative_humidity::Bool,
+    air_pressure,
     prescribed_albedo,
     has_prescribed_albedo::Bool,
     diurnal_shortwave_substeps::Bool,
@@ -290,6 +408,9 @@ sets precipitation rate to snowfall plus rainfall.
         has_q_lw_down,
         has_q_sh,
         has_q_lh,
+        relative_humidity,
+        has_relative_humidity,
+        air_pressure,
         prescribed_albedo,
         has_prescribed_albedo,
         diurnal_shortwave_substeps,
@@ -549,13 +670,13 @@ function _step_state_core_resolved!(
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        bare_ice_ablation = _bare_ice_ablation_mass(c, forcing, dt_seconds)
+        bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         if update_snow_cover
             _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
         end
-        _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - bare_ice_ablation)
-        _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_ablation)
-        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_ablation)
+        _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
+        _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_fluxes.melt_mass)
         return nothing
     end
 
@@ -631,6 +752,26 @@ function _step_state_core_resolved!(
         forcing.q_sh,
         forcing.has_q_lh,
         forcing.q_lh,
+        forcing.has_relative_humidity,
+        forcing.relative_humidity,
+        forcing.air_pressure,
+    )
+
+    _apply_snow_surface_vapor_mass_flux!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        temperature,
+        runoff,
+        Tsrf,
+        albedo_dynamic,
+        idx,
+        c,
+        forcing,
+        dt_seconds,
+        mass_split,
+        mass_min,
     )
 
     if energy.needs_melt
@@ -758,6 +899,9 @@ and advances each column independently in-place.
     has_q_sh,
     q_lh,
     has_q_lh,
+    relative_humidity,
+    has_relative_humidity,
+    air_pressure,
     prescribed_albedo,
     has_prescribed_albedo,
     latitude_deg,
@@ -789,6 +933,9 @@ and advances each column independently in-place.
             has_q_sh[idx, time_index],
             q_lh[idx, time_index],
             has_q_lh[idx, time_index],
+            relative_humidity[idx, time_index],
+            has_relative_humidity[idx, time_index],
+            air_pressure[idx, time_index],
             prescribed_albedo[idx, time_index],
             has_prescribed_albedo[idx, time_index],
             diurnal_shortwave_substeps,
@@ -881,6 +1028,9 @@ return the KernelAbstractions event.
         forcing.has_q_sh,
         forcing.q_lh,
         forcing.has_q_lh,
+        forcing.relative_humidity,
+        forcing.has_relative_humidity,
+        forcing.air_pressure,
         forcing.prescribed_albedo,
         forcing.has_prescribed_albedo,
         forcing.latitude_deg,

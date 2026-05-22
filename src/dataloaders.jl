@@ -192,10 +192,13 @@ function load_forcing_file(
     q_lw_down_name::Union{Nothing, AbstractString}="LWD",
     q_sh_name::Union{Nothing, AbstractString}="SHF",
     q_lh_name::Union{Nothing, AbstractString}="LHF",
+    relative_humidity_name::Union{Nothing, AbstractString}="RHZ",
+    air_pressure_name::Union{Nothing, AbstractString}=nothing,
     prescribed_albedo_name::Union{Nothing, AbstractString}=nothing,
     latitude_name::Union{Nothing, AbstractString}="LAT",
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
+    air_pressure_default::Float64=101_325.0,
     wind_default::Float64=5.0,
 )
     ds = NCDataset(path)
@@ -253,6 +256,22 @@ function load_forcing_file(
             q_lh_m[.!has_q_lh_m] .= 0.0
         end
 
+        relative_humidity_m = zeros(Float64, nx * ny, ntime)
+        has_relative_humidity_m = fill(false, nx * ny, ntime)
+        if !isnothing(relative_humidity_name) && haskey(ds, relative_humidity_name)
+            relative_humidity_raw = _column_matrix(_read_time_y_x(ds, relative_humidity_name, ntime, ny, nx))
+            relative_humidity_m .= relative_humidity_raw
+            has_relative_humidity_m .= isfinite.(relative_humidity_raw)
+            relative_humidity_m[.!has_relative_humidity_m] .= 0.0
+        end
+
+        air_pressure_m = fill(air_pressure_default, nx * ny, ntime)
+        if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
+            pressure_raw = _column_matrix(_read_time_y_x(ds, air_pressure_name, ntime, ny, nx))
+            finite_pressure = isfinite.(pressure_raw)
+            air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
+        end
+
         prescribed_albedo_m = zeros(Float64, nx * ny, ntime)
         has_prescribed_albedo_m = fill(false, nx * ny, ntime)
         if !isnothing(prescribed_albedo_name) && haskey(ds, prescribed_albedo_name)
@@ -283,6 +302,9 @@ function load_forcing_file(
             has_q_sh=has_q_sh_m,
             q_lh=q_lh_m,
             has_q_lh=has_q_lh_m,
+            relative_humidity=relative_humidity_m,
+            has_relative_humidity=has_relative_humidity_m,
+            air_pressure=air_pressure_m,
             prescribed_albedo=prescribed_albedo_m,
             has_prescribed_albedo=has_prescribed_albedo_m,
             latitude_deg=latitude_deg,
