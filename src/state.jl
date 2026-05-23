@@ -328,31 +328,36 @@ function reset_monthly!(monthly::MonthlyState)
     return monthly
 end
 
-@kernel function _store_monthly_packed_kernel!(
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    sublimation,
-    albedo,
-    packed,
+@kernel function _store_monthly_fields_kernel!(
+    year_smb_ice,
+    year_runoff,
+    year_melt,
+    year_refreezing,
+    year_sublimation,
+    year_albedo,
+    monthly_smb_ice,
+    monthly_runoff,
+    monthly_melt,
+    monthly_refreezing,
+    monthly_sublimation,
+    monthly_albedo,
     row::Int,
 )
     idx = @index(Global)
-    if idx <= size(packed, 2)
-        smb_ice[row, idx] = packed[1, idx]
-        runoff[row, idx] = packed[2, idx]
-        melt[row, idx] = packed[3, idx]
-        refreezing[row, idx] = packed[4, idx]
-        sublimation[row, idx] = packed[5, idx]
-        albedo[row, idx] = packed[6, idx]
+    if idx <= length(monthly_runoff)
+        year_smb_ice[row, idx] = monthly_smb_ice[idx]
+        year_runoff[row, idx] = monthly_runoff[idx]
+        year_melt[row, idx] = monthly_melt[idx]
+        year_refreezing[row, idx] = monthly_refreezing[idx]
+        year_sublimation[row, idx] = monthly_sublimation[idx]
+        year_albedo[row, idx] = monthly_albedo[idx]
     end
 end
 
 function store_monthly!(year_state::MonthlyYearState, monthly::MonthlyState)
     row = year_state.count + 1
     row <= size(year_state.runoff, 1) || error("Monthly output year buffer is full.")
-    kernel! = _store_monthly_packed_kernel!(_ka_backend(monthly.packed))
+    kernel! = _store_monthly_fields_kernel!(_ka_backend(monthly.runoff))
     event = kernel!(
         year_state.smb_ice,
         year_state.runoff,
@@ -360,11 +365,16 @@ function store_monthly!(year_state::MonthlyYearState, monthly::MonthlyState)
         year_state.refreezing,
         year_state.sublimation,
         year_state.albedo,
-        monthly.packed,
+        monthly.smb_ice,
+        monthly.runoff,
+        monthly.melt,
+        monthly.refreezing,
+        monthly.sublimation,
+        monthly.albedo,
         row;
-        ndrange=size(monthly.packed, 2),
+        ndrange=length(monthly.runoff),
     )
-    _wait_monthly_event(event, monthly.packed)
+    _wait_monthly_event(event, monthly.runoff)
     year_state.count = row
     return year_state
 end

@@ -266,9 +266,10 @@ function run!(
                 step!(backend_state, backend_forcing, k, workspace, active_indices; kwargs...)
             end
             if monthly_mode
+                accumulate_monthly!(monthly_state, backend_state)
                 if _is_month_boundary(sim.forcing.time_values, Int(k))
                     time_block!(timings, :write_netcdf) do
-                        snapshot_monthly!(monthly_state, backend_state)
+                        finalize_monthly!(monthly_state, backend_state)
                         store_monthly!(monthly_year_state, monthly_state)
                     end
                     reset_monthly!(monthly_state)

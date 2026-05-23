@@ -48,6 +48,7 @@ function print_help()
     println("  --chion-period=last      last|mean|all|N, where N is a 1-based repeated year")
     println("  --mar-sector=N           1-based MAR SECTOR index for SMB/RU/albedo (default: 1)")
     println("  --mar-runoff-var=NAME    RU or RU2 (default: RU)")
+    println("  --mar-sublimation-var=NAME  MAR sublimation variable (default: SU)")
     println("  --mar-albedo-var=NAME    AL1 or AL2 (default: AL2)")
     println("  --mask-threshold=VALUE   MAR/Chion domain mask threshold (default: 50)")
     println("  --no-maps                Skip spatial map and scatter plots")
@@ -68,6 +69,29 @@ function clean_array(A)
 end
 
 read_clean(ds, name, inds...) = clean_array(Array(ds[name][inds...]))
+
+function nc_attr(ds, name::AbstractString, default)
+    return haskey(ds.attrib, name) ? ds.attrib[name] : default
+end
+
+function records_written(ds, varname::AbstractString)
+    ntime = size(ds[varname], 1)
+    raw = nc_attr(ds, "records_written", "")
+    isempty(String(raw)) && return ntime
+    parsed = tryparse(Int, String(raw))
+    return isnothing(parsed) ? ntime : min(parsed, ntime)
+end
+
+function grid_shape(ds)
+    haskey(ds, "domain_mask") && return size(ds["domain_mask"])
+    haskey(ds, "x") && haskey(ds, "y") && return (length(ds["x"][:]), length(ds["y"][:]))
+    for name in keys(ds)
+        ndims(ds[name]) >= 3 && return (size(ds[name], 2), size(ds[name], 3))
+    end
+    error("Could not infer Chion grid shape from NetCDF variables.")
+end
+
+month_sequence(nrecord::Int) = [mod(i - 1, 12) + 1 for i in 1:nrecord]
 
 function finite_mask(A)
     mask = falses(size(A))
@@ -139,10 +163,12 @@ function selected_chion_indices(months::Vector{Int}, period::AbstractString)
 end
 
 function read_chion_monthly(ds, name::AbstractString, period::AbstractString)
-    months = Int.(vec(clean_array(Array(ds["month_of_year"][:]))))
+    nrecord = records_written(ds, name)
+    months = haskey(ds, "month_of_year") ?
+        Int.(vec(clean_array(Array(ds["month_of_year"][1:nrecord])))) :
+        month_sequence(nrecord)
     nmonth = length(months)
-    nx = length(ds.dim["x"])
-    ny = length(ds.dim["y"])
+    nx, ny = grid_shape(ds)
 
     if period == "mean"
         accum = zeros(Float64, 12, nx, ny)
@@ -169,6 +195,39 @@ function read_chion_monthly(ds, name::AbstractString, period::AbstractString)
     return read_clean(ds, name, idxs, :, :), months[idxs]
 end
 
+function max_abs_finite_difference(a, b)
+    maxdiff = 0.0
+    found = false
+    @inbounds for I in eachindex(a, b)
+        av = a[I]
+        bv = b[I]
+        if isfinite(av) && isfinite(bv)
+            maxdiff = max(maxdiff, abs(av - bv))
+            found = true
+        end
+    end
+    return found ? maxdiff : NaN
+end
+
+function validate_chion_smb_variables(chion_ds, period::AbstractString)
+    haskey(chion_ds, "monthly_smb") || return nothing
+    haskey(chion_ds, "monthly_net_ice_sheet_forcing") || return nothing
+
+    climatic_smb, _ = read_chion_monthly(chion_ds, "monthly_smb", period)
+    net_ice_forcing, _ = read_chion_monthly(chion_ds, "monthly_net_ice_sheet_forcing", period)
+    maxdiff = max_abs_finite_difference(climatic_smb, net_ice_forcing)
+    if isfinite(maxdiff) && maxdiff <= 1.0e-6
+        error(
+            "The selected Chion file has identical `monthly_smb` and " *
+            "`monthly_net_ice_sheet_forcing` over --chion-period=$(period). " *
+            "This usually means the NetCDF was produced before `monthly_smb` " *
+            "was changed to climatic SMB. Regenerate the Chion monthly output " *
+            "with the current code before comparing both diagnostics.",
+        )
+    end
+    return nothing
+end
+
 function repeat_mar_to_months(mar_monthly, months::Vector{Int})
     out = Array{Float64}(undef, length(months), size(mar_monthly, 2), size(mar_monthly, 3))
     for (k, month) in enumerate(months)
@@ -178,7 +237,8 @@ function repeat_mar_to_months(mar_monthly, months::Vector{Int})
 end
 
 function weight_matrix(mar_ds, chion_ds, threshold::Float64)
-    area = haskey(mar_ds, "AREA") ? read_clean(mar_ds, "AREA", :, :) : ones(length(chion_ds.dim["x"]), length(chion_ds.dim["y"]))
+    nx, ny = grid_shape(chion_ds)
+    area = haskey(mar_ds, "AREA") ? read_clean(mar_ds, "AREA", :, :) : ones(nx, ny)
     mar_mask = haskey(mar_ds, "MSK") ? read_clean(mar_ds, "MSK", :, :) : fill(threshold, size(area))
     chion_mask = haskey(chion_ds, "domain_mask") ? read_clean(chion_ds, "domain_mask", :, :) : fill(threshold, size(area))
     weights = zeros(Float64, size(area))
@@ -512,6 +572,7 @@ function main(args)
     chion_period = lowercase(arg_value(args, "chion-period", "last"))
     mar_sector = parse(Int, arg_value(args, "mar-sector", "1"))
     mar_runoff_var = uppercase(arg_value(args, "mar-runoff-var", "RU"))
+    mar_sublimation_var = uppercase(arg_value(args, "mar-sublimation-var", "SU"))
     mar_albedo_var = uppercase(arg_value(args, "mar-albedo-var", "AL2"))
     mask_threshold = parse(Float64, arg_value(args, "mask-threshold", "50.0"))
     make_maps = !has_flag(args, "no-maps")
@@ -522,20 +583,23 @@ function main(args)
     default(fmt=:png)
 
     specs = ComparisonSpec[
-        ComparisonSpec(:melt, "Melt", "monthly_melt", "ME", :single_sector, :sum, "mmWE"),
-        ComparisonSpec(:runoff, "Runoff", "monthly_runoff", mar_runoff_var, :sector, :sum, "mmWE"),
-        ComparisonSpec(:refreezing, "Refreezing", "monthly_refreezing", "RZ", :single_sector, :sum, "mmWE"),
-        ComparisonSpec(:smb, "SMB", "monthly_smb", "SMB", :sector, :sum, "mmWE"),
-        ComparisonSpec(:albedo, "Albedo", "monthly_mean_albedo", mar_albedo_var, :sector, :mean, "1"),
+        ComparisonSpec(:melt, "Melt", "melt", "ME", :single_sector, :sum, "mmWE"),
+        ComparisonSpec(:runoff, "Runoff", "runoff", mar_runoff_var, :sector, :sum, "mmWE"),
+        ComparisonSpec(:refreezing, "Refreezing", "refreezing", "RZ", :single_sector, :sum, "mmWE"),
+        ComparisonSpec(:sublimation, "Sublimation mass loss", "sublimation", mar_sublimation_var, :sector, :sum, "mmWE"),
+        ComparisonSpec(:net_ice_sheet_forcing, "Net ice sheet forcing", "smb_ice", "SMB", :sector, :sum, "mmWE"),
+        ComparisonSpec(:albedo, "Albedo", "albedo", mar_albedo_var, :sector, :mean, "1"),
     ]
 
     monthly_rows = NamedTuple[]
     stats_rows = NamedTuple[]
     NCDataset(mar_file) do mar_ds
         NCDataset(chion_file) do chion_ds
+            validate_chion_smb_variables(chion_ds, chion_period)
             weights = weight_matrix(mar_ds, chion_ds, mask_threshold)
-            x = haskey(chion_ds, "x") ? clean_array(Array(chion_ds["x"][:])) : collect(1:length(chion_ds.dim["x"]))
-            y = haskey(chion_ds, "y") ? clean_array(Array(chion_ds["y"][:])) : collect(1:length(chion_ds.dim["y"]))
+            nx, ny = grid_shape(chion_ds)
+            x = haskey(chion_ds, "x") ? clean_array(Array(chion_ds["x"][:])) : collect(1:nx)
+            y = haskey(chion_ds, "y") ? clean_array(Array(chion_ds["y"][:])) : collect(1:ny)
 
             for spec in specs
                 if !haskey(chion_ds, spec.chion_var)
@@ -606,6 +670,7 @@ function main(args)
         end
     end
 
+    isempty(monthly_rows) && error("No comparison variables were found in the selected Chion/MAR files; not writing empty output tables.")
     write_monthly_csv(joinpath(output_dir, "monthly_domain_means.csv"), monthly_rows)
     write_stats_csv(joinpath(output_dir, "period_spatial_stats.csv"), stats_rows)
 
