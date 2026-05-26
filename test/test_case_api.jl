@@ -13,7 +13,7 @@ function _captured_exception(f::Function)
 end
 
 function _sample_model_forcing_grid()
-    grid = SnowpackGrid(CPU(), 4;
+    grid = SnowpackGrid(4;
         x    = [0.0, 10_000.0],
         y    = [0.0, 10_000.0],
         js   = [1, 1, 2, 2],
@@ -94,7 +94,7 @@ end
 
 @testset "Run API" begin
     @testset "BESSIModel scheme types" begin
-        grid = SnowpackGrid(CPU(), 1)
+        grid = SnowpackGrid(1)
         m1 = BESSIModel(grid; albedo=DynamicAlbedo())
         m2 = BESSIModel(grid; albedo=ConstantAlbedo())
         m3 = BESSIModel(grid; densification=HTESSELDensification())
@@ -227,6 +227,53 @@ end
         @test result.history_csv_path == ""
     end
 
+    @testset "BESSI CPU interval step matches serial column stepping" begin
+        model, forcing, _ = _sample_model_forcing_grid()
+        serial = CurrentState(model)
+        threaded = CurrentState(model)
+        serial_workspace = ColumnarStepWorkspace(serial)
+        threaded_workspace = ColumnarStepWorkspace(threaded)
+        kwargs = Chion._bessi_step_kwargs(model)
+
+        for time_index in eachindex(forcing.time_values)
+            @inbounds for idx in 1:serial.ncol
+                Chion._step_column_from_fields!(
+                    serial,
+                    forcing,
+                    Int(time_index),
+                    serial_workspace,
+                    idx,
+                    true,
+                    kwargs.diurnal_shortwave_substeps,
+                    kwargs.diurnal_shortwave_threshold,
+                    kwargs.diurnal_shortwave_max_substeps,
+                    kwargs.diurnal_shortwave_min_air_temperature,
+                    kwargs.diurnal_temperature_cycle,
+                    kwargs.diurnal_temperature_amplitude,
+                )
+            end
+        end
+
+        step_interval_threads!(
+            threaded,
+            forcing,
+            eachindex(forcing.time_values),
+            threaded_workspace,
+            1:threaded.ncol;
+            chunk_size=2,
+            kwargs...,
+        )
+
+        @test threaded.N == serial.N
+        @test threaded.mass ≈ serial.mass
+        @test threaded.mass_w ≈ serial.mass_w
+        @test threaded.density ≈ serial.density
+        @test threaded.temperature ≈ serial.temperature
+        @test threaded.smb_ice ≈ serial.smb_ice
+        @test threaded.runoff ≈ serial.runoff
+        @test threaded.Tsrf ≈ serial.Tsrf
+    end
+
     @testset "Simulation owns reference and current state" begin
         model, forcing, _ = _sample_model_forcing_grid()
         sim = Simulation(model; forcing=forcing, save=:none, years=1, write_outputs=false)
@@ -255,7 +302,7 @@ end
     end
 
     @testset "external forcing step matches scheduled forcing" begin
-        grid = SnowpackGrid(CPU(), 1)
+        grid = SnowpackGrid(1)
         forcing = SnowpackForcing(
             dt_days=[1.0],
             air_temperature_c=[-8.0],
@@ -284,7 +331,7 @@ end
     end
 
     @testset "non-spatial grids only require coordinates for NetCDF" begin
-        grid = SnowpackGrid(CPU(), 1)
+        grid = SnowpackGrid(1)
         model = BESSIModel(grid; Ntot=4)
         forcing = SnowpackForcing(
             dt_days=[1.0, 1.0],
@@ -335,7 +382,7 @@ end
     end
 
     @testset "PDDModel runs bulk positive degree days" begin
-        grid = SnowpackGrid(CPU(), 1)
+        grid = SnowpackGrid(1)
         f = SnowpackForcing(
             dt_days=[1.0, 1.0],
             air_temperature_c=[-5.0, 1.0],
@@ -362,7 +409,7 @@ end
         @test run!(named).status == :complete
 
         mktempdir() do dir
-            spatial_grid = SnowpackGrid(CPU(), 1;
+            spatial_grid = SnowpackGrid(1;
                 x=[0.0],
                 y=[0.0],
                 js=[1],
@@ -391,7 +438,7 @@ end
     end
 
     @testset "ITMModel stub errors on run!" begin
-        grid = SnowpackGrid(CPU(), 1)
+        grid = SnowpackGrid(1)
         f = SnowpackForcing(
             dt_days=fill(1.0, 3),
             air_temperature_c=fill(-10.0, 3),
