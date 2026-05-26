@@ -219,6 +219,35 @@ end
 
 _reset_model_columns!(::AbstractSnowModel, ::AbstractState, runtime, inactive_indices::Vector{Int}) = nothing
 
+function step_interval_threads!(
+    model::BESSIModel,
+    state::CurrentState,
+    forcing::SnowpackForcing,
+    time_range,
+    workspace::ColumnarStepWorkspace=ColumnarStepWorkspace(state),
+    active_indices=1:state.ncol;
+    kwargs...,
+)
+    return step_interval_threads!(
+        state,
+        forcing,
+        time_range,
+        workspace,
+        active_indices;
+        _bessi_step_kwargs(model)...,
+        kwargs...,
+    )
+end
+
+step_year_threads!(
+    model::BESSIModel,
+    state::CurrentState,
+    forcing::SnowpackForcing,
+    workspace::ColumnarStepWorkspace=ColumnarStepWorkspace(state),
+    active_indices=1:state.ncol;
+    kwargs...,
+) = step_interval_threads!(model, state, forcing, 1:_step_time_count(forcing), workspace, active_indices; kwargs...)
+
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
     length(active) == model_runtime.ncol || error("Active mask length must match the model column count.")
     active_v = Vector{Bool}(active)
@@ -239,19 +268,53 @@ end
 
 function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
     runtime = model_runtime.backend
-    step!(
-        runtime.state,
-        forcing,
-        time_index,
-        runtime.workspace,
-        model_runtime.active_indices;
-        diurnal_shortwave_substeps=model.diurnal_shortwave_substeps,
-        diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle=model.diurnal_temperature_cycle,
-        diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
-    )
+    kwargs = _bessi_step_kwargs(model)
+    if runtime.is_gpu
+        step!(
+            runtime.state,
+            forcing,
+            time_index,
+            runtime.workspace,
+            model_runtime.active_indices;
+            kwargs...,
+        )
+    else
+        step_interval_threads!(
+            runtime.state,
+            forcing,
+            time_index:time_index,
+            runtime.workspace,
+            model_runtime.active_indices;
+            kwargs...,
+        )
+    end
+    return nothing
+end
+
+function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_range)
+    runtime = model_runtime.backend
+    kwargs = _bessi_step_kwargs(model)
+    if runtime.is_gpu
+        for time_index in time_range
+            step!(
+                runtime.state,
+                forcing,
+                Int(time_index),
+                runtime.workspace,
+                model_runtime.active_indices;
+                kwargs...,
+            )
+        end
+    else
+        step_interval_threads!(
+            runtime.state,
+            forcing,
+            time_range,
+            runtime.workspace,
+            model_runtime.active_indices;
+            kwargs...,
+        )
+    end
     return nothing
 end
 

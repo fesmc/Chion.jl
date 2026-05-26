@@ -33,7 +33,7 @@ maintain layer-structure constraints such as split and merge thresholds.
 Mutates the supplied state arrays in-place and may also update albedo, runoff,
 and basal-mass diagnostics.
 """
-function _apply_accumulation!(
+function _apply_accumulation_resolved!(
     N_storage,
     mass,
     mass_w,
@@ -53,14 +53,10 @@ function _apply_accumulation!(
     mass_min,
     snowfall_rate,
     rainfall_rate,
-    dt_seconds;
-    air_temperature=nothing,
-    T_air=nothing,
-    wind_speed=oftype(dt_seconds, 5),
+    dt_seconds,
+    resolved_air_temperature,
+    wind_speed,
 )
-    resolved_air_temperature = _resolve_keyword_alias(air_temperature, T_air, "air_temperature", "T_air")
-    resolved_air_temperature = isnothing(resolved_air_temperature) ? c.T0 : resolved_air_temperature
-
     if _n_active(N_storage, idx) == 0
         if snowfall_rate > zero(snowfall_rate)
             _set_n_active!(N_storage, idx, 1)
@@ -154,4 +150,57 @@ function _apply_accumulation!(
     )
 
     return nothing
+end
+
+function _apply_accumulation!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    Tsrf,
+    snow_cover,
+    albedo_dynamic,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    Ntot::Int,
+    mass_max,
+    mass_split,
+    mass_min,
+    snowfall_rate,
+    rainfall_rate,
+    dt_seconds;
+    air_temperature=nothing,
+    T_air=nothing,
+    wind_speed=oftype(dt_seconds, 5),
+)
+    resolved_air_temperature = _resolve_keyword_alias(air_temperature, T_air, "air_temperature", "T_air")
+    resolved_air_temperature = isnothing(resolved_air_temperature) ? c.T0 : resolved_air_temperature
+    return _apply_accumulation_resolved!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        temperature,
+        mass_base,
+        smb_ice,
+        runoff,
+        Tsrf,
+        snow_cover,
+        albedo_dynamic,
+        idx,
+        c,
+        Ntot,
+        mass_max,
+        mass_split,
+        mass_min,
+        snowfall_rate,
+        rainfall_rate,
+        dt_seconds,
+        resolved_air_temperature,
+        wind_speed,
+    )
 end

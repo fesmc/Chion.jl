@@ -44,10 +44,10 @@ end
     data = collect(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
-        return repeat(reshape(Bool.(data), 1, ntime), ncol, 1)
+        return Matrix{Bool}(repeat(reshape(Bool.(data), 1, ntime), ncol, 1))
     elseif ndims(data) == 2
         size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
-        return Bool.(data)
+        return Matrix{Bool}(Bool.(data))
     end
     error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
 end
@@ -85,28 +85,50 @@ end
 end
 
 """Time-varying atmospheric boundary conditions for a snowpack model."""
-struct SnowpackForcing
-    time_values::Vector{DateTime}
-    dt_days::Vector{Float64}
-    day_of_year::Vector{Float64}
-    solar_longitude_deg::Vector{Float64}
-    air_temperature
-    snowfall_rate
-    rainfall_rate
-    shortwave_down
-    latitude_deg
-    wind_speed
-    q_lw_down
-    has_q_lw_down
-    q_sh
-    has_q_sh
-    q_lh
-    has_q_lh
-    relative_humidity
-    has_relative_humidity
-    air_pressure
-    prescribed_albedo
-    has_prescribed_albedo
+struct SnowpackForcing{
+        TV <: AbstractVector{DateTime},
+        DV <: AbstractVector{Float64},
+        YV <: AbstractVector{Float64},
+        SV <: AbstractVector{Float64},
+        AT,
+        SF,
+        RF,
+        SW,
+        LAT,
+        WS,
+        QLW,
+        HLW,
+        QSH,
+        HSH,
+        QLH,
+        HLH,
+        RH,
+        HRH,
+        AP,
+        PA,
+        HPA,
+    }
+    time_values::TV
+    dt_days::DV
+    day_of_year::YV
+    solar_longitude_deg::SV
+    air_temperature::AT
+    snowfall_rate::SF
+    rainfall_rate::RF
+    shortwave_down::SW
+    latitude_deg::LAT
+    wind_speed::WS
+    q_lw_down::QLW
+    has_q_lw_down::HLW
+    q_sh::QSH
+    has_q_sh::HSH
+    q_lh::QLH
+    has_q_lh::HLH
+    relative_humidity::RH
+    has_relative_humidity::HRH
+    air_pressure::AP
+    prescribed_albedo::PA
+    has_prescribed_albedo::HPA
 end
 
 @adapt_structure SnowpackForcing
@@ -202,7 +224,7 @@ function SnowpackForcing(;
     has_relative_humidity_m = if isnothing(relative_humidity)
         fill(false, dims)
     elseif isnothing(has_relative_humidity)
-        isfinite.(relative_humidity_m)
+        Matrix{Bool}(isfinite.(relative_humidity_m))
     else
         _forcing_bool_matrix(has_relative_humidity, column_count, ntime, "has_relative_humidity")
     end

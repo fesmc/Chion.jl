@@ -70,6 +70,7 @@ export load_forcing_file
 
 # Low-level / power-user exports
 export step!
+export step_interval_threads!, step_year_threads!
 export ColumnarStepWorkspace
 export update_diagnostics!
 export cpu_state, gpu_state

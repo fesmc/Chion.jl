@@ -268,24 +268,30 @@ function run!(
     history = NamedTuple[]
     progress = Progress(run_options.years; desc="Running years: ", output=io, showspeed=true)
     for year in 1:run_options.years
-        for k in eachindex(sim.forcing.time_values)
-            time_counted_block!(timings, :model_step_wall, sim.domain.ncol) do
-                step!(backend_state, backend_forcing, k, workspace, active_indices; kwargs...)
+        if !is_gpu && nc === nothing
+            time_counted_block!(timings, :model_step_wall, sim.domain.ncol * nsteps) do
+                step_year_threads!(backend_state, backend_forcing, workspace, active_indices; kwargs...)
             end
-            if monthly_mode
-                accumulate_monthly!(monthly_state, backend_state)
-                if _is_month_boundary(sim.forcing.time_values, Int(k))
-                    time_block!(timings, :write_netcdf) do
-                        finalize_monthly!(monthly_state, backend_state)
-                        store_monthly!(monthly_year_state, monthly_state)
-                    end
-                    reset_monthly!(monthly_state)
+        else
+            for k in eachindex(sim.forcing.time_values)
+                time_counted_block!(timings, :model_step_wall, sim.domain.ncol) do
+                    step!(backend_state, backend_forcing, k, workspace, active_indices; kwargs...)
                 end
-            elseif nc !== nothing
-                _sync_bessi_state!(sim, backend_state, is_gpu, timings)
-                record_index += 1
-                time_block!(timings, :write_netcdf) do
-                    write_nc!(nc, sim.now, record_index, sim.domain)
+                if monthly_mode
+                    accumulate_monthly!(monthly_state, backend_state)
+                    if _is_month_boundary(sim.forcing.time_values, Int(k))
+                        time_block!(timings, :write_netcdf) do
+                            finalize_monthly!(monthly_state, backend_state)
+                            store_monthly!(monthly_year_state, monthly_state)
+                        end
+                        reset_monthly!(monthly_state)
+                    end
+                elseif nc !== nothing
+                    _sync_bessi_state!(sim, backend_state, is_gpu, timings)
+                    record_index += 1
+                    time_block!(timings, :write_netcdf) do
+                        write_nc!(nc, sim.now, record_index, sim.domain)
+                    end
                 end
             end
         end

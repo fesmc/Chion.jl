@@ -649,7 +649,7 @@ function _step_state_core_resolved!(
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
     use_prescribed_albedo = _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo
 
-    _apply_accumulation!(
+    _apply_accumulation_resolved!(
         N_storage,
         mass,
         mass_w,
@@ -669,9 +669,9 @@ function _step_state_core_resolved!(
         mass_min,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
-        dt_seconds;
-        air_temperature=forcing.air_temperature,
-        wind_speed=forcing.wind_speed,
+        dt_seconds,
+        forcing.air_temperature,
+        forcing.wind_speed,
     )
 
     if forcing.snowfall_rate > zero(dt_seconds) &&
@@ -879,8 +879,153 @@ function _step_state_core_resolved!(
 end
 
 """
-Batch stepping over forcing fields through a single KernelAbstractions path.
+Batch stepping over forcing fields.
+
+GPU-backed state uses KernelAbstractions kernels. CPU-backed BESSI state uses
+plain Julia threaded loops over chunks of columns to avoid per-step KA launch
+overhead and keep the branch-heavy scalar physics on the normal CPU compiler
+path.
 """
+
+Base.@propagate_inbounds @inline function _step_column_from_fields!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    workspace::ColumnarStepWorkspace,
+    idx::Int,
+    update_snow_cover::Bool,
+    diurnal_shortwave_substeps::Bool,
+    diurnal_shortwave_threshold,
+    diurnal_shortwave_max_substeps::Int,
+    diurnal_shortwave_min_air_temperature,
+    diurnal_temperature_cycle::Bool,
+    diurnal_temperature_amplitude,
+)
+    step_forcing = _step_forcing_from_fields(
+        forcing.air_temperature[idx, time_index],
+        forcing.snowfall_rate[idx, time_index],
+        forcing.rainfall_rate[idx, time_index],
+        _step_dt(forcing.dt_days, time_index),
+        forcing.shortwave_down[idx, time_index],
+        forcing.wind_speed[idx, time_index],
+        forcing.q_lw_down[idx, time_index],
+        forcing.has_q_lw_down[idx, time_index],
+        forcing.q_sh[idx, time_index],
+        forcing.has_q_sh[idx, time_index],
+        forcing.q_lh[idx, time_index],
+        forcing.has_q_lh[idx, time_index],
+        forcing.relative_humidity[idx, time_index],
+        forcing.has_relative_humidity[idx, time_index],
+        forcing.air_pressure[idx, time_index],
+        forcing.prescribed_albedo[idx, time_index],
+        forcing.has_prescribed_albedo[idx, time_index],
+        diurnal_shortwave_substeps,
+        forcing.latitude_deg[idx, time_index],
+        forcing.day_of_year[time_index],
+        forcing.solar_longitude_deg[time_index],
+        diurnal_shortwave_threshold,
+        diurnal_shortwave_max_substeps,
+        diurnal_shortwave_min_air_temperature,
+        diurnal_temperature_cycle,
+        diurnal_temperature_amplitude,
+    )
+    return _step_state_resolved!(
+        domain.N,
+        domain.mass,
+        domain.mass_w,
+        domain.density,
+        domain.temperature,
+        domain.mass_base,
+        domain.smb_ice,
+        domain.runoff,
+        domain.melt,
+        domain.refreezing,
+        domain.vapor_mass,
+        domain.sublimation,
+        domain.latent_heat_flux_sum,
+        domain.Tsrf,
+        domain.snow_cover,
+        domain.albedo_dynamic,
+        idx,
+        domain.c,
+        domain.Ntot,
+        domain.mass_max,
+        domain.mass_split,
+        domain.mass_min,
+        step_forcing,
+        workspace,
+        update_snow_cover,
+    )
+end
+
+@inline function _default_step_threads_chunk_size(nactive::Int)
+    nactive <= 0 && return 1
+    nchunks = max(1, Base.Threads.nthreads() * 4)
+    return max(1, min(nactive, max(16, cld(nactive, nchunks))))
+end
+
+"""
+    step_interval_threads!(domain, forcing, time_range, workspace[, active_indices]; chunk_size)
+
+Advance BESSI columns over a forcing interval using Base.Threads on CPU arrays.
+The loop order is time-within-column-chunk, so forcing reads stay contiguous
+for the `ncol x ntime` forcing layout while each column mutates its contiguous
+`Ntot x ncol` state slice.
+"""
+function step_interval_threads!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_range,
+    workspace::ColumnarStepWorkspace,
+    active_indices=1:column_count(domain);
+    update_snow_cover::Bool=true,
+    diurnal_shortwave_substeps::Bool=false,
+    diurnal_shortwave_threshold=0.0,
+    diurnal_shortwave_max_substeps::Int=3,
+    diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle::Bool=false,
+    diurnal_temperature_amplitude=0.0,
+    chunk_size::Union{Nothing,Integer}=nothing,
+)
+    domain.mass isa Array || error("step_interval_threads! is CPU-only; use step! for GPU-backed BESSI state.")
+    nactive = length(active_indices)
+    nactive == 0 && return nothing
+    resolved_chunk_size = isnothing(chunk_size) ? _default_step_threads_chunk_size(nactive) : Int(chunk_size)
+    resolved_chunk_size > 0 || error("`chunk_size` must be positive.")
+    time_indices = time_range isa AbstractUnitRange ? time_range : collect(time_range)
+    chunks = Iterators.partition(active_indices, resolved_chunk_size)
+    chunk_list = collect(chunks)
+    @threads :dynamic for chunk_index in eachindex(chunk_list)
+        cols = chunk_list[chunk_index]
+        for time_index in time_indices
+            @inbounds for idx in cols
+                _step_column_from_fields!(
+                    domain,
+                    forcing,
+                    Int(time_index),
+                    workspace,
+                    Int(idx),
+                    update_snow_cover,
+                    diurnal_shortwave_substeps,
+                    diurnal_shortwave_threshold,
+                    diurnal_shortwave_max_substeps,
+                    diurnal_shortwave_min_air_temperature,
+                    diurnal_temperature_cycle,
+                    diurnal_temperature_amplitude,
+                )
+            end
+        end
+    end
+    return nothing
+end
+
+step_year_threads!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    workspace::ColumnarStepWorkspace,
+    active_indices=1:column_count(domain);
+    kwargs...,
+) = step_interval_threads!(domain, forcing, 1:_step_time_count(forcing), workspace, active_indices; kwargs...)
 
 """
     _step_columns_kernel!(...)
@@ -1130,6 +1275,22 @@ function step!(
     diurnal_temperature_cycle::Bool=false,
     diurnal_temperature_amplitude=0.0,
 )
+    if domain.mass isa Array
+        return step_interval_threads!(
+            domain,
+            forcing,
+            time_index:time_index,
+            workspace,
+            active_indices;
+            update_snow_cover=update_snow_cover,
+            diurnal_shortwave_substeps=diurnal_shortwave_substeps,
+            diurnal_shortwave_threshold=diurnal_shortwave_threshold,
+            diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
+            diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
+            diurnal_temperature_cycle=diurnal_temperature_cycle,
+            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
+        )
+    end
     _wait_kernel(_launch_step_columns_kernel!(
         domain,
         forcing,
@@ -1195,6 +1356,22 @@ function step!(
     diurnal_temperature_cycle::Bool=false,
     diurnal_temperature_amplitude=0.0,
 )
+    if domain.mass isa Array
+        return step_interval_threads!(
+            domain,
+            forcing,
+            1:_step_time_count(forcing),
+            workspace,
+            active_indices;
+            update_snow_cover=update_snow_cover,
+            diurnal_shortwave_substeps=diurnal_shortwave_substeps,
+            diurnal_shortwave_threshold=diurnal_shortwave_threshold,
+            diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
+            diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
+            diurnal_temperature_cycle=diurnal_temperature_cycle,
+            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
+        )
+    end
     for time_index in 1:_step_time_count(forcing)
         step!(
             domain,

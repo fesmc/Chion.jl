@@ -93,6 +93,8 @@ Return the absorbed shortwave flux after applying `surface_albedo`.
 )
     return (one(shortwave_down) - clamp(surface_albedo, zero(surface_albedo), one(surface_albedo))) * shortwave_down
 end
+@inline shortwave_absorbed(shortwave_down, surface_albedo) =
+    (one(shortwave_down) - clamp(surface_albedo, zero(surface_albedo), one(surface_albedo))) * shortwave_down
 
 @inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
     (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
@@ -209,6 +211,27 @@ tuple.
         latent_heat_constant_term=latent_heat_constant_term,
     )
 end
+@inline function _energy_flux_result(
+    needs_melt,
+    energy_to_melting,
+    melt_energy_available,
+    heating,
+    surface_flux_constant,
+    surface_flux_linear,
+    latent_heat_linear_coefficient,
+    latent_heat_constant_term,
+)
+    return (
+        needs_melt=needs_melt,
+        energy_to_melting=energy_to_melting,
+        melt_energy_available=melt_energy_available,
+        heating=heating,
+        surface_flux_constant=surface_flux_constant,
+        surface_flux_linear=surface_flux_linear,
+        latent_heat_linear_coefficient=latent_heat_linear_coefficient,
+        latent_heat_constant_term=latent_heat_constant_term,
+    )
+end
 
 """
     _residual_melt_energy(surface_flux_constant, surface_flux_linear, surface_temperature, energy_to_melting, dt_seconds; needs_melt)
@@ -223,6 +246,20 @@ point.
     energy_to_melting,
     dt_seconds;
     needs_melt,
+)
+    needs_melt || return zero(dt_seconds)
+    return max(
+        (surface_flux_constant - surface_flux_linear * surface_temperature) * dt_seconds - energy_to_melting,
+        zero(dt_seconds),
+    )
+end
+@inline function _residual_melt_energy(
+    surface_flux_constant,
+    surface_flux_linear,
+    surface_temperature,
+    energy_to_melting,
+    dt_seconds,
+    needs_melt::Bool,
 )
     needs_melt || return zero(dt_seconds)
     return max(
@@ -301,14 +338,14 @@ function _go_energy_flux_resolved!(
     n_layers = _n_active(N_storage, idx)
     if n_layers <= 0 || _get_layer(mass, 1, idx) <= zero(eltype(mass))
         return _energy_flux_result(
-            needs_melt=false,
-            energy_to_melting=zero(dt_seconds),
-            melt_energy_available=zero(dt_seconds),
-            heating=zero(dt_seconds),
-            surface_flux_constant=zero(dt_seconds),
-            surface_flux_linear=zero(dt_seconds),
-            latent_heat_linear_coefficient=latent_heat_linear_coefficient_eff,
-            latent_heat_constant_term=latent_heat_constant_term_eff,
+            false,
+            zero(dt_seconds),
+            zero(dt_seconds),
+            zero(dt_seconds),
+            zero(dt_seconds),
+            zero(dt_seconds),
+            latent_heat_linear_coefficient_eff,
+            latent_heat_constant_term_eff,
         )
     end
 
@@ -327,7 +364,7 @@ function _go_energy_flux_resolved!(
 
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
-        shortwave_absorbed(shortwave_down; surface_albedo=_get_scalar(albedo_dynamic, idx))
+        shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
     longwave_flux_constant = use_q_lw_down ?
         (q_lw_down_value + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth) :
         (c.σ * (c.ϵ_air * air_temperature^4 + c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth))
@@ -372,18 +409,18 @@ function _go_energy_flux_resolved!(
             surface_flux_linear,
             resolved_surface_temperature,
             energy_to_melting,
-            dt_seconds;
-            needs_melt=needs_melt,
+            dt_seconds,
+            needs_melt,
         )
         return _energy_flux_result(
-            needs_melt=needs_melt,
-            energy_to_melting=energy_to_melting,
-            melt_energy_available=melt_energy_available,
-            heating=heating,
-            surface_flux_constant=surface_flux_constant,
-            surface_flux_linear=surface_flux_linear,
-            latent_heat_linear_coefficient=latent_heat_linear_coefficient_eff,
-            latent_heat_constant_term=latent_heat_constant_term_eff,
+            needs_melt,
+            energy_to_melting,
+            melt_energy_available,
+            heating,
+            surface_flux_constant,
+            surface_flux_linear,
+            latent_heat_linear_coefficient_eff,
+            latent_heat_constant_term_eff,
         )
     end
 
@@ -467,19 +504,19 @@ function _go_energy_flux_resolved!(
         surface_flux_linear,
         resolved_surface_temperature,
         energy_to_melting,
-        dt_seconds;
-        needs_melt=needs_melt,
+        dt_seconds,
+        needs_melt,
     )
 
     return _energy_flux_result(
-        needs_melt=needs_melt,
-        energy_to_melting=energy_to_melting,
-        melt_energy_available=melt_energy_available,
-        heating=heating,
-        surface_flux_constant=surface_flux_constant,
-        surface_flux_linear=surface_flux_linear,
-        latent_heat_linear_coefficient=latent_heat_linear_coefficient_eff,
-        latent_heat_constant_term=latent_heat_constant_term_eff,
+        needs_melt,
+        energy_to_melting,
+        melt_energy_available,
+        heating,
+        surface_flux_constant,
+        surface_flux_linear,
+        latent_heat_linear_coefficient_eff,
+        latent_heat_constant_term_eff,
     )
 end
 
