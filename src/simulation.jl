@@ -257,9 +257,16 @@ function run!(
     record_index = 0
     kwargs = _bessi_step_kwargs(sim.model)
     nsteps = length(sim.forcing.time_values)
-    progress_step_stride = max(1, nsteps ÷ 4)
-    println(io, "Running BESSI: years=$(run_options.years), steps/year=$nsteps, columns=$(sim.domain.ncol), backend=$(run_options.backend), netcdf=$(nc === nothing ? "off" : "on")")
-    flush(io)
+    year_summary = _summary_buffers(backend_state, (:thickness, :wet_mass, :bulk_density, :base_mass))
+    time_block!(timings, :summarize_columns_initial) do
+        summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
+    end
+    prev_year_summary = map(copy, year_summary)
+    delta_thickness = similar(year_summary.thickness)
+    delta_wet_mass = similar(year_summary.wet_mass)
+    delta_base_mass = similar(year_summary.base_mass)
+    history = NamedTuple[]
+    progress = Progress(run_options.years; desc="Running years: ", output=io, showspeed=true)
     for year in 1:run_options.years
         for k in eachindex(sim.forcing.time_values)
             time_counted_block!(timings, :model_step_wall, sim.domain.ncol) do
@@ -281,13 +288,36 @@ function run!(
                     write_nc!(nc, sim.now, record_index, sim.domain)
                 end
             end
-            if mod(Int(k), progress_step_stride) == 0 || Int(k) == nsteps
-                println(io, "BESSI progress: year $year / $(run_options.years), step $(Int(k)) / $nsteps")
+        end
+        time_block!(timings, :summarize_columns_year) do
+            summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
+        end
+        record = time_block!(timings, :year_metrics) do
+            make_year_record_and_deltas!(
+                year,
+                delta_thickness,
+                delta_wet_mass,
+                delta_base_mass,
+                year_summary.thickness,
+                year_summary.wet_mass,
+                year_summary.bulk_density,
+                year_summary.base_mass,
+                prev_year_summary.thickness,
+                prev_year_summary.wet_mass,
+                prev_year_summary.base_mass,
+            )
+        end
+        if should_record_year_metrics(year, run_options.years, run_options.history_year_stride)
+            push!(history, record)
+            time_block!(timings, :year_logging) do
+                println(io, year_log_line(record))
                 flush(io)
             end
         end
-        println(io, "Completed BESSI year $year / $(run_options.years)")
-        flush(io)
+        copyto!(prev_year_summary.thickness, year_summary.thickness)
+        copyto!(prev_year_summary.wet_mass, year_summary.wet_mass)
+        copyto!(prev_year_summary.base_mass, year_summary.base_mass)
+        next!(progress)
     end
     if monthly_mode
         time_block!(timings, :write_netcdf) do
@@ -302,7 +332,7 @@ function run!(
     run_wall_sec = (time_ns() - clocks.run_wall_t0) * 1.0e-9
     simulation_wall_sec = (time_ns() - clocks.simulation_wall_t0) * 1.0e-9
     result = SimulationResult(
-        NamedTuple[],
+        history,
         status,
         run_options.years,
         timings,
@@ -316,7 +346,7 @@ function run!(
         io,
         run_options,
         sim.forcing.time_values,
-        result.history,
+        history,
         status,
         simulation_wall_sec,
         run_wall_sec,

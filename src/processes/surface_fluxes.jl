@@ -2,6 +2,14 @@
 Bare-ice and diurnal surface-flux helpers used by `step.jl`.
 """
 
+@inline function _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
+    return (
+        vapor_mass=vapor_mass,
+        sublimation_mass=max(-vapor_mass, zero(vapor_mass)),
+        latent_heat_flux=latent_heat_flux,
+    )
+end
+
 """
     _resolved_nonshortwave_surface_flux_components(c, air_temperature, rainfall_rate, dt_seconds, surface_temperature, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
 
@@ -137,7 +145,7 @@ function _bare_ice_surface_mass_fluxes_resolved(
     vapor_mass = latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
     return (
         melt_mass=melt_mass,
-        vapor_mass=vapor_mass,
+        _surface_vapor_fluxes(vapor_mass, latent_heat_flux)...,
         net_mass_change=vapor_mass - melt_mass,
     )
 end
@@ -216,7 +224,7 @@ function _apply_snow_surface_vapor_mass_flux!(
     mass_min,
 )
     if !_surface_has_snow(N_storage, mass, idx)
-        return zero(dt_seconds)
+        return _surface_vapor_fluxes(zero(dt_seconds), zero(dt_seconds))
     end
 
     surface_temperature = _get_layer(temperature, 1, idx)
@@ -231,7 +239,7 @@ function _apply_snow_surface_vapor_mass_flux!(
         forcing.air_pressure,
     )
     if latent_heat_flux == zero(latent_heat_flux)
-        return zero(latent_heat_flux)
+        return _surface_vapor_fluxes(zero(latent_heat_flux), latent_heat_flux)
     end
 
     vapor_mass = if surface_temperature < c.T0
@@ -257,5 +265,5 @@ function _apply_snow_surface_vapor_mass_flux!(
     if _n_active(N_storage, idx) == 0
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
-    return vapor_mass
+    return _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
 end
