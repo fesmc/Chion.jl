@@ -208,6 +208,8 @@ function _set_forcing!(
     relative_humidity=nothing,
     has_relative_humidity=nothing,
     air_pressure=nothing,
+    surface_height=nothing,
+    elevation=nothing,
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
     latitude_deg=nothing,
@@ -248,7 +250,16 @@ function _set_forcing!(
     end
     _assign_bool_step_field!(f.has_relative_humidity, has_relative_humidity, ncol, "has_relative_humidity")
     f.relative_humidity[.!f.has_relative_humidity] .= 0.0
-    _assign_numeric_step_field!(f.air_pressure, air_pressure, ncol, "air_pressure")
+    if !_assign_numeric_step_field!(f.air_pressure, air_pressure, ncol, "air_pressure")
+        height_field = isnothing(surface_height) ? elevation : surface_height
+        if !isnothing(height_field)
+            f.air_pressure[:, :] .= air_pressure_from_surface_height(
+                height_field,
+                f.air_temperature;
+                temperature_mode=:instantaneous,
+            )
+        end
+    end
     if _assign_numeric_step_field!(f.prescribed_albedo, prescribed_albedo, ncol, "prescribed_albedo") && isnothing(has_prescribed_albedo)
         fill!(f.has_prescribed_albedo, true)
     end

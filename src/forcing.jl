@@ -67,6 +67,104 @@ end
     error("`$name` must be a scalar, a vector of length $ncol, or a matrix of size ($ncol, $ntime).")
 end
 
+@inline function _normalize_air_pressure_temperature_mode(mode)
+    mode_sym = mode isa Symbol ? mode : Symbol(lowercase(strip(String(mode))))
+    mode_sym in (:annual_mean, :instantaneous) ||
+        error("Unsupported air-pressure temperature mode '$mode'. Use :annual_mean or :instantaneous.")
+    return mode_sym
+end
+
+@inline function _barometric_air_pressure(
+    surface_height,
+    air_temperature;
+    sea_level_pressure::Real=DEFAULT_SEA_LEVEL_AIR_PRESSURE,
+    gravity::Real=DEFAULT_GRAVITY,
+    molar_mass_air::Real=DEFAULT_MOLAR_MASS_DRY_AIR,
+    gas_constant::Real=DEFAULT_UNIVERSAL_GAS_CONSTANT,
+)
+    z = Float64(surface_height)
+    T = Float64(air_temperature)
+    if !isfinite(z) || !isfinite(T) || T <= 0.0
+        return Float64(sea_level_pressure)
+    end
+    return Float64(sea_level_pressure) * exp(
+        -Float64(gravity) * Float64(molar_mass_air) * z /
+        (Float64(gas_constant) * T),
+    )
+end
+
+function air_pressure_from_surface_height(
+    surface_height,
+    air_temperature;
+    dt_days=nothing,
+    time_values=nothing,
+    temperature_mode=:annual_mean,
+    sea_level_pressure::Real=DEFAULT_SEA_LEVEL_AIR_PRESSURE,
+    gravity::Real=DEFAULT_GRAVITY,
+    molar_mass_air::Real=DEFAULT_MOLAR_MASS_DRY_AIR,
+    gas_constant::Real=DEFAULT_UNIVERSAL_GAS_CONSTANT,
+)
+    ncol, ntime = size(air_temperature)
+    height = _forcing_column_metadata_matrix(surface_height, ncol, ntime, "surface_height")
+    pressure = Matrix{Float64}(undef, ncol, ntime)
+    mode = _normalize_air_pressure_temperature_mode(temperature_mode)
+
+    if mode == :instantaneous
+        @inbounds for t in 1:ntime, col in 1:ncol
+            pressure[col, t] = _barometric_air_pressure(
+                height[col, t],
+                air_temperature[col, t];
+                sea_level_pressure=sea_level_pressure,
+                gravity=gravity,
+                molar_mass_air=molar_mass_air,
+                gas_constant=gas_constant,
+            )
+        end
+        return pressure
+    end
+
+    isnothing(time_values) && error("`time_values` is required when temperature_mode=:annual_mean.")
+    length(time_values) == ntime || error("`time_values` must have one entry per forcing timestep.")
+    weights = isnothing(dt_days) ? ones(Float64, ntime) : Float64.(collect(dt_days))
+    length(weights) == ntime || error("`dt_days` must have one entry per forcing timestep.")
+
+    years = Dates.year.(DateTime.(collect(time_values)))
+    start_idx = 1
+    while start_idx <= ntime
+        y = years[start_idx]
+        stop_idx = start_idx
+        while stop_idx < ntime && years[stop_idx + 1] == y
+            stop_idx += 1
+        end
+        @inbounds for col in 1:ncol
+            t_sum = 0.0
+            valid_weight_sum = 0.0
+            for t in start_idx:stop_idx
+                T = air_temperature[col, t]
+                w = weights[t]
+                if isfinite(T) && isfinite(w) && w > 0.0
+                    t_sum += T * w
+                    valid_weight_sum += w
+                end
+            end
+            Tmean = valid_weight_sum > 0.0 ? t_sum / valid_weight_sum : NaN
+            p = _barometric_air_pressure(
+                height[col, start_idx],
+                Tmean;
+                sea_level_pressure=sea_level_pressure,
+                gravity=gravity,
+                molar_mass_air=molar_mass_air,
+                gas_constant=gas_constant,
+            )
+            for t in start_idx:stop_idx
+                pressure[col, t] = p
+            end
+        end
+        start_idx = stop_idx + 1
+    end
+    return pressure
+end
+
 @inline function _calendar_day_of_year(t::DateTime)
     seconds_today = hour(t) * 3600 + minute(t) * 60 + second(t) + millisecond(t) / 1000
     return Float64(dayofyear(t)) + seconds_today / 86_400.0
@@ -159,6 +257,8 @@ function SnowpackForcing(;
     relative_humidity=nothing,
     has_relative_humidity=nothing,
     air_pressure=nothing,
+    surface_height=nothing,
+    air_pressure_temperature_mode=:instantaneous,
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
     latitude_deg=nothing,
@@ -183,7 +283,7 @@ function SnowpackForcing(;
         if isnothing(latitude_deg) || latitude_deg isa Number
             for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
                 snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh,
-                relative_humidity, air_pressure, prescribed_albedo)
+                relative_humidity, air_pressure, surface_height, prescribed_albedo)
                 isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
             end
         end
@@ -229,7 +329,21 @@ function SnowpackForcing(;
         _forcing_bool_matrix(has_relative_humidity, column_count, ntime, "has_relative_humidity")
     end
     relative_humidity_m[.!has_relative_humidity_m] .= 0.0
-    air_pressure_m = isnothing(air_pressure) ? fill(101_325.0, dims) : _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
+    time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
+    length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
+    air_pressure_m = if !isnothing(air_pressure)
+        _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
+    elseif !isnothing(surface_height)
+        air_pressure_from_surface_height(
+            surface_height,
+            air_temperature;
+            dt_days=dt_days_v,
+            time_values=time_values_v,
+            temperature_mode=air_pressure_temperature_mode,
+        )
+    else
+        fill(DEFAULT_SEA_LEVEL_AIR_PRESSURE, dims)
+    end
     prescribed_albedo_m = isnothing(prescribed_albedo) ? zeros(Float64, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
     has_prescribed_albedo_m = isnothing(prescribed_albedo) ? fill(false, dims) : isnothing(has_prescribed_albedo) ? fill(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
 
@@ -254,8 +368,6 @@ function SnowpackForcing(;
         _ensure_matching_field_sizes(dims, name, field)
     end
 
-    time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
-    length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
     day_of_year_v = _calendar_day_of_year.(time_values_v)
     solar_longitude_deg_v = _solar_longitude_deg_from_calendar_day.(day_of_year_v)
 

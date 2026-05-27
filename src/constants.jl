@@ -17,6 +17,14 @@ const DEFAULT_SECONDS_PER_MONTH = DEFAULT_SECONDS_PER_DAY * 30.0
 const DEFAULT_SECONDS_PER_YEAR = DEFAULT_SECONDS_PER_MONTH * 12.0
 
 # ---------------------------------------------------------------------------
+# Atmospheric defaults
+# ---------------------------------------------------------------------------
+const DEFAULT_SEA_LEVEL_AIR_PRESSURE = 101_325.0
+const DEFAULT_GRAVITY = 9.80665
+const DEFAULT_MOLAR_MASS_DRY_AIR = 0.0289644
+const DEFAULT_UNIVERSAL_GAS_CONSTANT = 8.31446261815324
+
+# ---------------------------------------------------------------------------
 # Snowpack column defaults
 # ---------------------------------------------------------------------------
 const DEFAULT_NTOT = 2
@@ -182,8 +190,8 @@ function SnowpackPhysicalConstants(::Type{NF};
     Lm::Real=334000.0,
     Lv::Real=2.501e6,
     cp_air::Real=1003.0,
-    latent_heat_flux_ratio::Real=1.5,
-    D_sh::Real=20.0,
+    latent_heat_flux_ratio::Real=1.,
+    D_sh::Real=10.0,
     alpha_dry::Real=0.81,
     alpha_wet::Real=0.70,
     alpha_ice::Real=0.3,

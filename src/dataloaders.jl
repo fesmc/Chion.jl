@@ -177,7 +177,9 @@ end
 Load a generic NetCDF forcing file into a `SnowpackGrid` and
 `SnowpackForcing`. Required variables default to `x`, `y`, `time`, `TT`, `SF`,
 `RF`, and `SWD`; optional turbulent/radiative flux fields and prescribed
-surface albedo are loaded when present and requested.
+surface albedo are loaded when present and requested. If no explicit pressure
+field is requested, the static `surface_height_name` field is used to derive
+air pressure with the barometric formula.
 """
 function load_forcing_file(
     path::AbstractString;
@@ -194,11 +196,13 @@ function load_forcing_file(
     q_lh_name::Union{Nothing, AbstractString}="LHF",
     relative_humidity_name::Union{Nothing, AbstractString}="RHZ",
     air_pressure_name::Union{Nothing, AbstractString}=nothing,
+    surface_height_name::Union{Nothing, AbstractString}="SH",
+    air_pressure_temperature_mode=:annual_mean,
     prescribed_albedo_name::Union{Nothing, AbstractString}=nothing,
     latitude_name::Union{Nothing, AbstractString}="LAT",
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
-    air_pressure_default::Float64=101_325.0,
+    air_pressure_default::Float64=DEFAULT_SEA_LEVEL_AIR_PRESSURE,
     wind_default::Float64=5.0,
 )
     ds = NCDataset(path)
@@ -265,11 +269,23 @@ function load_forcing_file(
             relative_humidity_m[.!has_relative_humidity_m] .= 0.0
         end
 
+        air_temperature = air_temperature_in_celsius ? tair_m .+ 273.15 : tair_m
         air_pressure_m = fill(air_pressure_default, nx * ny, ntime)
         if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
             pressure_raw = _column_matrix(_read_time_y_x(ds, air_pressure_name, ntime, ny, nx))
             finite_pressure = isfinite.(pressure_raw)
             air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
+        elseif !isnothing(surface_height_name) && haskey(ds, surface_height_name)
+            surface_height_data, surface_height_dims = _read_variable_data(ds, surface_height_name)
+            surface_height = _column_vector_y_x(_as_y_x(surface_height_data, surface_height_dims, ny, nx, surface_height_name))
+            air_pressure_m .= air_pressure_from_surface_height(
+                surface_height,
+                air_temperature;
+                dt_days=dt_days,
+                time_values=time_values,
+                temperature_mode=air_pressure_temperature_mode,
+                sea_level_pressure=air_pressure_default,
+            )
         end
 
         prescribed_albedo_m = zeros(Float64, nx * ny, ntime)
@@ -281,7 +297,6 @@ function load_forcing_file(
             prescribed_albedo_m[.!has_prescribed_albedo_m] .= 0.0
         end
 
-        air_temperature = air_temperature_in_celsius ? tair_m .+ 273.15 : tair_m
         snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
         rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
 
