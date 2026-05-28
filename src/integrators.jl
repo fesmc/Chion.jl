@@ -37,8 +37,6 @@ function _new_integrator(
     completed_years::Integer=0,
     current_forcing::SnowpackForcing=_single_step_forcing_template(sim.forcing),
 )
-    progress = Progress(options.years; desc="Running years: ", output=io, showspeed=true)
-    update!(progress, Int(completed_years))
     return SimulationIntegrator(
         sim,
         options,
@@ -51,7 +49,7 @@ function _new_integrator(
         Int(time_index),
         Int(completed_years),
         current_forcing,
-        progress,
+        nothing,
         false,
         nothing,
     )
@@ -84,12 +82,8 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
         step_model!(model, state, model_runtime, forcing, time_index)
     end
 
-    accumulate_step_diagnostics!(integrator)
-    maybe_write_daily_outputs!(integrator)
-    maybe_write_step_outputs!(integrator)
-
     if integrator.time_index == length(integrator.sim.forcing.time_values)
-        _complete_year!(integrator)
+        integrator.completed_years += 1
         integrator.time_index = 1
     else
         integrator.time_index += 1
@@ -133,7 +127,6 @@ function _run_integrator!(
     checkpoint_year_stride::Integer=1,
 )
     while !_finished(integrator)
-        completed_years_before = integrator.completed_years
         _step_scheduled!(integrator)
         checkpoint_path == "" || error("Checkpointing was removed with the simplified state/output runtime.")
     end
@@ -143,13 +136,14 @@ end
 @inline _active_mask_value(value::Bool) = value
 @inline _active_mask_value(value) = isfinite(Float64(value)) && Float64(value) != 0.0
 
-function _active_mask_vector(mask, grid::AbstractSnowpackGrid, ncol::Int)
+function _active_mask_vector(mask, grid, ncol::Int)
     data = collect(mask)
     if ndims(data) == 1
         length(data) == ncol || error("Active mask vector length must match the model column count.")
         return [_active_mask_value(data[idx]) for idx in eachindex(data)]
     elseif ndims(data) == 2
-        has_spatial_coords(grid) || error("2-D active masks require a grid with spatial coordinates.")
+        any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
+            error("2-D active masks require a grid with spatial coordinates.")
         size(data) == size(grid.mask) || error("Active mask matrix must have size $(size(grid.mask)), got $(size(data)).")
         return [_active_mask_value(data[grid.js[col], grid.is[col]]) for col in 1:ncol]
     end
@@ -275,60 +269,22 @@ end
 function _finalize_integrator!(integrator::SimulationIntegrator)
     integrator.finalized && return integrator.result
 
-    history = integrator.diagnostics.history
     simulation_wall_sec = (time_ns() - integrator.clocks.simulation_wall_t0) * 1.0e-9
     status = _finished(integrator) ? :complete : :incomplete
-    years_completed = completed_year_count(history, status, integrator.options.years)
-    summary_path = ""
-    history_csv_path = ""
-
-    if integrator.options.write_outputs
-        mkpath(integrator.options.output_dir)
-        summary_path = joinpath(integrator.options.output_dir, "$(integrator.options.name)_summary.txt")
-        history_csv_path = joinpath(integrator.options.output_dir, "$(integrator.options.name)_history.csv")
-        time_block!(integrator.timings, :write_summary_text) do
-            write_run_summary(
-                summary_path,
-                integrator.options,
-                integrator.sim.forcing.time_values,
-                integrator.model_runtime.ncol,
-                history,
-                status,
-                integrator.timings,
-            )
-        end
-        time_block!(integrator.timings, :write_history_csv) do
-            write_run_history_csv(history_csv_path, history)
-        end
-    end
-
-    finalize_output_runtime!(integrator, status, years_completed)
+    years_completed = integrator.completed_years
     finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.backend, integrator.options, integrator.timings)
 
     run_wall_sec = (time_ns() - integrator.clocks.run_wall_t0) * 1.0e-9
-    print_run_report(
-        integrator.io,
-        integrator.options,
-        integrator.sim.forcing.time_values,
-        history,
-        status,
-        simulation_wall_sec,
-        run_wall_sec,
-        integrator.timings;
-        nc_path=integrator.output.nc_path,
-        summary_path=summary_path,
-        history_csv_path=history_csv_path,
-    )
     result = SimulationResult(
-        history,
+        NamedTuple[],
         status,
         years_completed,
         integrator.timings,
         simulation_wall_sec,
         run_wall_sec,
-        integrator.output.nc_path,
-        summary_path,
-        history_csv_path,
+        "",
+        "",
+        "",
     )
     integrator.finalized = true
     integrator.result = result

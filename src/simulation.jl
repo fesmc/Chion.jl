@@ -139,9 +139,7 @@ function init_integrator(
     timings = StepTimingStats()
     init_problem!(sim, run_options)
     model_runtime = init_model_runtime!(sim, run_options, timings)
-    diagnostics = init_diagnostics!(sim, model_runtime, run_options, timings)
-    output_runtime = init_io!(sim, model_runtime, diagnostics, run_options, timings)
-    return _new_integrator(sim, run_options, io, timings, model_runtime, diagnostics, output_runtime)
+    return _new_integrator(sim, run_options, io, timings, model_runtime, nothing, nothing)
 end
 
 finished(integrator::SimulationIntegrator) = _finished(integrator)
@@ -156,8 +154,15 @@ step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
 _surface_temperature_vector(::BESSIModel, ::CurrentState, runtime) =
     _host_vector(runtime.state.Tsrf; copy_array=true)
 
-function _yearly_grid(values::Vector{Float64}, grid::AbstractSnowpackGrid)
-    has_spatial_coords(grid) || return Matrix{Float64}(undef, 0, 0)
+_model_smb_ice_vector(::BESSIModel, ::CurrentState, runtime) =
+    _host_vector(runtime.state.smb_ice; copy_array=true)
+
+_model_smb_ice_vector(::PDDModel, ::PDDState, runtime) =
+    _host_vector(runtime.smb_ice; copy_array=true)
+
+function _yearly_grid(values::Vector{Float64}, grid)
+    any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
+        return Matrix{Float64}(undef, 0, 0)
     return scatter_to_grid(values, grid.js, grid.is, size(grid.mask))
 end
 
@@ -178,10 +183,13 @@ end
 
 function _bessi_output_from_options(sim::Simulation, options::RunOptions)
     options.write_netcdf || return nothing
-    monthly_mode = :monthly in options.netcdf_variables
+    monthly_mode = :monthly in options.netcdf_variables ||
+        any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
     monthly_mode && length(options.netcdf_variables) > 1 &&
         error("`monthly` NetCDF output cannot currently be combined with other selectors.")
-    vars = monthly_mode ? MONTHLY_OUTPUT_VARS : state_output_vars(options.netcdf_variables)
+    vars = monthly_mode && :monthly in options.netcdf_variables ? MONTHLY_OUTPUT_VARS :
+        monthly_mode ? intersect(options.netcdf_variables, MONTHLY_OUTPUT_VARS) :
+        state_output_vars(options.netcdf_variables)
     isempty(vars) && return nothing
     return init_state_netcdf(
         resolve_netcdf_path(options),
@@ -278,7 +286,7 @@ function run!(
                     step!(backend_state, backend_forcing, k, workspace, active_indices; kwargs...)
                 end
                 if monthly_mode
-                    accumulate_monthly!(monthly_state, backend_state)
+                    accumulate_monthly!(monthly_state, backend_state, sim.forcing.dt_days[Int(k)])
                     if _is_month_boundary(sim.forcing.time_values, Int(k))
                         time_block!(timings, :write_netcdf) do
                             finalize_monthly!(monthly_state, backend_state)

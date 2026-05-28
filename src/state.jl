@@ -178,14 +178,17 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}, MT <: Abstrac
     melt::VT
     refreezing::VT
     sublimation::VT
+    latent_heat_flux::VT
     albedo::VT
     packed::MT
     count::Int
+    days::Float64
     prev_smb_ice::VT
     prev_runoff::VT
     prev_melt::VT
     prev_refreezing::VT
     prev_sublimation::VT
+    prev_latent_heat_flux_sum::VT
 end
 
 mutable struct MonthlyYearState{MT <: AbstractMatrix{<:AbstractFloat}} <: AbstractState
@@ -194,6 +197,7 @@ mutable struct MonthlyYearState{MT <: AbstractMatrix{<:AbstractFloat}} <: Abstra
     melt::MT
     refreezing::MT
     sublimation::MT
+    latent_heat_flux::MT
     albedo::MT
     count::Int
 end
@@ -207,19 +211,23 @@ function MonthlyState(state::CurrentState)
         _zero_like(state.melt),
         _zero_like(state.refreezing),
         _zero_like(state.sublimation),
+        _zero_like(state.latent_heat_flux_sum),
         _zero_like(state.albedo),
-        similar(state.runoff, Float32, 6, length(state.runoff)),
+        similar(state.runoff, Float32, 7, length(state.runoff)),
         0,
+        0.0,
         copy(state.smb_ice),
         copy(state.runoff),
         copy(state.melt),
         copy(state.refreezing),
         copy(state.sublimation),
+        copy(state.latent_heat_flux_sum),
     )
 end
 
 function MonthlyYearState(state::CurrentState; nmonth::Integer=12)
     return MonthlyYearState(
+        similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
@@ -243,12 +251,15 @@ cpu_state(state::MonthlyState) = adapt(Array, state)
     prev_melt,
     prev_refreezing,
     prev_sublimation,
+    prev_latent_heat_flux_sum,
     smb_ice,
     runoff,
     melt,
     refreezing,
     sublimation,
+    latent_heat_flux_sum,
     albedo,
+    days,
 )
     idx = @index(Global)
     if idx <= length(runoff)
@@ -257,21 +268,24 @@ cpu_state(state::MonthlyState) = adapt(Array, state)
         melt_now = melt[idx]
         refreezing_now = refreezing[idx]
         sublimation_now = sublimation[idx]
+        latent_heat_flux_sum_now = latent_heat_flux_sum[idx]
         packed[1, idx] = smb_now - prev_smb_ice[idx]
         packed[2, idx] = runoff_now - prev_runoff[idx]
         packed[3, idx] = melt_now - prev_melt[idx]
         packed[4, idx] = refreezing_now - prev_refreezing[idx]
         packed[5, idx] = sublimation_now - prev_sublimation[idx]
-        packed[6, idx] = albedo[idx]
+        packed[6, idx] = days > 0 ? (latent_heat_flux_sum_now - prev_latent_heat_flux_sum[idx]) / days : zero(days)
+        packed[7, idx] = albedo[idx]
         prev_smb_ice[idx] = smb_now
         prev_runoff[idx] = runoff_now
         prev_melt[idx] = melt_now
         prev_refreezing[idx] = refreezing_now
         prev_sublimation[idx] = sublimation_now
+        prev_latent_heat_flux_sum[idx] = latent_heat_flux_sum_now
     end
 end
 
-function snapshot_monthly!(monthly::MonthlyState, state::CurrentState)
+function snapshot_monthly!(monthly::MonthlyState, state::CurrentState; days::Real=monthly.days)
     kernel! = _snapshot_monthly_kernel!(_ka_backend(monthly.packed))
     event = kernel!(
         monthly.packed,
@@ -280,21 +294,25 @@ function snapshot_monthly!(monthly::MonthlyState, state::CurrentState)
         monthly.prev_melt,
         monthly.prev_refreezing,
         monthly.prev_sublimation,
+        monthly.prev_latent_heat_flux_sum,
         state.smb_ice,
         state.runoff,
         state.melt,
         state.refreezing,
         state.sublimation,
-        state.albedo;
+        state.latent_heat_flux_sum,
+        state.albedo,
+        Float64(days);
         ndrange=length(state.runoff),
     )
     _wait_monthly_event(event, monthly.packed)
     return monthly
 end
 
-function accumulate_monthly!(monthly::MonthlyState, state::CurrentState)
+function accumulate_monthly!(monthly::MonthlyState, state::CurrentState, dt_days::Real=1.0)
     monthly.albedo .+= state.albedo
     monthly.count += 1
+    monthly.days += Float64(dt_days)
     return monthly
 end
 
@@ -304,6 +322,11 @@ function finalize_monthly!(monthly::MonthlyState, state::CurrentState)
     monthly.melt .= state.melt .- monthly.prev_melt
     monthly.refreezing .= state.refreezing .- monthly.prev_refreezing
     monthly.sublimation .= state.sublimation .- monthly.prev_sublimation
+    if monthly.days > 0.0
+        monthly.latent_heat_flux .= (state.latent_heat_flux_sum .- monthly.prev_latent_heat_flux_sum) ./ monthly.days
+    else
+        fill!(monthly.latent_heat_flux, zero(eltype(monthly.latent_heat_flux)))
+    end
     if monthly.count > 0
         monthly.albedo ./= monthly.count
     else
@@ -314,6 +337,7 @@ function finalize_monthly!(monthly::MonthlyState, state::CurrentState)
     monthly.prev_melt .= state.melt
     monthly.prev_refreezing .= state.refreezing
     monthly.prev_sublimation .= state.sublimation
+    monthly.prev_latent_heat_flux_sum .= state.latent_heat_flux_sum
     return monthly
 end
 
@@ -323,8 +347,10 @@ function reset_monthly!(monthly::MonthlyState)
     fill!(monthly.melt, zero(eltype(monthly.melt)))
     fill!(monthly.refreezing, zero(eltype(monthly.refreezing)))
     fill!(monthly.sublimation, zero(eltype(monthly.sublimation)))
+    fill!(monthly.latent_heat_flux, zero(eltype(monthly.latent_heat_flux)))
     fill!(monthly.albedo, zero(eltype(monthly.albedo)))
     monthly.count = 0
+    monthly.days = 0.0
     return monthly
 end
 
@@ -334,12 +360,14 @@ end
     year_melt,
     year_refreezing,
     year_sublimation,
+    year_latent_heat_flux,
     year_albedo,
     monthly_smb_ice,
     monthly_runoff,
     monthly_melt,
     monthly_refreezing,
     monthly_sublimation,
+    monthly_latent_heat_flux,
     monthly_albedo,
     row::Int,
 )
@@ -350,6 +378,7 @@ end
         year_melt[row, idx] = monthly_melt[idx]
         year_refreezing[row, idx] = monthly_refreezing[idx]
         year_sublimation[row, idx] = monthly_sublimation[idx]
+        year_latent_heat_flux[row, idx] = monthly_latent_heat_flux[idx]
         year_albedo[row, idx] = monthly_albedo[idx]
     end
 end
@@ -364,12 +393,14 @@ function store_monthly!(year_state::MonthlyYearState, monthly::MonthlyState)
         year_state.melt,
         year_state.refreezing,
         year_state.sublimation,
+        year_state.latent_heat_flux,
         year_state.albedo,
         monthly.smb_ice,
         monthly.runoff,
         monthly.melt,
         monthly.refreezing,
         monthly.sublimation,
+        monthly.latent_heat_flux,
         monthly.albedo,
         row;
         ndrange=length(monthly.runoff),

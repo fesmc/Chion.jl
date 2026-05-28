@@ -32,7 +32,7 @@ mutable struct SimulationIntegrator
     clocks::IntegratorClocks
     model_runtime::ModelRuntime
     diagnostics
-    output::NativeOutput
+    output
     time_index::Int
     completed_years::Int
     current_forcing::SnowpackForcing

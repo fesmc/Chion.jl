@@ -13,6 +13,7 @@ const io_dict = Dict{Symbol, NamedTuple}(
     :melt => (name="melt", long_name="Cumulative melt", units="mmWE"),
     :refreezing => (name="refreezing", long_name="Cumulative refreezing", units="mmWE"),
     :sublimation => (name="sublimation", long_name="Cumulative sublimation", units="mmWE"),
+    :latent_heat_flux => (name="latent_heat_flux", long_name="Monthly mean turbulent latent heat flux", units="W m-2"),
     :latent_heat_flux_sum => (name="latent_heat_flux_sum", long_name="Integrated turbulent latent heat flux", units="W m-2"),
     :Tsrf => (name="Tsrf", long_name="Surface temperature", units="K"),
     :snow_cover => (name="snow_cover", long_name="Snow cover fraction", units="1"),
@@ -26,7 +27,7 @@ const io_dict = Dict{Symbol, NamedTuple}(
 
 const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
 const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_cover]
-const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
+const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
 const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
 @inline _grid_shape(layout) = size(layout.mask)
 
@@ -129,6 +130,7 @@ const STATE_OUTPUT_ALIASES = Dict(
     :monthly_melt => :melt,
     :monthly_refreezing => :refreezing,
     :monthly_sublimation => :sublimation,
+    :monthly_latent_heat_flux => :latent_heat_flux,
     :monthly_mean_albedo => :albedo,
     :daily_latent_heat_flux => :latent_heat_flux_sum,
 )
@@ -165,7 +167,9 @@ function init_state_netcdf(path::AbstractString, options, time_values::Vector{Da
     _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(domain.mask, (2, 1))))
     handles = Dict{Symbol, Any}()
     for key in vars
-        values = getfield(state, key)
+        values = key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
+            getfield(state, :latent_heat_flux_sum) :
+            getfield(state, key)
         meta = get(io_dict, key, (name=String(key), long_name=String(key), units="", integer=eltype(values) <: Integer))
         if values isa AbstractVector
             handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("t", "x", "y"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
@@ -230,7 +234,7 @@ function normalize_netcdf_variables(spec)
             push!(selected, :monthly)
         elseif key in (:final, :history, :step, :daily, :layers)
             append!(selected, DEFAULT_STATE_OUTPUT_VARS)
-        elseif key in NETCDF_VARIABLES || haskey(STATE_OUTPUT_ALIASES, key)
+        elseif key in NETCDF_VARIABLES || key in MONTHLY_OUTPUT_VARS || haskey(STATE_OUTPUT_ALIASES, key)
             push!(selected, key)
         else
             error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, or a CurrentState field name.")

@@ -12,6 +12,7 @@ model_output_groups(::ITMModel) = ()
 function _validate_model_outputs!(model::AbstractSnowModel, options::RunOptions)
     options.write_netcdf || return nothing
     allowed = copy(NETCDF_VARIABLES)
+    append!(allowed, MONTHLY_OUTPUT_VARS)
     append!(allowed, keys(STATE_OUTPUT_ALIASES))
     append!(allowed, (:all, :none, :final, :layers, :monthly, :step, :daily, :history))
     unsupported = setdiff(options.netcdf_variables, allowed)
@@ -263,7 +264,7 @@ function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
     ncol = _model_column_count(sim.model)
     active = trues(ncol)
     active_indices = _backend_active_indices(collect(1:ncol), backend)
-    return ModelRuntime(backend, ncol, sim.domain, active, active_indices)
+    return ModelRuntime(backend, ncol, _model_grid(sim.model), active, active_indices)
 end
 
 function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
