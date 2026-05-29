@@ -189,7 +189,7 @@ function _bessi_output_from_options(sim::Simulation, options::RunOptions)
         error("`monthly` NetCDF output cannot currently be combined with other selectors.")
     vars = monthly_mode && :monthly in options.netcdf_variables ? MONTHLY_OUTPUT_VARS :
         monthly_mode ? intersect(options.netcdf_variables, MONTHLY_OUTPUT_VARS) :
-        state_output_vars(options.netcdf_variables)
+        state_output_vars(options.netcdf_variables, sim.now)
     isempty(vars) && return nothing
     return init_state_netcdf(
         resolve_netcdf_path(options),
