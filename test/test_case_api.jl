@@ -138,11 +138,12 @@ end
         @test occursin("air_temperature_c", sprint(showerror, err))
     end
 
-    @testset "Simulation saves an exact symbol" begin
+    @testset "Simulation saves an exact state field" begin
         mktempdir() do dir
             model, forcing, grid = _sample_model_forcing_grid()
             sim = Simulation(model; forcing=forcing,
-                save=:final_thickness,
+                netcdf_variables=:thickness,
+                write_netcdf=true,
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_exact.nc"),
                 backend=:cpu,
@@ -154,26 +155,24 @@ end
             @test result.status == :complete
             @test isfile(result.netcdf_path)
             ds = NCDataset(result.netcdf_path)
-            @test haskey(ds, "final_thickness")
-            @test haskey(ds, "year")
-            @test haskey(ds, "month")
-            @test haskey(ds, "step_year")
+            @test haskey(ds, "thickness")
             @test !haskey(ds, "cycle")
             @test !haskey(ds, "month_cycle")
             @test !haskey(ds, "step_cycle")
             @test !haskey(ds, "history_mean_thickness")
-            @test size(ds["final_thickness"]) == (2, 2)
-            @test haskey(ds.attrib, "years_completed")
+            @test size(ds["thickness"]) == (3, 2, 2)
+            @test ds.attrib["records_written"] == "3"
             @test !haskey(ds.attrib, "cycles_completed")
             close(ds)
         end
     end
 
-    @testset "Simulation saves a group" begin
+    @testset "Simulation saves all default state fields" begin
         mktempdir() do dir
             model, forcing, grid = _sample_model_forcing_grid()
             sim = Simulation(model; forcing=forcing,
-                save=:history,
+                netcdf_variables=:all,
+                write_netcdf=true,
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_group.nc"),
                 backend=:threads,
@@ -184,9 +183,9 @@ end
             result = run!(sim)
             @test result.status == :complete
             ds = NCDataset(result.netcdf_path)
-            @test haskey(ds, "history_mean_thickness")
-            @test haskey(ds, "history_mean_base_mass")
-            @test !haskey(ds, "final_thickness")
+            @test haskey(ds, "thickness")
+            @test haskey(ds, "mass_base")
+            @test !haskey(ds, "history_mean_thickness")
             close(ds)
         end
     end
@@ -195,7 +194,8 @@ end
         mktempdir() do dir
             model, forcing, grid = _sample_model_forcing_grid()
             sim = Simulation(model; forcing=forcing,
-                save=[:final_thickness, :history],
+                netcdf_variables=[:thickness, :mass_base],
+                write_netcdf=true,
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_mixed.nc"),
                 backend=:threads,
@@ -206,8 +206,9 @@ end
             result = run!(sim)
             @test result.status == :complete
             ds = NCDataset(result.netcdf_path)
-            @test haskey(ds, "final_thickness")
-            @test haskey(ds, "history_mean_thickness")
+            @test haskey(ds, "thickness")
+            @test haskey(ds, "mass_base")
+            @test !haskey(ds, "history_mean_thickness")
             close(ds)
         end
     end
@@ -215,7 +216,6 @@ end
     @testset "Simulation can skip NetCDF entirely" begin
         model, forcing, _ = _sample_model_forcing_grid()
         sim = Simulation(model; forcing=forcing,
-            save=:none,
             backend=:threads,
             write_outputs=false,
             years=1,
@@ -276,29 +276,29 @@ end
 
     @testset "Simulation owns reference and current state" begin
         model, forcing, _ = _sample_model_forcing_grid()
-        sim = Simulation(model; forcing=forcing, save=:none, years=1, write_outputs=false)
+        sim = Simulation(model; forcing=forcing, years=1, write_outputs=false)
         @test sim.ref !== sim.now
-        @test all(sim.ref.domain.mass .== 0.0)
+        @test all(sim.ref.mass .== 0.0)
         run!(sim; io=devnull)
-        @test all(sim.ref.domain.mass .== 0.0)
-        @test sum(sim.now.domain.mass) > 0.0
+        @test all(sim.ref.mass .== 0.0)
+        @test sum(sim.now.mass) > 0.0
     end
 
     @testset "initialized integrator matches run wrapper" begin
         model_a, forcing, _ = _sample_model_forcing_grid()
-        sim_run = Simulation(model_a; forcing=forcing, save=:none, years=1, write_outputs=false)
+        sim_run = Simulation(model_a; forcing=forcing, years=1, write_outputs=false)
         result_run = run!(sim_run; io=devnull)
 
         model_b = BESSIModel(model_a.grid; Ntot=4)
-        sim_manual = Simulation(model_b; forcing=forcing, save=:none, years=1, write_outputs=false)
+        sim_manual = Simulation(model_b; forcing=forcing, years=1, write_outputs=false)
         integrator = init_integrator(sim_manual; io=devnull)
         run!(integrator)
         result_manual = finalize!(integrator)
 
         @test result_run.status == result_manual.status == :complete
         @test result_run.years_completed == result_manual.years_completed == 1
-        @test sim_run.now.domain.mass ≈ sim_manual.now.domain.mass
-        @test sim_run.now.domain.smb_ice ≈ sim_manual.now.domain.smb_ice
+        @test sim_run.now.mass ≈ sim_manual.now.mass
+        @test sim_run.now.smb_ice ≈ sim_manual.now.smb_ice
     end
 
     @testset "external forcing step matches scheduled forcing" begin
@@ -310,24 +310,46 @@ end
             rainfall_mm_day=[0.0],
             shortwave_down=[100.0],
         )
-        scheduled = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, save=:none, years=1, write_outputs=false)
+        scheduled = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
         run!(scheduled; io=devnull)
 
-        external = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, save=:none, years=1, write_outputs=false)
+        external = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
         integrator = init_integrator(external; io=devnull)
-        set_forcing!(
-            integrator;
-            air_temperature_c=-8.0,
-            snowfall_mm_day=2.0,
-            rainfall_mm_day=0.0,
-            shortwave_down=100.0,
-        )
         step!(integrator, 1.0, true)
         result = finalize!(integrator)
 
         @test result.status == :complete
-        @test external.now.domain.mass ≈ scheduled.now.domain.mass
-        @test external.now.domain.smb_ice ≈ scheduled.now.domain.smb_ice
+        @test external.now.mass ≈ scheduled.now.mass
+        @test external.now.smb_ice ≈ scheduled.now.smb_ice
+    end
+
+    @testset "integrator exposes mutable scheduled forcing" begin
+        grid = SnowpackGrid(2)
+        forcing = SnowpackForcing(
+            dt_days=[1.0, 1.0],
+            air_temperature_c=[-8.0 -7.0; -10.0 -9.0],
+            snowfall_mm_day=1.0,
+            rainfall_mm_day=0.0,
+            shortwave_down=100.0,
+        )
+        sim = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
+        integrator = init_integrator(sim; io=devnull)
+        surface_height = [0.0, 1000.0]
+
+        @test integrator.forcing === integrator.sim.forcing
+        integrator.forcing.surface_height .= surface_height
+        update_air_pressure!(integrator.forcing)
+        sync_forcing!(integrator)
+
+        expected = Chion.air_pressure_from_surface_height(
+            surface_height,
+            forcing.air_temperature;
+            dt_days=forcing.dt_days,
+            time_values=forcing.time_values,
+            temperature_mode=:instantaneous,
+        )
+        @test integrator.forcing.air_pressure ≈ expected
+        @test integrator.model_runtime.backend.step_fields.air_pressure ≈ expected
     end
 
     @testset "non-spatial grids only require coordinates for NetCDF" begin
@@ -340,12 +362,12 @@ end
             rainfall_mm_day=0.0,
             shortwave_down=[100.0, 120.0],
         )
-        result = run!(Simulation(model; forcing=forcing, save=:none, years=1, write_outputs=false))
+        result = run!(Simulation(model; forcing=forcing, years=1, write_outputs=false))
         @test result.status == :complete
         @test result.netcdf_path == ""
 
         err = _captured_exception() do
-            run!(Simulation(model; forcing=forcing, save=:final_thickness, years=1, write_outputs=false))
+            run!(Simulation(model; forcing=forcing, netcdf_variables=:thickness, write_netcdf=true, years=1, write_outputs=false))
         end
         @test err isa Exception
         @test occursin("spatial coordinates", sprint(showerror, err))
@@ -361,8 +383,9 @@ end
 
             sim = Simulation(BESSIModel(loaded.grid; Ntot=4);
                 forcing=loaded.forcing,
-                output=OutputOptions(save=:none, write_outputs=false),
-                options=SimulationOptions(years=1, backend=:threads),
+                years=1,
+                backend=:threads,
+                write_outputs=false,
             )
             result = run!(sim)
             @test result.status == :complete
@@ -391,7 +414,7 @@ end
             shortwave_down=150.0,
         )
         pdd = build_model(:pdd, grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.0)
-        pdd_sim = Simulation(pdd; forcing=f, save=:none, years=1, write_outputs=false)
+        pdd_sim = Simulation(pdd; forcing=f, years=1, write_outputs=false)
         result = run!(pdd_sim)
         @test result.status == :complete
         @test pdd_sim.now.snowpack_swe[1] ≈ 0.0 atol=1e-12
@@ -402,7 +425,6 @@ end
         named = Simulation(:pdd, grid;
             model_kwargs=(ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.0),
             forcing=f,
-            save=:none,
             years=1,
             write_outputs=false,
         )
@@ -419,48 +441,34 @@ end
             spatial_pdd = build_model(:pdd, spatial_grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.0)
             result = run!(Simulation(spatial_pdd;
                 forcing=f,
-                save=[:final_wet_mass, :final_ice_sheet_smb, :history, :step_pdd],
-                netcdf_path=joinpath(dir, "pdd.nc"),
                 years=1,
                 write_outputs=false,
             ))
-            @test isfile(result.netcdf_path)
-            ds = NCDataset(result.netcdf_path)
-            @test haskey(ds, "final_wet_mass")
-            @test haskey(ds, "final_ice_sheet_smb")
-            @test haskey(ds, "history_mean_wet_mass")
-            @test haskey(ds, "step_pdd")
-            @test ds["final_wet_mass"][1, 1] ≈ 0.0 atol=1e-12
-            @test ds["final_ice_sheet_smb"][1, 1] ≈ -(8.0 / 3.0) atol=1e-6
-            @test ds["step_pdd"][1, 1, 1] ≈ 1.0 atol=1e-6
-            close(ds)
+            @test result.status == :complete
+            @test result.netcdf_path == ""
+            @test result.years_completed == 1
         end
     end
 
-    @testset "ITMModel stub errors on run!" begin
+    @testset "ITMModel is not public API yet" begin
         grid = SnowpackGrid(1)
-        f = SnowpackForcing(
-            dt_days=fill(1.0, 3),
-            air_temperature_c=fill(-10.0, 3),
-            snowfall_mm_day=1.0,
-            rainfall_mm_day=0.0,
-            shortwave_down=150.0,
-        )
-        itm_sim = Simulation(ITMModel(grid); forcing=f)
-        @test _captured_exception(() -> run!(itm_sim)) isa Exception
+        @test !(Symbol("ITMModel") in Set(names(Chion)))
+        @test _captured_exception(() -> build_model(:itm, grid)) isa Exception
     end
 
     @testset "legacy names are not exported or documented" begin
         exported_names = Set(names(Chion))
         for name in (:ForcingData, :SnowpackStepFields, :GridLayout, :LoadedProblem,
-                :RunConfig, :run_case, :prescribed_case, :synthetic_case)
+                :RunConfig, :SimulationOptions, :OutputOptions,
+                :run_case, :prescribed_case, :synthetic_case)
             @test !(name in exported_names)
         end
 
         root = dirname(dirname(@__FILE__))
         docs_text = join(read.(filter(endswith(".md"), readdir(joinpath(root, "docs", "src"); join=true)), String), "\n")
         for token in ("ForcingData", "SnowpackStepFields", "GridLayout", "LoadedProblem",
-                "RunConfig", "run_case", "prescribed_case", "synthetic_case")
+                "RunConfig", "SimulationOptions", "OutputOptions",
+                "run_case", "prescribed_case", "synthetic_case")
             @test !occursin(token, docs_text)
         end
     end

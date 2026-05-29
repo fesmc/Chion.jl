@@ -1,8 +1,8 @@
 """Initialized integrator type and lifecycle helpers for `Simulation`."""
 
-function _single_step_forcing_template(forcing::SnowpackForcing)
+function _single_step_forcing_view(forcing::SnowpackForcing, dt_days::Real)
     return SnowpackForcing(
-        dt_days=[first(forcing.dt_days)],
+        dt_days=[Float64(dt_days)],
         ncol=size(forcing.air_temperature, 1),
         air_temperature=forcing.air_temperature[:, 1:1],
         snowfall_rate=forcing.snowfall_rate[:, 1:1],
@@ -18,6 +18,7 @@ function _single_step_forcing_template(forcing::SnowpackForcing)
         has_q_lh=forcing.has_q_lh[:, 1:1],
         relative_humidity=forcing.relative_humidity[:, 1:1],
         has_relative_humidity=forcing.has_relative_humidity[:, 1:1],
+        surface_height=forcing.surface_height[:, 1:1],
         air_pressure=forcing.air_pressure[:, 1:1],
         prescribed_albedo=forcing.prescribed_albedo[:, 1:1],
         has_prescribed_albedo=forcing.has_prescribed_albedo[:, 1:1],
@@ -35,7 +36,6 @@ function _new_integrator(
     output;
     time_index::Integer=1,
     completed_years::Integer=0,
-    current_forcing::SnowpackForcing=_single_step_forcing_template(sim.forcing),
 )
     return SimulationIntegrator(
         sim,
@@ -48,7 +48,6 @@ function _new_integrator(
         output,
         Int(time_index),
         Int(completed_years),
-        current_forcing,
         nothing,
         false,
         nothing,
@@ -58,16 +57,42 @@ end
 _finished(integrator::SimulationIntegrator) =
     integrator.completed_years >= integrator.options.years
 
-function _external_forcing_for_runtime(integrator::SimulationIntegrator)
-    forcing = integrator.current_forcing
-    integrator.options.backend == :gpu || return forcing
-    return time_block!(integrator.timings, :gpu_transfer) do
-        adapt(gpu_storage_type(), forcing)
-    end
-end
-
 _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
     integrator.model_runtime.backend.step_fields
+
+function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
+    dest.dt_days .= src.dt_days
+    dest.day_of_year .= src.day_of_year
+    dest.solar_longitude_deg .= src.solar_longitude_deg
+    dest.air_temperature .= src.air_temperature
+    dest.snowfall_rate .= src.snowfall_rate
+    dest.rainfall_rate .= src.rainfall_rate
+    dest.shortwave_down .= src.shortwave_down
+    dest.latitude_deg .= src.latitude_deg
+    dest.wind_speed .= src.wind_speed
+    dest.q_lw_down .= src.q_lw_down
+    dest.has_q_lw_down .= src.has_q_lw_down
+    dest.q_sh .= src.q_sh
+    dest.has_q_sh .= src.has_q_sh
+    dest.q_lh .= src.q_lh
+    dest.has_q_lh .= src.has_q_lh
+    dest.relative_humidity .= src.relative_humidity
+    dest.has_relative_humidity .= src.has_relative_humidity
+    dest.surface_height .= src.surface_height
+    dest.air_pressure .= src.air_pressure
+    dest.prescribed_albedo .= src.prescribed_albedo
+    dest.has_prescribed_albedo .= src.has_prescribed_albedo
+    return dest
+end
+
+function sync_forcing!(integrator::SimulationIntegrator)
+    backend = integrator.model_runtime.backend
+    getproperty(backend, :is_gpu) || return integrator
+    time_block!(integrator.timings, :gpu_transfer) do
+        _copy_forcing!(backend.step_fields, integrator.forcing)
+    end
+    return integrator
+end
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_index::Int)
     integrator.finalized && error("Cannot step a finalized integrator.")
@@ -107,8 +132,12 @@ end
 function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true)
     force_dt || error("Chion's initialized stepper requires `force_dt=true`, matching the FastIsostasy coupling pattern.")
     Δt_days > 0 || error("`Δt_days` must be positive.")
-    integrator.current_forcing.dt_days[1] = Float64(Δt_days)
-    forcing = _external_forcing_for_runtime(integrator)
+    forcing = _single_step_forcing_view(integrator.forcing, Δt_days)
+    if integrator.options.backend == :gpu
+        forcing = time_block!(integrator.timings, :gpu_transfer) do
+            adapt(gpu_storage_type(), forcing)
+        end
+    end
     return _advance_with_forcing!(integrator, forcing, 1)
 end
 
@@ -126,6 +155,13 @@ function _run_integrator!(
     checkpoint_path::AbstractString="",
     checkpoint_year_stride::Integer=1,
 )
+    if integrator.sim.model isa BESSIModel
+        return _run_bessi_integrator!(
+            integrator;
+            checkpoint_path=checkpoint_path,
+            checkpoint_year_stride=checkpoint_year_stride,
+        )
+    end
     while !_finished(integrator)
         _step_scheduled!(integrator)
         checkpoint_path == "" || error("Checkpointing was removed with the simplified state/output runtime.")
@@ -171,101 +207,6 @@ function _set_active_mask!(
     return integrator
 end
 
-function _assign_numeric_step_field!(dest::AbstractMatrix, value, ncol::Int, name::AbstractString; transform=identity)
-    isnothing(value) && return false
-    dest[:, :] .= transform.(_forcing_numeric_matrix(value, ncol, 1, name))
-    return true
-end
-
-function _assign_bool_step_field!(dest::AbstractMatrix{Bool}, value, ncol::Int, name::AbstractString)
-    isnothing(value) && return false
-    dest[:, :] .= _forcing_bool_matrix(value, ncol, 1, name)
-    return true
-end
-
-function _set_forcing!(
-    integrator::SimulationIntegrator;
-    air_temperature=nothing,
-    snowfall_rate=nothing,
-    rainfall_rate=nothing,
-    air_temperature_c=nothing,
-    snowfall_mm_day=nothing,
-    rainfall_mm_day=nothing,
-    shortwave_down=nothing,
-    wind_speed=nothing,
-    q_lw_down=nothing,
-    has_q_lw_down=nothing,
-    q_sh=nothing,
-    has_q_sh=nothing,
-    q_lh=nothing,
-    has_q_lh=nothing,
-    relative_humidity=nothing,
-    has_relative_humidity=nothing,
-    air_pressure=nothing,
-    surface_height=nothing,
-    elevation=nothing,
-    prescribed_albedo=nothing,
-    has_prescribed_albedo=nothing,
-    latitude_deg=nothing,
-    time_value=nothing,
-)
-    f = integrator.current_forcing
-    ncol = integrator.model_runtime.ncol
-    has_native = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
-    has_user = !isnothing(air_temperature_c) || !isnothing(snowfall_mm_day) || !isnothing(rainfall_mm_day)
-    has_native && has_user && error("Pass either model-native forcing fields or user-facing fields, not both.")
-    if has_user
-        _assign_numeric_step_field!(f.air_temperature, air_temperature_c, ncol, "air_temperature_c"; transform=x -> x + 273.15)
-        _assign_numeric_step_field!(f.snowfall_rate, snowfall_mm_day, ncol, "snowfall_mm_day"; transform=x -> x / 86_400.0)
-        _assign_numeric_step_field!(f.rainfall_rate, rainfall_mm_day, ncol, "rainfall_mm_day"; transform=x -> x / 86_400.0)
-    else
-        _assign_numeric_step_field!(f.air_temperature, air_temperature, ncol, "air_temperature")
-        _assign_numeric_step_field!(f.snowfall_rate, snowfall_rate, ncol, "snowfall_rate")
-        _assign_numeric_step_field!(f.rainfall_rate, rainfall_rate, ncol, "rainfall_rate")
-    end
-    _assign_numeric_step_field!(f.shortwave_down, shortwave_down, ncol, "shortwave_down")
-    !isnothing(latitude_deg) && (f.latitude_deg[:, :] .= _forcing_column_metadata_matrix(latitude_deg, ncol, 1, "latitude_deg"))
-    _assign_numeric_step_field!(f.wind_speed, wind_speed, ncol, "wind_speed")
-    if _assign_numeric_step_field!(f.q_lw_down, q_lw_down, ncol, "q_lw_down") && isnothing(has_q_lw_down)
-        fill!(f.has_q_lw_down, true)
-    end
-    _assign_bool_step_field!(f.has_q_lw_down, has_q_lw_down, ncol, "has_q_lw_down")
-    if _assign_numeric_step_field!(f.q_sh, q_sh, ncol, "q_sh") && isnothing(has_q_sh)
-        fill!(f.has_q_sh, true)
-    end
-    _assign_bool_step_field!(f.has_q_sh, has_q_sh, ncol, "has_q_sh")
-    if _assign_numeric_step_field!(f.q_lh, q_lh, ncol, "q_lh") && isnothing(has_q_lh)
-        fill!(f.has_q_lh, true)
-    end
-    _assign_bool_step_field!(f.has_q_lh, has_q_lh, ncol, "has_q_lh")
-    relative_humidity_assigned = _assign_numeric_step_field!(f.relative_humidity, relative_humidity, ncol, "relative_humidity")
-    if relative_humidity_assigned && isnothing(has_relative_humidity)
-        f.has_relative_humidity[:, :] .= isfinite.(f.relative_humidity)
-    end
-    _assign_bool_step_field!(f.has_relative_humidity, has_relative_humidity, ncol, "has_relative_humidity")
-    f.relative_humidity[.!f.has_relative_humidity] .= 0.0
-    if !_assign_numeric_step_field!(f.air_pressure, air_pressure, ncol, "air_pressure")
-        height_field = isnothing(surface_height) ? elevation : surface_height
-        if !isnothing(height_field)
-            f.air_pressure[:, :] .= air_pressure_from_surface_height(
-                height_field,
-                f.air_temperature;
-                temperature_mode=:instantaneous,
-            )
-        end
-    end
-    if _assign_numeric_step_field!(f.prescribed_albedo, prescribed_albedo, ncol, "prescribed_albedo") && isnothing(has_prescribed_albedo)
-        fill!(f.has_prescribed_albedo, true)
-    end
-    _assign_bool_step_field!(f.has_prescribed_albedo, has_prescribed_albedo, ncol, "has_prescribed_albedo")
-    if !isnothing(time_value)
-        f.time_values[1] = DateTime(time_value)
-        f.day_of_year[1] = _calendar_day_of_year(f.time_values[1])
-        f.solar_longitude_deg[1] = _solar_longitude_deg_from_calendar_day(f.day_of_year[1])
-    end
-    return integrator
-end
-
 function _finalize_integrator!(integrator::SimulationIntegrator)
     integrator.finalized && return integrator.result
 
@@ -276,15 +217,15 @@ function _finalize_integrator!(integrator::SimulationIntegrator)
 
     run_wall_sec = (time_ns() - integrator.clocks.run_wall_t0) * 1.0e-9
     result = SimulationResult(
-        NamedTuple[],
+        isnothing(integrator.diagnostics) ? NamedTuple[] : integrator.diagnostics,
         status,
         years_completed,
         integrator.timings,
         simulation_wall_sec,
         run_wall_sec,
-        "",
-        "",
-        "",
+        isnothing(integrator.output) ? "" : integrator.output.nc_path,
+        isnothing(integrator.output) ? "" : integrator.output.summary_path,
+        isnothing(integrator.output) ? "" : integrator.output.history_csv_path,
     )
     integrator.finalized = true
     integrator.result = result

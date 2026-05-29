@@ -202,6 +202,7 @@ struct SnowpackForcing{
         HLH,
         RH,
         HRH,
+        SH,
         AP,
         PA,
         HPA,
@@ -224,6 +225,7 @@ struct SnowpackForcing{
     has_q_lh::HLH
     relative_humidity::RH
     has_relative_humidity::HRH
+    surface_height::SH
     air_pressure::AP
     prescribed_albedo::PA
     has_prescribed_albedo::HPA
@@ -331,11 +333,12 @@ function SnowpackForcing(;
     relative_humidity_m[.!has_relative_humidity_m] .= 0.0
     time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
+    surface_height_m = isnothing(surface_height) ? fill(NaN, dims) : _forcing_column_metadata_matrix(surface_height, column_count, ntime, "surface_height")
     air_pressure_m = if !isnothing(air_pressure)
         _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
     elseif !isnothing(surface_height)
         air_pressure_from_surface_height(
-            surface_height,
+            surface_height_m,
             air_temperature;
             dt_days=dt_days_v,
             time_values=time_values_v,
@@ -361,6 +364,7 @@ function SnowpackForcing(;
         ("has_q_lh", has_q_lh_m),
         ("relative_humidity", relative_humidity_m),
         ("has_relative_humidity", has_relative_humidity_m),
+        ("surface_height", surface_height_m),
         ("air_pressure", air_pressure_m),
         ("prescribed_albedo", prescribed_albedo_m),
         ("has_prescribed_albedo", has_prescribed_albedo_m),
@@ -390,8 +394,31 @@ function SnowpackForcing(;
         has_q_lh_m,
         relative_humidity_m,
         has_relative_humidity_m,
+        surface_height_m,
         air_pressure_m,
         prescribed_albedo_m,
         has_prescribed_albedo_m,
     )
+end
+
+function update_air_pressure!(
+    forcing::SnowpackForcing;
+    temperature_mode=:instantaneous,
+    sea_level_pressure::Real=DEFAULT_SEA_LEVEL_AIR_PRESSURE,
+    gravity::Real=DEFAULT_GRAVITY,
+    molar_mass_air::Real=DEFAULT_MOLAR_MASS_DRY_AIR,
+    gas_constant::Real=DEFAULT_UNIVERSAL_GAS_CONSTANT,
+)
+    forcing.air_pressure .= air_pressure_from_surface_height(
+        forcing.surface_height,
+        forcing.air_temperature;
+        dt_days=forcing.dt_days,
+        time_values=forcing.time_values,
+        temperature_mode=temperature_mode,
+        sea_level_pressure=sea_level_pressure,
+        gravity=gravity,
+        molar_mass_air=molar_mass_air,
+        gas_constant=gas_constant,
+    )
+    return forcing
 end

@@ -464,8 +464,9 @@ function main(args::Vector{String})
             "temperature amplitude: $(model.diurnal_temperature_amplitude) degC)",
         )
     end
-    default_netcdf_vars = model_name == "pdd" ? "final,history" : "all"
-    netcdf_vars = has_flag(args, "no-nc") ? Symbol[] : arg_value(args, "netcdf-vars", default_netcdf_vars)
+    write_netcdf = !has_flag(args, "no-nc")
+    default_netcdf_vars = "all"
+    netcdf_vars = write_netcdf ? arg_value(args, "netcdf-vars", default_netcdf_vars) : Symbol[]
     println("NetCDF variables: ", isempty(netcdf_vars) ? "(none)" : netcdf_vars)
     output_dir = arg_value(args, "output-dir", DEFAULT_GRIS_FORCING_FILE_OUTPUT_DIR)
     checkpoint_path = arg_value(args, "checkpoint-path", "")
@@ -473,16 +474,13 @@ function main(args::Vector{String})
     sim = Simulation(
         model;
         forcing=loaded.forcing,
-        output=OutputOptions(
-            save=netcdf_vars,
-            output_dir=output_dir,
-            netcdf_path=arg_value(args, "netcdf-path", ""),
-            write_outputs=!has_flag(args, "no-output"),
-        ),
-        options=SimulationOptions(
-            years=parse(Int, arg_value(args, "years", "10")),
-            backend=arg_value(args, "backend", "threads"),
-        ),
+        netcdf_variables=netcdf_vars,
+        write_netcdf=write_netcdf,
+        output_dir=output_dir,
+        netcdf_path=arg_value(args, "netcdf-path", ""),
+        write_outputs=!has_flag(args, "no-output"),
+        years=parse(Int, arg_value(args, "years", "10")),
+        backend=arg_value(args, "backend", "threads"),
     )
     result = run!(
         sim;

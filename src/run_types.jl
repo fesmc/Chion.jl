@@ -13,17 +13,6 @@ mutable struct ModelRuntime
     active_indices
 end
 
-mutable struct NativeOutput <: AbstractOutput
-    schedule
-    netcdf::Union{Nothing, NetcdfOutput}
-    nc_path::String
-    monthly::MonthlyState
-    step_vectors
-    daily_vectors
-    daily_written::Int
-    steps_written::Int
-end
-
 mutable struct SimulationIntegrator
     sim
     options::RunOptions
@@ -35,8 +24,17 @@ mutable struct SimulationIntegrator
     output
     time_index::Int
     completed_years::Int
-    current_forcing::SnowpackForcing
     progress
     finalized::Bool
     result::Union{Nothing, SimulationResult}
+end
+
+@inline function Base.getproperty(integrator::SimulationIntegrator, name::Symbol)
+    name === :forcing && return getfield(integrator, :sim).forcing
+    return getfield(integrator, name)
+end
+
+function Base.propertynames(integrator::SimulationIntegrator, private::Bool=false)
+    names = fieldnames(typeof(integrator))
+    return private ? names : (names..., :forcing)
 end

@@ -168,28 +168,3 @@ function PDDModel(
         monthly_method,
     )
 end
-
-
-"""
-    ITMModel(grid; c_rad=0.513, c_temp=0.362, T_melt=0.0, refreezing_fraction=0.6)
-
-Index-temperature model placeholder. Construction is supported; `run!` is not
-implemented yet.
-"""
-struct ITMModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
-    grid::G
-    c_rad::Float64
-    c_temp::Float64
-    T_melt::Float64
-    refreezing_fraction::Float64
-end
-
-function ITMModel(
-    grid::AbstractSnowpackGrid;
-    c_rad::Real=0.513,
-    c_temp::Real=0.362,
-    T_melt::Real=0.0,
-    refreezing_fraction::Real=0.6,
-)
-    return ITMModel(grid, Float64(c_rad), Float64(c_temp), Float64(T_melt), Float64(refreezing_fraction))
-end

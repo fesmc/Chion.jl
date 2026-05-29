@@ -433,11 +433,7 @@ function PDDState(model::PDDModel)
     )
 end
 
-"""Placeholder state for `ITMModel` until its physics are implemented."""
-struct ITMState <: AbstractSnowModelState end
-
 initial_state(model::PDDModel) = PDDState(model)
-initial_state(::ITMModel) = ITMState()
 
 initial_state(model::BESSIModel) = CurrentState(model)
 reference_state(state::CurrentState) = ReferenceState(state)

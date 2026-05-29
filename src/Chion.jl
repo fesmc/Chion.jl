@@ -49,8 +49,8 @@ include("simulation.jl")
 export SnowpackGrid
 
 # Models
-export BESSIModel, PDDModel, ITMModel, StochasticMonthlyPDD
-export AbstractState, AbstractSnowModelState, ReferenceState, CurrentState, PDDState, ITMState
+export BESSIModel, PDDModel, StochasticMonthlyPDD
+export AbstractState, AbstractSnowModelState, ReferenceState, CurrentState, PDDState
 export build_model, initial_state
 export DynamicAlbedo, ConstantAlbedo, PrescribedAlbedo
 export BESSIDensification, HTESSELDensification
@@ -60,10 +60,11 @@ export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
 export SnowpackForcing
 
 # Simulation
-export Simulation, SimulationResult, SimulationOptions, OutputOptions
+export Simulation, SimulationResult, RunOptions
 export SimulationIntegrator
-export AbstractOutput, NetcdfOutput, NativeOutput, MonthlyState, io_dict, write_nc!
-export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_forcing!, set_active_mask!, state
+export NetcdfOutput, MonthlyState, io_dict, write_nc!
+export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_active_mask!, state
+export update_air_pressure!, sync_forcing!
 
 # Data loading
 export load_forcing_file

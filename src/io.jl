@@ -1,7 +1,5 @@
 # Output grids, NetCDF schema, and output helpers for Simulation runs.
 
-abstract type AbstractOutput end
-
 const io_dict = Dict{Symbol, NamedTuple}(
     :thickness => (name="thickness", long_name="Snow thickness", units="m"),
     :wet_mass => (name="wet_mass", long_name="Snow wet mass", units="mmWE"),
@@ -113,39 +111,15 @@ struct NetcdfOutput
     years::Int
 end
 
-const STATE_OUTPUT_ALIASES = Dict(
-    :final_thickness => :thickness,
-    :final_wet_mass => :wet_mass,
-    :final_bulk_density => :bulk_density,
-    :final_base_mass => :mass_base,
-    :final_ice_sheet_smb => :smb_ice,
-    :final_runoff => :runoff,
-    :layer_density => :density,
-    :layer_thickness => :thickness,
-    :layer_snow_mass => :mass,
-    :layer_liquid_mass => :mass_w,
-    :layer_temperature_c => :temperature,
-    :n_active => :N,
-    :monthly_runoff => :runoff,
-    :monthly_melt => :melt,
-    :monthly_refreezing => :refreezing,
-    :monthly_sublimation => :sublimation,
-    :monthly_latent_heat_flux => :latent_heat_flux,
-    :monthly_mean_albedo => :albedo,
-    :daily_latent_heat_flux => :latent_heat_flux_sum,
-)
-
 _meta_value(meta, key::Symbol, default) = hasproperty(meta, key) ? getproperty(meta, key) : default
 
 function state_output_vars(selected)
     isempty(selected) && return Symbol[]
     vars = Symbol[]
     for key in selected
-        if haskey(STATE_OUTPUT_ALIASES, key)
-            push!(vars, STATE_OUTPUT_ALIASES[key])
-        elseif key == :monthly
+        if key == :monthly
             append!(vars, MONTHLY_OUTPUT_VARS)
-        elseif key in (:all, :final, :history, :step, :daily)
+        elseif key == :all
             append!(vars, DEFAULT_STATE_OUTPUT_VARS)
         elseif key in (:mass, :mass_w, :density, :temperature, :N, :thickness, :wet_mass, :bulk_density, :liquid_water, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux_sum, :Tsrf, :snow_cover, :albedo)
             push!(vars, key)
@@ -232,9 +206,7 @@ function normalize_netcdf_variables(spec)
             continue
         elseif key == :monthly
             push!(selected, :monthly)
-        elseif key in (:final, :history, :step, :daily, :layers)
-            append!(selected, DEFAULT_STATE_OUTPUT_VARS)
-        elseif key in NETCDF_VARIABLES || key in MONTHLY_OUTPUT_VARS || haskey(STATE_OUTPUT_ALIASES, key)
+        elseif key in NETCDF_VARIABLES || key in MONTHLY_OUTPUT_VARS
             push!(selected, key)
         else
             error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, or a CurrentState field name.")

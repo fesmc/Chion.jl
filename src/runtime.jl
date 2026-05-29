@@ -5,16 +5,11 @@ _model_column_count(model::AbstractSnowModel) = ncols(_model_grid(model))
 model_layer_count(::AbstractSnowModel, ::AbstractState, runtime) = 0
 model_layer_count(::BESSIModel, ::CurrentState, runtime) = runtime.state.Ntot
 
-model_output_groups(::BESSIModel) = (:final, :layers, :history, :monthly, :step, :daily)
-model_output_groups(::PDDModel) = (:final, :history, :step)
-model_output_groups(::ITMModel) = ()
-
 function _validate_model_outputs!(model::AbstractSnowModel, options::RunOptions)
     options.write_netcdf || return nothing
     allowed = copy(NETCDF_VARIABLES)
     append!(allowed, MONTHLY_OUTPUT_VARS)
-    append!(allowed, keys(STATE_OUTPUT_ALIASES))
-    append!(allowed, (:all, :none, :final, :layers, :monthly, :step, :daily, :history))
+    append!(allowed, (:all, :none, :monthly))
     unsupported = setdiff(options.netcdf_variables, allowed)
     isempty(unsupported) || error("Unsupported NetCDF variables: $(join(string.(unsupported), ", ")).")
     return nothing
@@ -95,10 +90,6 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
         f=Vector{Float64}(undef, ncol),
     )
     return (snowpack_swe=state.snowpack_swe, smb_ice=state.smb_ice, runoff=state.runoff, pdd_sum=state.pdd_sum, step_fields=forcing, scratch=scratch, is_gpu=false)
-end
-
-function prepare_runtime!(::ITMModel, ::AbstractState, ::SnowpackForcing, ::RunOptions, ::StepTimingStats)
-    error("ITMModel is not yet implemented. Physics coming soon.")
 end
 
 _backend_active_indices(indices::Vector{Int}, backend) =
