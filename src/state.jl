@@ -37,7 +37,6 @@ mutable struct CurrentState{
     sublimation::VT
     latent_heat_flux_sum::VT
     Tsrf::VT
-    snow_cover::VT
     albedo::VT
     thickness::VT
     wet_mass::VT
@@ -78,7 +77,6 @@ struct ReferenceState{
     sublimation::VT
     latent_heat_flux_sum::VT
     Tsrf::VT
-    snow_cover::VT
     albedo::VT
     thickness::VT
     wet_mass::VT
@@ -110,7 +108,6 @@ function CurrentState(domain::SnowpackDomain; density_init::Real=DEFAULT_DENSITY
         zeros(NF, domain.ncol),
         zeros(NF, domain.ncol),
         fill(domain.c.T0, domain.ncol),
-        zeros(NF, domain.ncol),
         fill(domain.c.alpha_dry, domain.ncol),
         zeros(NF, domain.ncol),
         zeros(NF, domain.ncol),
@@ -145,7 +142,6 @@ ReferenceState(state::CurrentState) = ReferenceState(
     copy(state.sublimation),
     copy(state.latent_heat_flux_sum),
     copy(state.Tsrf),
-    copy(state.snow_cover),
     copy(state.albedo),
     copy(state.thickness),
     copy(state.wet_mass),
@@ -456,7 +452,6 @@ function _copy_current_state!(dest::CurrentState, src::CurrentState)
     dest.sublimation .= src.sublimation
     dest.latent_heat_flux_sum .= src.latent_heat_flux_sum
     dest.Tsrf .= src.Tsrf
-    dest.snow_cover .= src.snow_cover
     dest.albedo .= src.albedo
     dest.thickness .= src.thickness
     dest.wet_mass .= src.wet_mass

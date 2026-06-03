@@ -110,7 +110,6 @@ _backend_active_indices(indices::Vector{Int}, backend) =
     sublimation,
     latent_heat_flux_sum,
     Tsrf,
-    snow_cover,
     albedo_dynamic,
     inactive_indices,
     Ntot::Int,
@@ -138,7 +137,6 @@ _backend_active_indices(indices::Vector{Int}, backend) =
         sublimation[idx] = zero(density_init)
         latent_heat_flux_sum[idx] = zero(density_init)
         Tsrf[idx] = surface_temperature_init
-        snow_cover[idx] = zero(density_init)
         albedo_dynamic[idx] = albedo_init
     end
 end
@@ -162,7 +160,6 @@ function _reset_model_columns!(model::BESSIModel, ::CurrentState, runtime, inact
         runtime.state.sublimation,
         runtime.state.latent_heat_flux_sum,
         runtime.state.Tsrf,
-        runtime.state.snow_cover,
         runtime.state.albedo_dynamic,
         backend_indices,
         runtime.state.Ntot,
@@ -261,54 +258,26 @@ end
 
 function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
     runtime = model_runtime.backend
-    kwargs = _bessi_step_kwargs(model)
-    if runtime.is_gpu
-        step!(
-            runtime.state,
-            forcing,
-            time_index,
-            runtime.workspace,
-            model_runtime.active_indices;
-            kwargs...,
-        )
-    else
-        step_interval_threads!(
-            runtime.state,
-            forcing,
-            time_index:time_index,
-            runtime.workspace,
-            model_runtime.active_indices;
-            kwargs...,
-        )
-    end
-    return nothing
+    return _step_range!(
+        runtime.state,
+        forcing,
+        time_index:time_index,
+        runtime.workspace,
+        model_runtime.active_indices,
+        _bessi_step_config(model),
+    )
 end
 
 function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_range)
     runtime = model_runtime.backend
-    kwargs = _bessi_step_kwargs(model)
-    if runtime.is_gpu
-        for time_index in time_range
-            step!(
-                runtime.state,
-                forcing,
-                Int(time_index),
-                runtime.workspace,
-                model_runtime.active_indices;
-                kwargs...,
-            )
-        end
-    else
-        step_interval_threads!(
-            runtime.state,
-            forcing,
-            time_range,
-            runtime.workspace,
-            model_runtime.active_indices;
-            kwargs...,
-        )
-    end
-    return nothing
+    return _step_range!(
+        runtime.state,
+        forcing,
+        time_range,
+        runtime.workspace,
+        model_runtime.active_indices,
+        _bessi_step_config(model),
+    )
 end
 
 function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)

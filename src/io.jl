@@ -14,7 +14,6 @@ const io_dict = Dict{Symbol, NamedTuple}(
     :latent_heat_flux => (name="latent_heat_flux", long_name="Monthly mean turbulent latent heat flux", units="W m-2"),
     :latent_heat_flux_sum => (name="latent_heat_flux_sum", long_name="Integrated turbulent latent heat flux", units="W m-2"),
     :Tsrf => (name="Tsrf", long_name="Surface temperature", units="K"),
-    :snow_cover => (name="snow_cover", long_name="Snow cover fraction", units="1"),
     :albedo => (name="albedo", long_name="Surface albedo", units="1"),
     :N => (name="N", long_name="Number of active snow layers", units="1"),
     :mass => (name="mass", long_name="Layer snow mass", units="kg m-2"),
@@ -24,7 +23,7 @@ const io_dict = Dict{Symbol, NamedTuple}(
 )
 
 const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
-const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_cover]
+const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf]
 const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
 const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
 @inline _grid_shape(layout) = size(layout.mask)
@@ -121,7 +120,7 @@ function state_output_vars(selected)
             append!(vars, MONTHLY_OUTPUT_VARS)
         elseif key == :all
             append!(vars, DEFAULT_STATE_OUTPUT_VARS)
-        elseif key in (:mass, :mass_w, :density, :temperature, :N, :thickness, :wet_mass, :bulk_density, :liquid_water, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux_sum, :Tsrf, :snow_cover, :albedo)
+        elseif key in (:mass, :mass_w, :density, :temperature, :N, :thickness, :wet_mass, :bulk_density, :liquid_water, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux_sum, :Tsrf, :albedo)
             push!(vars, key)
         end
     end

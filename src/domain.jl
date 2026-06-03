@@ -269,7 +269,6 @@ function _state_dict(
     idx::Int,
     c::SnowpackPhysicalConstants,
 )
-    snow_cover = _snow_cover_fraction(N_storage, mass, mass_w, density, idx)
     n = _n_active(N_storage, idx)
     active_solid_mass = _active_column_profile(mass, n, idx)
     active_liquid_water_mass = _active_column_profile(mass_w, n, idx)
@@ -289,7 +288,6 @@ function _state_dict(
         "thickness" => thickness,
         "total_thickness" => sum(thickness),
         "surface_temperature" => n == 0 ? c.T0 : _get_layer(temperature, 1, idx),
-        "snow_cover" => snow_cover,
         "albedo_dynamic" => _get_scalar(albedo_dynamic, idx),
         "smb_ice" => _get_scalar(smb_ice, idx),
     ))
@@ -331,7 +329,6 @@ function print_state(domain::AbstractSnowpackDomain, idx::Int=1)
     println("Active layers: ", state["N"])
     println("Total mass: ", round(state["total_mass"], digits=2), " kg/m^2")
     println("Total thickness: ", round(state["total_thickness"], digits=3), " m")
-    println("Snow cover: ", round(state["snow_cover"], digits=3))
     println("Surface albedo: ", round(state["surface_albedo"], digits=3))
     println()
 end
@@ -340,10 +337,9 @@ end
     compute_auxiliary!(domain, idx)
 
 Recompute derived diagnostics for column `idx` in-place. Currently this
-updates snow-cover fraction and surface albedo.
+updates surface albedo.
 """
 function compute_auxiliary!(domain::AbstractSnowpackDomain, idx::Int)
-    update_snow_cover!(domain, idx)
     update_surface_albedo!(domain, idx)
     return nothing
 end
