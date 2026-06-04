@@ -20,8 +20,13 @@ end
 
 has_flag(args::Vector{String}, name::String) = any(==("--" * name), args)
 
-_albedo_scheme(name) =
-    lowercase(strip(String(name))) == "constant" ? Chion.ConstantAlbedo() : Chion.DynamicAlbedo()
+function _albedo_scheme(name)
+    normalized = lowercase(strip(String(name)))
+    normalized == "constant" && return Chion.ConstantAlbedo()
+    normalized == "dynamic" && return Chion.DynamicAlbedo()
+    normalized == "prescribed" && return Chion.PrescribedAlbedo()
+    error("Unsupported albedo scheme '$(name)'. Use constant, dynamic, or prescribed.")
+end
 
 _densification_scheme(name) =
     lowercase(strip(String(name))) == "htessel" ? Chion.HTESSELDensification() : Chion.BESSIDensification()

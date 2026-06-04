@@ -1,22 +1,8 @@
-"""
-Scratch storage for stepping and energy-flux solves.
-"""
+"""BESSI column stepping and CPU/GPU schedulers."""
 
-"""
-    _workspace_array(storage, ::Type{NF}, dims...)
-
-Allocate scratch storage compatible with `storage`, preserving the active
-backend while changing element type and shape.
-"""
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
-"""
-    EnergyWorkspace
-
-Scratch arrays reused by the implicit temperature solver in
-[`go_energy_flux!`](@ref).
-"""
 struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
     lower::LT
     diag::DT
@@ -28,43 +14,19 @@ struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
     thermal_conductivity::KT
 end
 
-"""
-    EnergyWorkspace(storage, ::Type{NF}, dims...)
-
-Allocate energy-solver scratch arrays on the same backend as `storage`.
-Returns an `EnergyWorkspace` whose fields are mutated by the energy-flux
-solver.
-"""
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(storage, NF, dims...)
     return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
-"""
-    EnergyWorkspace(domain)
-
-Allocate energy-flux scratch storage sized for `domain`.
-"""
 EnergyWorkspace(domain::AbstractSnowpackDomain) =
     EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
 
-"""
-    ColumnarStepWorkspace
-
-Column-major scratch storage that holds temporary state for every column in a
-batch run, regardless of whether the backing arrays live on CPU or GPU.
-"""
 struct ColumnarStepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
     energy::ET
 end
 
-"""
-    ColumnarStepWorkspace(storage, ::Type{NF}, Ntot, ncol)
-
-Allocate column-major scratch arrays that hold per-layer temporary state for
-every column in a batch on the same backend as `storage`.
-"""
 function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
     return ColumnarStepWorkspace(
         _workspace_array(storage, NF, Ntot, ncol),
@@ -72,12 +34,6 @@ function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where 
     )
 end
 
-"""
-    ColumnarStepWorkspace(domain)
-
-Allocate batch stepping scratch compatible with `domain`'s backend and sized
-for all columns.
-"""
 function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
     NF = number_type(domain.c)
     return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, column_count(domain))
@@ -86,346 +42,18 @@ end
 Adapt.@adapt_structure EnergyWorkspace
 Adapt.@adapt_structure ColumnarStepWorkspace
 
-"""
-Step-forcing container types and field-to-forcing conversion helpers.
-"""
-
-"""
-    SnowpackStepForcing{NF}
-
-Per-column forcing bundle consumed by [`step!`](@ref). It stores temperatures,
-mass fluxes, optional prescribed surface-flux terms, and metadata needed by
-the optional diurnal shortwave adjustment.
-"""
-struct SnowpackStepForcing{NF <: AbstractFloat}
-    air_temperature::NF
-    precipitation_rate::NF
-    dt_days::NF
-    snowfall_rate::NF
-    rainfall_rate::NF
-    shortwave_down::NF
-    wind_speed::NF
-    q_sw_net::NF
-    q_lw_down::NF
-    q_sh::NF
-    q_lh::NF
-    has_q_sw_net::Bool
-    has_q_lw_down::Bool
-    has_q_sh::Bool
-    has_q_lh::Bool
-    relative_humidity::NF
-    has_relative_humidity::Bool
-    air_pressure::NF
-    prescribed_albedo::NF
-    has_prescribed_albedo::Bool
-    diurnal_shortwave_substeps::Bool
-    latitude_deg::NF
-    day_of_year::NF
-    solar_longitude_deg::NF
-    diurnal_shortwave_threshold::NF
-    diurnal_shortwave_max_substeps::Int
-    diurnal_shortwave_min_air_temperature::NF
-    diurnal_temperature_cycle::Bool
-    diurnal_temperature_amplitude::NF
-end
-
-function SnowpackStepForcing(
-    air_temperature,
-    precipitation_rate,
-    dt_days,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_sw_net,
-    q_lw_down,
-    q_sh,
-    q_lh,
-    has_q_sw_net::Bool,
-    has_q_lw_down::Bool,
-    has_q_sh::Bool,
-    has_q_lh::Bool,
-    relative_humidity,
-    has_relative_humidity::Bool,
-    air_pressure,
-    prescribed_albedo,
-    has_prescribed_albedo::Bool,
-    diurnal_shortwave_substeps::Bool,
-    latitude_deg,
-    day_of_year,
-    solar_longitude_deg,
+const DEFAULT_BESSI_STEP_OPTIONS = (
+    diurnal_shortwave_substeps=false,
+    diurnal_shortwave_threshold=0.0,
+    diurnal_shortwave_max_substeps=3,
+    diurnal_shortwave_min_air_temperature=265.15,
+    diurnal_temperature_cycle=false,
+    diurnal_temperature_amplitude=0.0,
 )
-    return SnowpackStepForcing(
-        air_temperature,
-        precipitation_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        q_sw_net,
-        q_lw_down,
-        q_sh,
-        q_lh,
-        has_q_sw_net,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        relative_humidity,
-        has_relative_humidity,
-        air_pressure,
-        prescribed_albedo,
-        has_prescribed_albedo,
-        diurnal_shortwave_substeps,
-        latitude_deg,
-        day_of_year,
-        solar_longitude_deg,
-        zero(air_temperature),
-        3,
-        oftype(air_temperature, 265.15),
-        false,
-        zero(air_temperature),
-    )
-end
 
-function SnowpackStepForcing(
-    air_temperature,
-    precipitation_rate,
-    dt_days,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_sw_net,
-    q_lw_down,
-    q_sh,
-    q_lh,
-    has_q_sw_net::Bool,
-    has_q_lw_down::Bool,
-    has_q_sh::Bool,
-    has_q_lh::Bool,
-    prescribed_albedo,
-    has_prescribed_albedo::Bool,
-    diurnal_shortwave_substeps::Bool,
-    latitude_deg,
-    day_of_year,
-    solar_longitude_deg,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        precipitation_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        q_sw_net,
-        q_lw_down,
-        q_sh,
-        q_lh,
-        has_q_sw_net,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        zero(air_temperature),
-        false,
-        oftype(air_temperature, 101_325.0),
-        prescribed_albedo,
-        has_prescribed_albedo,
-        diurnal_shortwave_substeps,
-        latitude_deg,
-        day_of_year,
-        solar_longitude_deg,
-    )
-end
+@inline _step_config_from_keywords(; kwargs...) = merge(DEFAULT_BESSI_STEP_OPTIONS, (; kwargs...))
 
-function SnowpackStepForcing(
-    air_temperature,
-    precipitation_rate,
-    dt_days,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_sw_net,
-    q_lw_down,
-    q_sh,
-    q_lh,
-    has_q_sw_net::Bool,
-    has_q_lw_down::Bool,
-    has_q_sh::Bool,
-    has_q_lh::Bool,
-    relative_humidity,
-    has_relative_humidity::Bool,
-    air_pressure,
-    prescribed_albedo,
-    has_prescribed_albedo::Bool,
-    diurnal_shortwave_substeps::Bool,
-    latitude_deg,
-    day_of_year,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        precipitation_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        q_sw_net,
-        q_lw_down,
-        q_sh,
-        q_lh,
-        has_q_sw_net,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        relative_humidity,
-        has_relative_humidity,
-        air_pressure,
-        prescribed_albedo,
-        has_prescribed_albedo,
-        diurnal_shortwave_substeps,
-        latitude_deg,
-        day_of_year,
-        _solar_longitude_deg_from_calendar_day(day_of_year),
-    )
-end
-
-function SnowpackStepForcing(
-    air_temperature,
-    precipitation_rate,
-    dt_days,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_sw_net,
-    q_lw_down,
-    q_sh,
-    q_lh,
-    has_q_sw_net::Bool,
-    has_q_lw_down::Bool,
-    has_q_sh::Bool,
-    has_q_lh::Bool,
-    prescribed_albedo,
-    has_prescribed_albedo::Bool,
-    diurnal_shortwave_substeps::Bool,
-    latitude_deg,
-    day_of_year,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        precipitation_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        q_sw_net,
-        q_lw_down,
-        q_sh,
-        q_lh,
-        has_q_sw_net,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        zero(air_temperature),
-        false,
-        oftype(air_temperature, 101_325.0),
-        prescribed_albedo,
-        has_prescribed_albedo,
-        diurnal_shortwave_substeps,
-        latitude_deg,
-        day_of_year,
-    )
-end
-
-"""
-    _step_time_count(fields)
-
-Return the number of forcing time steps stored in `fields`.
-"""
-@inline _step_time_count(fields) = size(fields.air_temperature, 2)
-
-"""
-    _step_dt(dt_days, time_index)
-
-Resolve the step duration in days for `time_index`, supporting both scalar and
-vector-valued `dt_days` storage.
-"""
-@inline _step_dt(dt_days::Number, ::Int) = dt_days
-@inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
-
-"""
-    _step_forcing_from_fields(air_temperature, snowfall_rate, rainfall_rate, dt_days, shortwave_down, wind_speed, q_lw_down, has_q_lw_down, q_sh, has_q_sh, q_lh, has_q_lh, prescribed_albedo, has_prescribed_albedo)
-
-Build a single-column `SnowpackStepForcing` from already-indexed forcing
-values. The returned forcing disables optional fluxes that are not present and
-sets precipitation rate to snowfall plus rainfall.
-"""
-@inline function _step_forcing_from_fields(
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    dt_days,
-    shortwave_down,
-    wind_speed,
-    q_lw_down,
-    has_q_lw_down::Bool,
-    q_sh,
-    has_q_sh::Bool,
-    q_lh,
-    has_q_lh::Bool,
-    relative_humidity,
-    has_relative_humidity::Bool,
-    air_pressure,
-    prescribed_albedo,
-    has_prescribed_albedo::Bool,
-    diurnal_shortwave_substeps::Bool,
-    latitude_deg,
-    day_of_year,
-    solar_longitude_deg,
-    diurnal_shortwave_threshold,
-    diurnal_shortwave_max_substeps::Int,
-    diurnal_shortwave_min_air_temperature,
-    diurnal_temperature_cycle::Bool,
-    diurnal_temperature_amplitude,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        snowfall_rate + rainfall_rate,
-        dt_days,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down,
-        wind_speed,
-        zero(air_temperature),
-        q_lw_down,
-        q_sh,
-        q_lh,
-        false,
-        has_q_lw_down,
-        has_q_sh,
-        has_q_lh,
-        relative_humidity,
-        has_relative_humidity,
-        air_pressure,
-        prescribed_albedo,
-        has_prescribed_albedo,
-        diurnal_shortwave_substeps,
-        latitude_deg,
-        day_of_year,
-        solar_longitude_deg,
-        diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle,
-        diurnal_temperature_amplitude,
-    )
-end
-
-@adapt_structure SnowpackStepForcing
+@inline _step_config_from_keywords(kwargs::NamedTuple) = _step_config_from_keywords(; kwargs...)
 
 """
 Core stepping flow shared by batch stepping kernels.
@@ -440,34 +68,14 @@ end
     return nothing
 end
 
-function _step_diurnal_shortwave_interval_resolved!(
-    N_storage,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    mass_base,
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    Tsrf,
-    snow_cover,
-    albedo_dynamic,
+function _step_diurnal_shortwave_interval!(
+    domain,
     idx::Int,
-    c::SnowpackPhysicalConstants,
-    Ntot::Int,
-    mass_max,
-    mass_split,
-    mass_min,
     forcing::SnowpackStepForcing,
+    config,
     workspace,
     hour_angle_start,
     hour_angle_end,
-    update_snow_cover::Bool,
 )
     fraction = (hour_angle_end - hour_angle_start) / oftype(forcing.dt_days, 2π)
     fraction <= zero(fraction) && return nothing
@@ -478,10 +86,10 @@ function _step_diurnal_shortwave_interval_resolved!(
         hour_angle_start,
         hour_angle_end,
     )
-    air_temperature = forcing.diurnal_temperature_cycle ?
+    air_temperature = config.diurnal_temperature_cycle ?
         _diurnal_temperature_interval_average(
             forcing.air_temperature,
-            forcing.diurnal_temperature_amplitude,
+            config.diurnal_temperature_amplitude,
             hour_angle_start,
             hour_angle_end,
         ) :
@@ -496,80 +104,34 @@ function _step_diurnal_shortwave_interval_resolved!(
         ) :
         forcing.q_sw_net
     subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net)
-    return _step_state_core_resolved!(
-        N_storage,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        mass_base,
-        smb_ice,
-        runoff,
-        melt,
-        refreezing,
-        vapor_mass,
-        sublimation,
-        latent_heat_flux_sum,
-        Tsrf,
-        snow_cover,
-        albedo_dynamic,
-        idx,
-        c,
-        Ntot,
-        mass_max,
-        mass_split,
-        mass_min,
-        subforcing,
-        workspace,
-        update_snow_cover,
-    )
+    return column_step_core!(domain, idx, subforcing, workspace)
 end
 
 """
-    _step_state_resolved!(..., forcing, workspace, update_snow_cover=true)
+    column_step!(domain, idx, forcing, config, workspace)
 
 Advance one snowpack column by one forcing step using already-resolved arrays,
 constants, and scratch storage. This mutates the supplied state arrays
 in-place and may update runoff and SMB diagnostics.
 """
-function _step_state_resolved!(
-    N_storage,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    mass_base,
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    Tsrf,
-    snow_cover,
-    albedo_dynamic,
+function column_step!(
+    domain,
     idx::Int,
-    c::SnowpackPhysicalConstants,
-    Ntot::Int,
-    mass_max,
-    mass_split,
-    mass_min,
     forcing::SnowpackStepForcing,
+    config,
     workspace,
-    update_snow_cover::Bool=true,
 )
-    if forcing.diurnal_shortwave_substeps
+    if config.diurnal_shortwave_substeps
         shortwave_for_criterion = forcing.has_q_sw_net ? forcing.q_sw_net : forcing.shortwave_down
         n_substeps = _diurnal_shortwave_substep_count(
             forcing.dt_days,
             shortwave_for_criterion,
             forcing.air_temperature,
-            forcing.diurnal_shortwave_min_air_temperature,
+            config.diurnal_shortwave_min_air_temperature,
             forcing.latitude_deg,
             forcing.solar_longitude_deg,
-            forcing.diurnal_shortwave_threshold,
-            forcing.diurnal_shortwave_max_substeps,
+            config.diurnal_shortwave_threshold,
+            config.diurnal_shortwave_max_substeps,
         )
         if n_substeps > 1
             day_start = -oftype(forcing.dt_days, π)
@@ -578,73 +140,46 @@ function _step_state_resolved!(
             for substep_index in 1:n_substeps
                 hour_angle_start = day_start + (substep_index - 1) * substep_width
                 hour_angle_end = substep_index == n_substeps ? day_end : hour_angle_start + substep_width
-                _step_diurnal_shortwave_interval_resolved!(
-                    N_storage, mass, mass_w, density, temperature,
-                    mass_base, smb_ice, runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum, Tsrf, snow_cover, albedo_dynamic,
-                    idx, c, Ntot, mass_max, mass_split, mass_min, forcing,
-                    workspace, hour_angle_start, hour_angle_end, update_snow_cover && substep_index == n_substeps,
+                _step_diurnal_shortwave_interval!(
+                    domain,
+                    idx,
+                    forcing,
+                    config,
+                    workspace,
+                    hour_angle_start,
+                    hour_angle_end,
                 )
             end
             return nothing
         end
     end
 
-    return _step_state_core_resolved!(
-        N_storage,
-        mass,
-        mass_w,
-        density,
-        temperature,
-        mass_base,
-        smb_ice,
-        runoff,
-        melt,
-        refreezing,
-        vapor_mass,
-        sublimation,
-        latent_heat_flux_sum,
-        Tsrf,
-        snow_cover,
-        albedo_dynamic,
-        idx,
-        c,
-        Ntot,
-        mass_max,
-        mass_split,
-        mass_min,
-        forcing,
-        workspace,
-        update_snow_cover,
-    )
+    return column_step_core!(domain, idx, forcing, workspace)
 end
 
-function _step_state_core_resolved!(
-    N_storage,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    mass_base,
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    Tsrf,
-    snow_cover,
-    albedo_dynamic,
+function column_step_core!(
+    domain,
     idx::Int,
-    c::SnowpackPhysicalConstants,
-    Ntot::Int,
-    mass_max,
-    mass_split,
-    mass_min,
     forcing::SnowpackStepForcing,
     workspace,
-    update_snow_cover::Bool=true,
 )
+    N_storage = domain.N
+    mass = domain.mass
+    mass_w = domain.mass_w
+    density = domain.density
+    temperature = domain.temperature
+    mass_base = domain.mass_base
+    smb_ice = domain.smb_ice
+    runoff = domain.runoff
+    melt = domain.melt
+    refreezing = domain.refreezing
+    vapor_mass = domain.vapor_mass
+    sublimation = domain.sublimation
+    latent_heat_flux_sum = domain.latent_heat_flux_sum
+    Tsrf = domain.Tsrf
+    albedo_dynamic = domain.albedo_dynamic
+    c = domain.c
+
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
     use_prescribed_albedo = _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo
@@ -659,14 +194,13 @@ function _step_state_core_resolved!(
         smb_ice,
         runoff,
         Tsrf,
-        snow_cover,
         albedo_dynamic,
         idx,
         c,
-        Ntot,
-        mass_max,
-        mass_split,
-        mass_min,
+        domain.Ntot,
+        domain.mass_max,
+        domain.mass_split,
+        domain.mass_min,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
         dt_seconds,
@@ -686,9 +220,6 @@ function _step_state_core_resolved!(
     if !has_surface_snow
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
-        if update_snow_cover
-            _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
-        end
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
         _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
         _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_fluxes.melt_mass)
@@ -788,8 +319,8 @@ function _step_state_core_resolved!(
         c,
         forcing,
         dt_seconds,
-        mass_split,
-        mass_min,
+        domain.mass_split,
+        domain.mass_min,
     )
     _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
     _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + snow_vapor_fluxes.sublimation_mass)
@@ -807,8 +338,8 @@ function _step_state_core_resolved!(
             Tsrf,
             albedo_dynamic,
             idx,
-            mass_split,
-            mass_min,
+            domain.mass_split,
+            domain.mass_min,
             melt_mass,
             c,
         )
@@ -866,9 +397,6 @@ function _step_state_core_resolved!(
         has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     end
 
-    if update_snow_cover
-        _update_snow_cover_arrays!(N_storage, mass, mass_w, density, snow_cover, idx)
-    end
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     elseif !_surface_has_snow(N_storage, mass, idx)
@@ -878,154 +406,7 @@ function _step_state_core_resolved!(
     return nothing
 end
 
-"""
-Batch stepping over forcing fields.
-
-GPU-backed state uses KernelAbstractions kernels. CPU-backed BESSI state uses
-plain Julia threaded loops over chunks of columns to avoid per-step KA launch
-overhead and keep the branch-heavy scalar physics on the normal CPU compiler
-path.
-"""
-
-Base.@propagate_inbounds @inline function _step_column_from_fields!(
-    domain::AbstractSnowpackDomain,
-    forcing::SnowpackForcing,
-    time_index::Int,
-    workspace::ColumnarStepWorkspace,
-    idx::Int,
-    update_snow_cover::Bool,
-    diurnal_shortwave_substeps::Bool,
-    diurnal_shortwave_threshold,
-    diurnal_shortwave_max_substeps::Int,
-    diurnal_shortwave_min_air_temperature,
-    diurnal_temperature_cycle::Bool,
-    diurnal_temperature_amplitude,
-)
-    step_forcing = _step_forcing_from_fields(
-        forcing.air_temperature[idx, time_index],
-        forcing.snowfall_rate[idx, time_index],
-        forcing.rainfall_rate[idx, time_index],
-        _step_dt(forcing.dt_days, time_index),
-        forcing.shortwave_down[idx, time_index],
-        forcing.wind_speed[idx, time_index],
-        forcing.q_lw_down[idx, time_index],
-        forcing.has_q_lw_down[idx, time_index],
-        forcing.q_sh[idx, time_index],
-        forcing.has_q_sh[idx, time_index],
-        forcing.q_lh[idx, time_index],
-        forcing.has_q_lh[idx, time_index],
-        forcing.relative_humidity[idx, time_index],
-        forcing.has_relative_humidity[idx, time_index],
-        forcing.air_pressure[idx, time_index],
-        forcing.prescribed_albedo[idx, time_index],
-        forcing.has_prescribed_albedo[idx, time_index],
-        diurnal_shortwave_substeps,
-        forcing.latitude_deg[idx, time_index],
-        forcing.day_of_year[time_index],
-        forcing.solar_longitude_deg[time_index],
-        diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle,
-        diurnal_temperature_amplitude,
-    )
-    return _step_state_resolved!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.melt,
-        domain.refreezing,
-        domain.vapor_mass,
-        domain.sublimation,
-        domain.latent_heat_flux_sum,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        idx,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        step_forcing,
-        workspace,
-        update_snow_cover,
-    )
-end
-
-@inline function _default_step_threads_chunk_size(nactive::Int)
-    nactive <= 0 && return 1
-    nchunks = max(1, Base.Threads.nthreads() * 4)
-    return max(1, min(nactive, max(16, cld(nactive, nchunks))))
-end
-
-"""
-    step_interval_threads!(domain, forcing, time_range, workspace[, active_indices]; chunk_size)
-
-Advance BESSI columns over a forcing interval using Base.Threads on CPU arrays.
-The loop order is time-within-column-chunk, so forcing reads stay contiguous
-for the `ncol x ntime` forcing layout while each column mutates its contiguous
-`Ntot x ncol` state slice.
-"""
-function step_interval_threads!(
-    domain::AbstractSnowpackDomain,
-    forcing::SnowpackForcing,
-    time_range,
-    workspace::ColumnarStepWorkspace,
-    active_indices=1:column_count(domain);
-    update_snow_cover::Bool=true,
-    diurnal_shortwave_substeps::Bool=false,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps::Int=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude=0.0,
-    chunk_size::Union{Nothing,Integer}=nothing,
-)
-    domain.mass isa Array || error("step_interval_threads! is CPU-only; use step! for GPU-backed BESSI state.")
-    nactive = length(active_indices)
-    nactive == 0 && return nothing
-    resolved_chunk_size = isnothing(chunk_size) ? _default_step_threads_chunk_size(nactive) : Int(chunk_size)
-    resolved_chunk_size > 0 || error("`chunk_size` must be positive.")
-    time_indices = time_range isa AbstractUnitRange ? time_range : collect(time_range)
-    chunks = Iterators.partition(active_indices, resolved_chunk_size)
-    chunk_list = collect(chunks)
-    @threads :dynamic for chunk_index in eachindex(chunk_list)
-        cols = chunk_list[chunk_index]
-        for time_index in time_indices
-            @inbounds for idx in cols
-                _step_column_from_fields!(
-                    domain,
-                    forcing,
-                    Int(time_index),
-                    workspace,
-                    Int(idx),
-                    update_snow_cover,
-                    diurnal_shortwave_substeps,
-                    diurnal_shortwave_threshold,
-                    diurnal_shortwave_max_substeps,
-                    diurnal_shortwave_min_air_temperature,
-                    diurnal_temperature_cycle,
-                    diurnal_temperature_amplitude,
-                )
-            end
-        end
-    end
-    return nothing
-end
-
-step_year_threads!(
-    domain::AbstractSnowpackDomain,
-    forcing::SnowpackForcing,
-    workspace::ColumnarStepWorkspace,
-    active_indices=1:column_count(domain);
-    kwargs...,
-) = step_interval_threads!(domain, forcing, 1:_step_time_count(forcing), workspace, active_indices; kwargs...)
+"""Batch stepping over forcing fields with one KernelAbstractions path for CPU and GPU."""
 
 """
     _step_columns_kernel!(...)
@@ -1034,198 +415,105 @@ KernelAbstractions kernel that extracts one time slice of the full forcing
 and advances each column independently in-place.
 """
 @kernel function _step_columns_kernel!(
-    N_storage,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    mass_base,
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    Tsrf,
-    snow_cover,
-    albedo_dynamic,
-    c::SnowpackPhysicalConstants,
-    Ntot::Int,
-    mass_max,
-    mass_split,
-    mass_min,
+    domain,
     workspace::ColumnarStepWorkspace,
     active_indices,
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    shortwave_down,
-    wind_speed,
-    q_lw_down,
-    has_q_lw_down,
-    q_sh,
-    has_q_sh,
-    q_lh,
-    has_q_lh,
-    relative_humidity,
-    has_relative_humidity,
-    air_pressure,
-    prescribed_albedo,
-    has_prescribed_albedo,
-    latitude_deg,
-    day_of_year,
-    solar_longitude_deg,
-    diurnal_shortwave_substeps::Bool,
-    diurnal_shortwave_threshold,
-    diurnal_shortwave_max_substeps::Int,
-    diurnal_shortwave_min_air_temperature,
-    diurnal_temperature_cycle::Bool,
-    diurnal_temperature_amplitude,
-    time_index::Int,
-    dt_days,
-    update_snow_cover::Bool,
+    forcing::SnowpackForcing,
+    config,
+    time_start::Int,
+    time_stop::Int,
 )
     active_idx = @index(Global)
     if active_idx <= length(active_indices)
         idx = active_indices[active_idx]
-        forcing = _step_forcing_from_fields(
-            air_temperature[idx, time_index],
-            snowfall_rate[idx, time_index],
-            rainfall_rate[idx, time_index],
-            _step_dt(dt_days, time_index),
-            shortwave_down[idx, time_index],
-            wind_speed[idx, time_index],
-            q_lw_down[idx, time_index],
-            has_q_lw_down[idx, time_index],
-            q_sh[idx, time_index],
-            has_q_sh[idx, time_index],
-            q_lh[idx, time_index],
-            has_q_lh[idx, time_index],
-            relative_humidity[idx, time_index],
-            has_relative_humidity[idx, time_index],
-            air_pressure[idx, time_index],
-            prescribed_albedo[idx, time_index],
-            has_prescribed_albedo[idx, time_index],
-            diurnal_shortwave_substeps,
-            latitude_deg[idx, time_index],
-            day_of_year[time_index],
-            solar_longitude_deg[time_index],
-            diurnal_shortwave_threshold,
-            diurnal_shortwave_max_substeps,
-            diurnal_shortwave_min_air_temperature,
-            diurnal_temperature_cycle,
-            diurnal_temperature_amplitude,
-        )
-        _step_state_resolved!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            temperature,
-            mass_base,
-            smb_ice,
-            runoff,
-            melt,
-            refreezing,
-            vapor_mass,
-            sublimation,
-            latent_heat_flux_sum,
-            Tsrf,
-            snow_cover,
-            albedo_dynamic,
-            idx,
-            c,
-            Ntot,
-            mass_max,
-            mass_split,
-            mass_min,
-            forcing,
-            workspace,
-            update_snow_cover,
-        )
+        for time_index in time_start:time_stop
+            step_forcing = _step_forcing_at(forcing, idx, time_index)
+            column_step!(domain, idx, step_forcing, config, workspace)
+        end
     end
 end
 
 """
-    _launch_step_columns_kernel!(domain, forcing, time_index, workspace, update_snow_cover)
+    _launch_step_columns_kernel!(domain, forcing, time_start, time_stop, workspace, active_indices, config)
 
-Launch the backend-specific batch stepping kernel for one forcing time step and
-return the KernelAbstractions event.
+Launch the backend-specific batch stepping kernel for one contiguous forcing
+range and return the KernelAbstractions event.
 """
+@inline _step_kernel_workgroupsize(backend) =
+    backend isa KernelAbstractions.CPU ? 512 : 256
+
+@inline function _cpu_time_block_steps()
+    value = get(ENV, "CHION_CPU_TIME_BLOCK_STEPS", "30")
+    parsed = tryparse(Int, value)
+    return isnothing(parsed) || parsed < 1 ? 1 : parsed
+end
+
+@inline _step_time_block_steps(backend) =
+    backend isa KernelAbstractions.CPU ? _cpu_time_block_steps() : 1
+
 @inline function _launch_step_columns_kernel!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackForcing,
-    time_index::Int,
+    time_start::Int,
+    time_stop::Int,
     workspace::ColumnarStepWorkspace,
     active_indices,
-    update_snow_cover::Bool,
-    diurnal_shortwave_substeps::Bool,
-    diurnal_shortwave_threshold,
-    diurnal_shortwave_max_substeps::Int,
-    diurnal_shortwave_min_air_temperature,
-    diurnal_temperature_cycle::Bool,
-    diurnal_temperature_amplitude,
+    config,
 )
-    kernel! = _step_columns_kernel!(_ka_backend(domain.mass))
+    time_stop >= time_start || return nothing
+    backend = _ka_backend(domain.mass)
+    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend))
     return kernel!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.melt,
-        domain.refreezing,
-        domain.vapor_mass,
-        domain.sublimation,
-        domain.latent_heat_flux_sum,
-        domain.Tsrf,
-        domain.snow_cover,
-        domain.albedo_dynamic,
-        domain.c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
+        domain,
         workspace,
         active_indices,
-        forcing.air_temperature,
-        forcing.snowfall_rate,
-        forcing.rainfall_rate,
-        forcing.shortwave_down,
-        forcing.wind_speed,
-        forcing.q_lw_down,
-        forcing.has_q_lw_down,
-        forcing.q_sh,
-        forcing.has_q_sh,
-        forcing.q_lh,
-        forcing.has_q_lh,
-        forcing.relative_humidity,
-        forcing.has_relative_humidity,
-        forcing.air_pressure,
-        forcing.prescribed_albedo,
-        forcing.has_prescribed_albedo,
-        forcing.latitude_deg,
-        forcing.day_of_year,
-        forcing.solar_longitude_deg,
-        diurnal_shortwave_substeps,
-        diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle,
-        diurnal_temperature_amplitude,
-        time_index,
-        forcing.dt_days,
-        update_snow_cover;
+        forcing,
+        config,
+        time_start,
+        time_stop,
         ndrange=length(active_indices),
     )
 end
 
+@inline function _time_range_bounds(time_range)
+    time_range isa AbstractUnitRange ||
+        error("BESSI KA stepping requires a contiguous unit-step time range.")
+    first_time = Int(first(time_range))
+    last_time = Int(last(time_range))
+    return first_time, last_time
+end
+
+function _step_range!(
+    domain::AbstractSnowpackDomain,
+    forcing::SnowpackForcing,
+    time_range,
+    workspace::ColumnarStepWorkspace,
+    active_indices,
+    config,
+)
+    first_time, last_time = _time_range_bounds(time_range)
+    first_time <= last_time || return nothing
+    backend = _ka_backend(domain.mass)
+    block_steps = _step_time_block_steps(backend)
+    time_index = first_time
+    while time_index <= last_time
+        time_stop = min(last_time, time_index + block_steps - 1)
+        _wait_kernel(_launch_step_columns_kernel!(
+            domain,
+            forcing,
+            time_index,
+            time_stop,
+            workspace,
+            active_indices,
+            config,
+        ))
+        time_index = time_stop + 1
+    end
+    return nothing
+end
+
 """
-    step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace; update_snow_cover=true)
+    step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace)
 
 Advance all columns for one time step using the KernelAbstractions backend
 associated with `domain.mass`. The same kernel runs on CPU or GPU depending on
@@ -1236,29 +524,9 @@ function step!(
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace;
-    update_snow_cover::Bool=true,
-    diurnal_shortwave_substeps::Bool=false,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps::Int=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude=0.0,
+    kwargs...,
 )
-    active_indices = 1:column_count(domain)
-    return step!(
-        domain,
-        forcing,
-        time_index,
-        workspace,
-        active_indices;
-        update_snow_cover=update_snow_cover,
-        diurnal_shortwave_substeps=diurnal_shortwave_substeps,
-        diurnal_shortwave_threshold=diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle=diurnal_temperature_cycle,
-        diurnal_temperature_amplitude=diurnal_temperature_amplitude,
-    )
+    return step!(domain, forcing, time_index, workspace, 1:column_count(domain); kwargs...)
 end
 
 function step!(
@@ -1267,49 +535,14 @@ function step!(
     time_index::Int,
     workspace::ColumnarStepWorkspace,
     active_indices;
-    update_snow_cover::Bool=true,
-    diurnal_shortwave_substeps::Bool=false,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps::Int=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude=0.0,
+    kwargs...,
 )
-    if domain.mass isa Array
-        return step_interval_threads!(
-            domain,
-            forcing,
-            time_index:time_index,
-            workspace,
-            active_indices;
-            update_snow_cover=update_snow_cover,
-            diurnal_shortwave_substeps=diurnal_shortwave_substeps,
-            diurnal_shortwave_threshold=diurnal_shortwave_threshold,
-            diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
-            diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
-            diurnal_temperature_cycle=diurnal_temperature_cycle,
-            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
-        )
-    end
-    _wait_kernel(_launch_step_columns_kernel!(
-        domain,
-        forcing,
-        time_index,
-        workspace,
-        active_indices,
-        update_snow_cover,
-        diurnal_shortwave_substeps,
-        diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle,
-        diurnal_temperature_amplitude,
-    ))
-    return nothing
+    config = _step_config_from_keywords(; kwargs...)
+    return _step_range!(domain, forcing, time_index:time_index, workspace, active_indices, config)
 end
 
 """
-    step!(domain, forcing, workspace::ColumnarStepWorkspace; update_snow_cover=true)
+    step!(domain, forcing, workspace::ColumnarStepWorkspace)
 
 Advance all columns through the full forcing sequence in `forcing`. The outer
 time loop runs in Julia, while each time step is advanced by the same
@@ -1319,28 +552,9 @@ function step!(
     domain::AbstractSnowpackDomain,
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace;
-    update_snow_cover::Bool=true,
-    diurnal_shortwave_substeps::Bool=false,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps::Int=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude=0.0,
+    kwargs...,
 )
-    active_indices = 1:column_count(domain)
-    return step!(
-        domain,
-        forcing,
-        workspace,
-        active_indices;
-        update_snow_cover=update_snow_cover,
-        diurnal_shortwave_substeps=diurnal_shortwave_substeps,
-        diurnal_shortwave_threshold=diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle=diurnal_temperature_cycle,
-        diurnal_temperature_amplitude=diurnal_temperature_amplitude,
-    )
+    return step!(domain, forcing, workspace, 1:column_count(domain); kwargs...)
 end
 
 function step!(
@@ -1348,47 +562,8 @@ function step!(
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace,
     active_indices;
-    update_snow_cover::Bool=true,
-    diurnal_shortwave_substeps::Bool=false,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps::Int=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude=0.0,
+    kwargs...,
 )
-    if domain.mass isa Array
-        return step_interval_threads!(
-            domain,
-            forcing,
-            1:_step_time_count(forcing),
-            workspace,
-            active_indices;
-            update_snow_cover=update_snow_cover,
-            diurnal_shortwave_substeps=diurnal_shortwave_substeps,
-            diurnal_shortwave_threshold=diurnal_shortwave_threshold,
-            diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
-            diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
-            diurnal_temperature_cycle=diurnal_temperature_cycle,
-            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
-        )
-    end
-    for time_index in 1:_step_time_count(forcing)
-        step!(
-            domain,
-            forcing,
-            time_index,
-            workspace,
-            active_indices;
-            update_snow_cover=update_snow_cover,
-            diurnal_shortwave_substeps=diurnal_shortwave_substeps,
-            diurnal_shortwave_threshold=diurnal_shortwave_threshold,
-            diurnal_shortwave_max_substeps=diurnal_shortwave_max_substeps,
-            diurnal_shortwave_min_air_temperature=diurnal_shortwave_min_air_temperature,
-            diurnal_temperature_cycle=diurnal_temperature_cycle,
-            diurnal_temperature_amplitude=diurnal_temperature_amplitude,
-        )
-    end
-    return nothing
+    config = _step_config_from_keywords(; kwargs...)
+    return _step_range!(domain, forcing, 1:_step_time_count(forcing), workspace, active_indices, config)
 end
-##revert
-

@@ -233,6 +233,15 @@ function run!(
     return finalize!(integrator)
 end
 
+@inline _can_block_bessi_scheduled_steps(monthly_mode::Bool, nc) =
+    !monthly_mode && nc === nothing
+
+@inline function _bessi_scheduled_step_stop(integrator::SimulationIntegrator, nsteps::Int)
+    runtime = integrator.model_runtime.backend
+    block_steps = _step_time_block_steps(_ka_backend(runtime.state.mass))
+    return min(nsteps, integrator.time_index + block_steps - 1)
+end
+
 function _run_bessi_integrator!(
     integrator::SimulationIntegrator;
     checkpoint_path::AbstractString="",
@@ -265,23 +274,34 @@ function _run_bessi_integrator!(
     progress = Progress(run_options.years; desc="Running years: ", output=integrator.io, showspeed=true)
     while !_finished(integrator)
         year = integrator.completed_years + 1
-        for _ in 1:nsteps
-            k = integrator.time_index
-            _step_scheduled!(integrator)
-            if monthly_mode
-                accumulate_monthly!(monthly_state, backend_state, sim.forcing.dt_days[Int(k)])
-                if _is_month_boundary(sim.forcing.time_values, Int(k))
-                    time_block!(timings, :write_netcdf) do
-                        finalize_monthly!(monthly_state, backend_state)
-                        store_monthly!(monthly_year_state, monthly_state)
-                    end
-                    reset_monthly!(monthly_state)
+        allow_step_blocking = _can_block_bessi_scheduled_steps(monthly_mode, nc)
+        while integrator.completed_years < year
+            if allow_step_blocking
+                first_step = integrator.time_index
+                last_step = _bessi_scheduled_step_stop(integrator, nsteps)
+                if first_step == last_step
+                    _step_scheduled!(integrator)
+                else
+                    _step_scheduled_range!(integrator, first_step:last_step)
                 end
-            elseif nc !== nothing
-                _sync_bessi_state!(sim, backend_state, is_gpu, timings)
-                record_index += 1
-                time_block!(timings, :write_netcdf) do
-                    write_nc!(nc, sim.now, record_index, sim.domain)
+            else
+                k = integrator.time_index
+                _step_scheduled!(integrator)
+                if monthly_mode
+                    accumulate_monthly!(monthly_state, backend_state, sim.forcing.dt_days[Int(k)])
+                    if _is_month_boundary(sim.forcing.time_values, Int(k))
+                        time_block!(timings, :write_netcdf) do
+                            finalize_monthly!(monthly_state, backend_state)
+                            store_monthly!(monthly_year_state, monthly_state)
+                        end
+                        reset_monthly!(monthly_state)
+                    end
+                elseif nc !== nothing
+                    _sync_bessi_state!(sim, backend_state, is_gpu, timings)
+                    record_index += 1
+                    time_block!(timings, :write_netcdf) do
+                        write_nc!(nc, sim.now, record_index, sim.domain)
+                    end
                 end
             end
         end

@@ -39,7 +39,8 @@ Return the KernelAbstractions backend associated with `array`. The result is
 used to launch backend-specific kernels for CPU or GPU storage.
 """
 @inline function _ka_backend(array)
-    return KernelAbstractions.get_backend(array)
+    backend = KernelAbstractions.get_backend(array)
+    return backend isa KernelAbstractions.CPU ? KernelAbstractions.CPU(; static=true) : backend
 end
 
 """

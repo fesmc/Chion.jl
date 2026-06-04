@@ -10,7 +10,7 @@ Flat BESSI state container. Evolving arrays live directly on the state so user
 code can inspect fields as `sim.now.mass`, `sim.now.runoff`, and
 `sim.now.thickness` without going through an intermediate domain wrapper.
 """
-mutable struct CurrentState{
+struct CurrentState{
         NF <: AbstractFloat,
         NI <: AbstractVector{<:Integer},
         MT <: AbstractMatrix{NF},
@@ -42,6 +42,99 @@ mutable struct CurrentState{
     wet_mass::VT
     bulk_density::VT
     liquid_water::VT
+end
+
+@kernel function _initialize_current_state_kernel!(
+    N,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    mass_base,
+    smb_ice,
+    runoff,
+    melt,
+    refreezing,
+    vapor_mass,
+    sublimation,
+    latent_heat_flux_sum,
+    Tsrf,
+    albedo,
+    thickness,
+    wet_mass,
+    bulk_density,
+    liquid_water,
+    Ntot::Int,
+    density_init,
+    temperature_init,
+    surface_temperature_init,
+    albedo_init,
+)
+    idx = @index(Global)
+    if idx <= length(N)
+        N[idx] = 0
+        mass_base[idx] = zero(density_init)
+        smb_ice[idx] = zero(density_init)
+        runoff[idx] = zero(density_init)
+        melt[idx] = zero(density_init)
+        refreezing[idx] = zero(density_init)
+        vapor_mass[idx] = zero(density_init)
+        sublimation[idx] = zero(density_init)
+        latent_heat_flux_sum[idx] = zero(density_init)
+        Tsrf[idx] = surface_temperature_init
+        albedo[idx] = albedo_init
+        thickness[idx] = zero(density_init)
+        wet_mass[idx] = zero(density_init)
+        bulk_density[idx] = zero(density_init)
+        liquid_water[idx] = zero(density_init)
+        for layer_index in 1:Ntot
+            mass[layer_index, idx] = zero(density_init)
+            mass_w[layer_index, idx] = zero(density_init)
+            density[layer_index, idx] = density_init
+            temperature[layer_index, idx] = temperature_init
+        end
+    end
+end
+
+@inline _state_init_workgroupsize(backend) =
+    backend isa KernelAbstractions.CPU ? 1024 : 256
+
+function _initialize_current_state_arrays!(
+    state::CurrentState,
+    density_init,
+    temperature_init,
+)
+    backend = _ka_backend(state.mass)
+    kernel! = _initialize_current_state_kernel!(backend, _state_init_workgroupsize(backend))
+    event = kernel!(
+        state.N,
+        state.mass,
+        state.mass_w,
+        state.density,
+        state.temperature,
+        state.mass_base,
+        state.smb_ice,
+        state.runoff,
+        state.melt,
+        state.refreezing,
+        state.vapor_mass,
+        state.sublimation,
+        state.latent_heat_flux_sum,
+        state.Tsrf,
+        state.albedo,
+        state.thickness,
+        state.wet_mass,
+        state.bulk_density,
+        state.liquid_water,
+        state.Ntot,
+        convert(eltype(state.mass), density_init),
+        convert(eltype(state.mass), temperature_init),
+        state.c.T0,
+        state.c.alpha_dry;
+        ndrange=state.ncol,
+    )
+    _wait_kernel(event)
+    return state
 end
 
 """
@@ -86,7 +179,7 @@ end
 
 function CurrentState(domain::SnowpackDomain; density_init::Real=DEFAULT_DENSITY_INIT, temperature_init::Real=DEFAULT_TEMPERATURE_INIT)
     NF = number_type(domain.c)
-    return CurrentState(
+    state = CurrentState(
         domain.c,
         domain.Ntot,
         domain.ncol,
@@ -94,26 +187,27 @@ function CurrentState(domain::SnowpackDomain; density_init::Real=DEFAULT_DENSITY
         domain.mass_split,
         domain.mass_min,
         domain.rho_max,
-        zeros(Int, domain.ncol),
-        zeros(NF, domain.Ntot, domain.ncol),
-        zeros(NF, domain.Ntot, domain.ncol),
-        fill(convert(NF, density_init), domain.Ntot, domain.ncol),
-        fill(convert(NF, temperature_init), domain.Ntot, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        fill(domain.c.T0, domain.ncol),
-        fill(domain.c.alpha_dry, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
-        zeros(NF, domain.ncol),
+        Vector{Int}(undef, domain.ncol),
+        Matrix{NF}(undef, domain.Ntot, domain.ncol),
+        Matrix{NF}(undef, domain.Ntot, domain.ncol),
+        Matrix{NF}(undef, domain.Ntot, domain.ncol),
+        Matrix{NF}(undef, domain.Ntot, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
+        Vector{NF}(undef, domain.ncol),
     )
+    return _initialize_current_state_arrays!(state, density_init, temperature_init)
 end
 
 function CurrentState(model::BESSIModel)

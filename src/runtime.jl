@@ -208,36 +208,6 @@ end
 
 _reset_model_columns!(::AbstractSnowModel, ::AbstractState, runtime, inactive_indices::Vector{Int}) = nothing
 
-function step_interval_threads!(
-    model::BESSIModel,
-    state::CurrentState,
-    forcing::SnowpackForcing,
-    time_range,
-    workspace::ColumnarStepWorkspace=ColumnarStepWorkspace(state),
-    active_indices=1:state.ncol;
-    kwargs...,
-)
-    return step_interval_threads!(
-        state,
-        forcing,
-        time_range,
-        workspace,
-        active_indices;
-        _bessi_step_kwargs(model)...,
-        kwargs...,
-    )
-end
-
-
-step_year_threads!(
-    model::BESSIModel,
-    state::CurrentState,
-    forcing::SnowpackForcing,
-    workspace::ColumnarStepWorkspace=ColumnarStepWorkspace(state),
-    active_indices=1:state.ncol;
-    kwargs...,
-) = step_interval_threads!(model, state, forcing, 1:_step_time_count(forcing), workspace, active_indices; kwargs...)
-
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
     length(active) == model_runtime.ncol || error("Active mask length must match the model column count.")
     active_v = Vector{Bool}(active)
@@ -264,7 +234,7 @@ function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRunt
         time_index:time_index,
         runtime.workspace,
         model_runtime.active_indices,
-        _bessi_step_config(model),
+        _bessi_step_kwargs(model),
     )
 end
 
@@ -276,7 +246,7 @@ function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRunt
         time_range,
         runtime.workspace,
         model_runtime.active_indices,
-        _bessi_step_config(model),
+        _bessi_step_kwargs(model),
     )
 end
 
