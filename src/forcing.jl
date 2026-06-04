@@ -233,6 +233,113 @@ end
 
 @adapt_structure SnowpackForcing
 
+struct SnowpackStepForcing{NF <: AbstractFloat}
+    air_temperature::NF
+    dt_days::NF
+    snowfall_rate::NF
+    rainfall_rate::NF
+    shortwave_down::NF
+    wind_speed::NF
+    q_sw_net::NF
+    q_lw_down::NF
+    q_sh::NF
+    q_lh::NF
+    has_q_sw_net::Bool
+    has_q_lw_down::Bool
+    has_q_sh::Bool
+    has_q_lh::Bool
+    relative_humidity::NF
+    has_relative_humidity::Bool
+    air_pressure::NF
+    prescribed_albedo::NF
+    has_prescribed_albedo::Bool
+    latitude_deg::NF
+    day_of_year::NF
+    solar_longitude_deg::NF
+end
+
+function SnowpackStepForcing(
+    air_temperature,
+    dt_days,
+    snowfall_rate,
+    rainfall_rate,
+    shortwave_down,
+    wind_speed;
+    q_sw_net=zero(air_temperature),
+    q_lw_down=zero(air_temperature),
+    q_sh=zero(air_temperature),
+    q_lh=zero(air_temperature),
+    has_q_sw_net::Bool=false,
+    has_q_lw_down::Bool=false,
+    has_q_sh::Bool=false,
+    has_q_lh::Bool=false,
+    relative_humidity=zero(air_temperature),
+    has_relative_humidity::Bool=false,
+    air_pressure=oftype(air_temperature, 101_325.0),
+    prescribed_albedo=zero(air_temperature),
+    has_prescribed_albedo::Bool=false,
+    latitude_deg=zero(air_temperature),
+    day_of_year=zero(air_temperature),
+    solar_longitude_deg=_solar_longitude_deg_from_calendar_day(day_of_year),
+)
+    return SnowpackStepForcing(
+        air_temperature,
+        dt_days,
+        snowfall_rate,
+        rainfall_rate,
+        shortwave_down,
+        wind_speed,
+        q_sw_net,
+        q_lw_down,
+        q_sh,
+        q_lh,
+        has_q_sw_net,
+        has_q_lw_down,
+        has_q_sh,
+        has_q_lh,
+        relative_humidity,
+        has_relative_humidity,
+        air_pressure,
+        prescribed_albedo,
+        has_prescribed_albedo,
+        latitude_deg,
+        day_of_year,
+        solar_longitude_deg,
+    )
+end
+
+@adapt_structure SnowpackStepForcing
+
+@inline _step_time_count(fields) = size(fields.air_temperature, 2)
+@inline _step_dt(dt_days::Number, ::Int) = dt_days
+@inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
+
+@inline function _step_forcing_at(forcing::SnowpackForcing, idx::Int, time_index::Int)
+    air_temperature = forcing.air_temperature[idx, time_index]
+    return SnowpackStepForcing(
+        air_temperature,
+        _step_dt(forcing.dt_days, time_index),
+        forcing.snowfall_rate[idx, time_index],
+        forcing.rainfall_rate[idx, time_index],
+        forcing.shortwave_down[idx, time_index],
+        forcing.wind_speed[idx, time_index];
+        q_lw_down=forcing.q_lw_down[idx, time_index],
+        has_q_lw_down=forcing.has_q_lw_down[idx, time_index],
+        q_sh=forcing.q_sh[idx, time_index],
+        has_q_sh=forcing.has_q_sh[idx, time_index],
+        q_lh=forcing.q_lh[idx, time_index],
+        has_q_lh=forcing.has_q_lh[idx, time_index],
+        relative_humidity=forcing.relative_humidity[idx, time_index],
+        has_relative_humidity=forcing.has_relative_humidity[idx, time_index],
+        air_pressure=forcing.air_pressure[idx, time_index],
+        prescribed_albedo=forcing.prescribed_albedo[idx, time_index],
+        has_prescribed_albedo=forcing.has_prescribed_albedo[idx, time_index],
+        latitude_deg=forcing.latitude_deg[idx, time_index],
+        day_of_year=forcing.day_of_year[time_index],
+        solar_longitude_deg=forcing.solar_longitude_deg[time_index],
+    )
+end
+
 @inline function forcing_step_kind(forcing::SnowpackForcing, time_index::Int)
     ## for monthly pdd
     dt = _step_dt(forcing.dt_days, time_index)
