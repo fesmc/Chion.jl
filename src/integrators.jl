@@ -61,27 +61,27 @@ _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
     integrator.model_runtime.backend.step_fields
 
 function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
-    dest.dt_days .= src.dt_days
-    dest.day_of_year .= src.day_of_year
-    dest.solar_longitude_deg .= src.solar_longitude_deg
-    dest.air_temperature .= src.air_temperature
-    dest.snowfall_rate .= src.snowfall_rate
-    dest.rainfall_rate .= src.rainfall_rate
-    dest.shortwave_down .= src.shortwave_down
-    dest.latitude_deg .= src.latitude_deg
-    dest.wind_speed .= src.wind_speed
-    dest.q_lw_down .= src.q_lw_down
-    dest.has_q_lw_down .= src.has_q_lw_down
-    dest.q_sh .= src.q_sh
-    dest.has_q_sh .= src.has_q_sh
-    dest.q_lh .= src.q_lh
-    dest.has_q_lh .= src.has_q_lh
-    dest.relative_humidity .= src.relative_humidity
-    dest.has_relative_humidity .= src.has_relative_humidity
-    dest.surface_height .= src.surface_height
-    dest.air_pressure .= src.air_pressure
-    dest.prescribed_albedo .= src.prescribed_albedo
-    dest.has_prescribed_albedo .= src.has_prescribed_albedo
+    copyto!(dest.dt_days, src.dt_days)
+    copyto!(dest.day_of_year, src.day_of_year)
+    copyto!(dest.solar_longitude_deg, src.solar_longitude_deg)
+    copyto!(dest.air_temperature, src.air_temperature)
+    copyto!(dest.snowfall_rate, src.snowfall_rate)
+    copyto!(dest.rainfall_rate, src.rainfall_rate)
+    copyto!(dest.shortwave_down, src.shortwave_down)
+    copyto!(dest.latitude_deg, src.latitude_deg)
+    copyto!(dest.wind_speed, src.wind_speed)
+    copyto!(dest.q_lw_down, src.q_lw_down)
+    copyto!(dest.has_q_lw_down, src.has_q_lw_down)
+    copyto!(dest.q_sh, src.q_sh)
+    copyto!(dest.has_q_sh, src.has_q_sh)
+    copyto!(dest.q_lh, src.q_lh)
+    copyto!(dest.has_q_lh, src.has_q_lh)
+    copyto!(dest.relative_humidity, src.relative_humidity)
+    copyto!(dest.has_relative_humidity, src.has_relative_humidity)
+    copyto!(dest.surface_height, src.surface_height)
+    copyto!(dest.air_pressure, src.air_pressure)
+    copyto!(dest.prescribed_albedo, src.prescribed_albedo)
+    copyto!(dest.has_prescribed_albedo, src.has_prescribed_albedo)
     return dest
 end
 
@@ -116,9 +116,43 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     return nothing
 end
 
+function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_range)
+    integrator.finalized && error("Cannot step a finalized integrator.")
+    _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
+
+    first_time = Int(first(time_range))
+    last_time = Int(last(time_range))
+    first_time <= last_time || return nothing
+    first_time == integrator.time_index || error("Scheduled forcing range must start at the integrator time index.")
+    nsteps = length(integrator.sim.forcing.time_values)
+    last_time <= nsteps || error("Scheduled forcing range cannot cross a forcing year boundary.")
+
+    model = integrator.sim.model
+    state = integrator.sim.now
+    model_runtime = integrator.model_runtime
+    step_count = last_time - first_time + 1
+
+    time_counted_block!(integrator.timings, :model_step_wall, step_count) do
+        step_model!(model, state, model_runtime, forcing, first_time:last_time)
+    end
+
+    if last_time == nsteps
+        integrator.completed_years += 1
+        integrator.time_index = 1
+    else
+        integrator.time_index = last_time + 1
+    end
+    return nothing
+end
+
 function _step_scheduled!(integrator::SimulationIntegrator)
     forcing = _scheduled_forcing_for_runtime(integrator)
     return _advance_with_forcing!(integrator, forcing, integrator.time_index)
+end
+
+function _step_scheduled_range!(integrator::SimulationIntegrator, time_range)
+    forcing = _scheduled_forcing_for_runtime(integrator)
+    return _advance_with_forcing!(integrator, forcing, time_range)
 end
 
 function _step_n!(integrator::SimulationIntegrator, n::Integer)
