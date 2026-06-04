@@ -176,6 +176,27 @@ algorithm on the first `n` rows. The solution overwrites `right_hand_side`.
     main_diagonal,
     upper_diagonal,
     right_hand_side,
+    scratch,
+    idx::Int,
+    n::Int,
+)
+    return _solve_tridiagonal_column!(
+        right_hand_side,
+        lower_diagonal,
+        main_diagonal,
+        upper_diagonal,
+        right_hand_side,
+        scratch,
+        idx,
+        n,
+    )
+end
+
+@inline function _solve_tridiagonal_thomas_prefix!(
+    lower_diagonal,
+    main_diagonal,
+    upper_diagonal,
+    right_hand_side,
     idx::Int,
     n::Int,
 )
@@ -299,6 +320,295 @@ Return `true` when column `idx` has a nonempty surface snow layer.
     return _n_active(N_storage, idx) > 0 && _get_layer(mass, 1, idx) > EPS_EMPTY_LAYER
 end
 
+@inline function _reset_energy_phase_column!(phase, idx::Int, dt_seconds, latent_heat_linear, latent_heat_constant)
+    _set_scalar!(phase.post_active, idx, false)
+    _set_scalar!(phase.solve_active, idx, false)
+    _set_scalar!(phase.needs_second_solve, idx, false)
+    _set_scalar!(phase.needs_melt, idx, false)
+    _set_scalar!(phase.n_liquid_water_before_energy, idx, 0)
+    _set_scalar!(phase.surface_mass, idx, zero(dt_seconds))
+    _set_scalar!(phase.previous_surface_temperature, idx, zero(dt_seconds))
+    _set_scalar!(phase.surface_diag_term, idx, zero(dt_seconds))
+    _set_scalar!(phase.surface_flux_constant, idx, zero(dt_seconds))
+    _set_scalar!(phase.surface_flux_linear, idx, zero(dt_seconds))
+    _set_scalar!(phase.latent_heat_linear_coefficient, idx, latent_heat_linear)
+    _set_scalar!(phase.latent_heat_constant_term, idx, latent_heat_constant)
+    _set_scalar!(phase.energy_to_melting, idx, zero(dt_seconds))
+    _set_scalar!(phase.melt_energy_available, idx, zero(dt_seconds))
+    _set_scalar!(phase.heating, idx, zero(dt_seconds))
+    return nothing
+end
+
+function _prepare_energy_flux_system!(
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    temperature,
+    Tsrf,
+    albedo_dynamic,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    scratch,
+    phase,
+    air_temperature,
+    shortwave_down,
+    latent_heat_linear_coefficient_eff,
+    latent_heat_constant_term_eff,
+    dt_seconds,
+    use_q_sw_net::Bool,
+    q_sw_net_value,
+    use_q_lw_down::Bool,
+    q_lw_down_value,
+    use_q_sh::Bool,
+    q_sh_value,
+    use_q_lh::Bool,
+    q_lh_value,
+    use_relative_humidity::Bool,
+    relative_humidity,
+    air_pressure,
+)
+    _reset_energy_phase_column!(
+        phase,
+        idx,
+        dt_seconds,
+        latent_heat_linear_coefficient_eff,
+        latent_heat_constant_term_eff,
+    )
+
+    n_layers = _n_active(N_storage, idx)
+    if n_layers <= 0 || _get_layer(mass, 1, idx) <= zero(eltype(mass))
+        return nothing
+    end
+
+    lower = scratch.lower
+    diag = scratch.diag
+    upper = scratch.upper
+    rhs = scratch.rhs
+    interface_terms = scratch.interface_conductance
+    surface_mass = _safe_positive(_get_layer(mass, 1, idx))
+    previous_surface_temperature = _get_layer(temperature, 1, idx)
+    surface_temperature_scale = dt_seconds / c.ci / surface_mass
+    surface_temperature_sq = previous_surface_temperature * previous_surface_temperature
+    surface_temperature_cube = surface_temperature_sq * previous_surface_temperature
+    surface_temperature_fourth = surface_temperature_sq * surface_temperature_sq
+
+    absorbed_shortwave = use_q_sw_net ?
+        q_sw_net_value :
+        shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
+    longwave_flux_constant = use_q_lw_down ?
+        (q_lw_down_value + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth) :
+        (c.σ * (c.ϵ_air * air_temperature^4 + c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth))
+    longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * surface_temperature_cube
+    sensible_heat_flux_constant = use_q_sh ? q_sh_value : air_temperature * c.D_sh
+    sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : c.D_sh
+    turbulent_latent_heat_constant, turbulent_latent_heat_linear = if use_q_lh
+        q_lh_value, zero(dt_seconds)
+    elseif use_relative_humidity
+        _bessi_latent_vapor_flux_linearized(previous_surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+    else
+        zero(dt_seconds), zero(dt_seconds)
+    end
+    latent_heat_flux_constant = latent_heat_constant_term_eff + turbulent_latent_heat_constant
+    latent_heat_flux_linear = latent_heat_linear_coefficient_eff + turbulent_latent_heat_linear
+
+    surface_flux_constant = sensible_heat_flux_constant + longwave_flux_constant + absorbed_shortwave + latent_heat_flux_constant
+    surface_flux_linear = sensible_heat_flux_linear + longwave_flux_linear + latent_heat_flux_linear
+    surface_rhs_term = surface_temperature_scale * surface_flux_constant
+    surface_diag_term = surface_temperature_scale * surface_flux_linear
+
+    _set_scalar!(phase.post_active, idx, true)
+    _set_scalar!(phase.surface_mass, idx, surface_mass)
+    _set_scalar!(phase.previous_surface_temperature, idx, previous_surface_temperature)
+    _set_scalar!(phase.surface_diag_term, idx, surface_diag_term)
+    _set_scalar!(phase.surface_flux_constant, idx, surface_flux_constant)
+    _set_scalar!(phase.surface_flux_linear, idx, surface_flux_linear)
+
+    if n_layers == 1
+        updated_surface_temperature = (previous_surface_temperature + surface_rhs_term) /
+                                      _safe_positive(one(previous_surface_temperature) + surface_diag_term)
+        energy_to_melting = zero(dt_seconds)
+        heating = zero(dt_seconds)
+        needs_melt = updated_surface_temperature > c.T0
+        if needs_melt
+            energy_to_melting = (c.T0 - previous_surface_temperature) * c.ci * surface_mass
+            updated_surface_temperature = c.T0
+            heating = energy_to_melting
+        else
+            heating = dt_seconds * (surface_flux_constant - surface_flux_linear * updated_surface_temperature)
+        end
+        resolved_surface_temperature = min(updated_surface_temperature, c.T0)
+        _set_layer!(temperature, 1, idx, resolved_surface_temperature)
+        _set_scalar!(Tsrf, idx, resolved_surface_temperature)
+        _set_scalar!(phase.needs_melt, idx, needs_melt)
+        _set_scalar!(phase.energy_to_melting, idx, energy_to_melting)
+        _set_scalar!(phase.heating, idx, heating)
+        _set_scalar!(
+            phase.melt_energy_available,
+            idx,
+            _residual_melt_energy(
+                surface_flux_constant,
+                surface_flux_linear,
+                resolved_surface_temperature,
+                energy_to_melting,
+                dt_seconds,
+                needs_melt,
+            ),
+        )
+        return nothing
+    end
+
+    previous_layer_density = _get_layer(density, 1, idx)
+    previous_layer_thickness = surface_mass / _safe_positive(previous_layer_density)
+    previous_layer_conductivity = _snow_thermal_conductivity(previous_layer_density, c.Ki)
+    _set_layer!(rhs, 1, idx, previous_surface_temperature + surface_rhs_term)
+
+    @inbounds for layer_index in 2:n_layers
+        layer_density = _get_layer(density, layer_index, idx)
+        layer_thickness = _get_layer(mass, layer_index, idx) / _safe_positive(layer_density)
+        layer_conductivity = _snow_thermal_conductivity(layer_density, c.Ki)
+        _set_layer!(
+            interface_terms,
+            layer_index - 1,
+            idx,
+            interface_conductance(
+                previous_layer_conductivity,
+                previous_layer_thickness,
+                layer_conductivity,
+                layer_thickness,
+            ),
+        )
+        _set_layer!(rhs, layer_index, idx, _get_layer(temperature, layer_index, idx))
+        previous_layer_thickness = layer_thickness
+        previous_layer_conductivity = layer_conductivity
+    end
+
+    β_scale = -oftype(dt_seconds, 2.0) * dt_seconds / c.ci
+
+    β1 = β_scale / _safe_positive(_get_layer(mass, 1, idx))
+    _set_layer!(upper, 1, idx, β1 * _get_layer(interface_terms, 1, idx))
+    _set_layer!(diag, 1, idx, one(dt_seconds) - _get_layer(upper, 1, idx) + surface_diag_term)
+
+    βn = β_scale / _safe_positive(_get_layer(mass, n_layers, idx))
+    _set_layer!(lower, n_layers - 1, idx, βn * _get_layer(interface_terms, n_layers - 1, idx))
+    _set_layer!(diag, n_layers, idx, one(dt_seconds) - _get_layer(lower, n_layers - 1, idx))
+
+    @inbounds for layer_index in 2:(n_layers - 1)
+        βi = β_scale / _safe_positive(_get_layer(mass, layer_index, idx))
+        _set_layer!(lower, layer_index - 1, idx, βi * _get_layer(interface_terms, layer_index - 1, idx))
+        _set_layer!(upper, layer_index, idx, βi * _get_layer(interface_terms, layer_index, idx))
+        _set_layer!(
+            diag,
+            layer_index,
+            idx,
+            one(dt_seconds) - _get_layer(lower, layer_index - 1, idx) - _get_layer(upper, layer_index, idx),
+        )
+    end
+
+    _set_scalar!(phase.solve_active, idx, true)
+    return nothing
+end
+
+function _finish_energy_flux_first_solve!(
+    N_storage,
+    mass,
+    temperature,
+    Tsrf,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    scratch,
+    phase,
+    dt_seconds,
+)
+    _get_scalar(phase.post_active, idx) || return nothing
+    _get_scalar(phase.solve_active, idx) || return nothing
+
+    n_layers = _n_active(N_storage, idx)
+    resolved_temperature = scratch.rhs
+    surface_flux_constant = _get_scalar(phase.surface_flux_constant, idx)
+    surface_flux_linear = _get_scalar(phase.surface_flux_linear, idx)
+    surface_mass = _get_scalar(phase.surface_mass, idx)
+    previous_surface_temperature = _get_scalar(phase.previous_surface_temperature, idx)
+    surface_diag_term = _get_scalar(phase.surface_diag_term, idx)
+
+    if _get_layer(resolved_temperature, 1, idx) > c.T0
+        energy_to_melting = (c.T0 - previous_surface_temperature) * c.ci * surface_mass
+        _set_scalar!(phase.needs_melt, idx, true)
+        _set_scalar!(phase.needs_second_solve, idx, true)
+        _set_scalar!(phase.energy_to_melting, idx, energy_to_melting)
+
+        @inbounds for layer_index in 1:n_layers
+            _set_layer!(scratch.rhs, layer_index, idx, _get_layer(temperature, layer_index, idx))
+        end
+        _set_layer!(scratch.rhs, 1, idx, c.T0)
+        _set_layer!(scratch.diag, 1, idx, _get_layer(scratch.diag, 1, idx) - surface_diag_term)
+    else
+        _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
+        resolved_surface_temperature = _get_layer(resolved_temperature, 1, idx)
+        _copy_column!(temperature, resolved_temperature, idx, n_layers)
+        _set_scalar!(Tsrf, idx, resolved_surface_temperature)
+        heating = dt_seconds * (surface_flux_constant - surface_flux_linear * resolved_surface_temperature)
+        _set_scalar!(phase.heating, idx, heating)
+        _set_scalar!(
+            phase.melt_energy_available,
+            idx,
+            _residual_melt_energy(
+                surface_flux_constant,
+                surface_flux_linear,
+                resolved_surface_temperature,
+                zero(dt_seconds),
+                dt_seconds,
+                false,
+            ),
+        )
+    end
+
+    return nothing
+end
+
+function _finish_energy_flux_second_solve!(
+    N_storage,
+    temperature,
+    Tsrf,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    scratch,
+    phase,
+    dt_seconds,
+)
+    _get_scalar(phase.needs_second_solve, idx) || return nothing
+
+    n_layers = _n_active(N_storage, idx)
+    resolved_temperature = scratch.rhs
+    surface_mass = _get_scalar(phase.surface_mass, idx)
+    surface_flux_constant = _get_scalar(phase.surface_flux_constant, idx)
+    surface_flux_linear = _get_scalar(phase.surface_flux_linear, idx)
+    energy_to_melting = _get_scalar(phase.energy_to_melting, idx) +
+                        (c.T0 - _get_layer(resolved_temperature, 1, idx)) * c.ci * surface_mass
+
+    _set_layer!(resolved_temperature, 1, idx, c.T0)
+    _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
+    _copy_column!(temperature, resolved_temperature, idx, n_layers)
+    resolved_surface_temperature = _get_layer(resolved_temperature, 1, idx)
+    _set_scalar!(Tsrf, idx, resolved_surface_temperature)
+    _set_scalar!(phase.energy_to_melting, idx, energy_to_melting)
+    _set_scalar!(phase.heating, idx, energy_to_melting)
+    _set_scalar!(
+        phase.melt_energy_available,
+        idx,
+        _residual_melt_energy(
+            surface_flux_constant,
+            surface_flux_linear,
+            resolved_surface_temperature,
+            energy_to_melting,
+            dt_seconds,
+            true,
+        ),
+    )
+    return nothing
+end
+
+
 """
     _go_energy_flux_resolved!(..., scratch, air_temperature, shortwave_down, latent_heat_linear_coefficient_eff, latent_heat_constant_term_eff, dt_seconds, use_q_sw_net, q_sw_net_value, use_q_lw_down, q_lw_down_value, use_q_sh, q_sh_value, use_q_lh, q_lh_value)
 
@@ -354,7 +664,7 @@ function _go_energy_flux_resolved!(
     upper = scratch.upper
     rhs = scratch.rhs
     interface_terms = scratch.interface_conductance
-    solver_diag = scratch.previous_temperature
+    tdma_scratch = scratch.previous_temperature
     surface_mass = _safe_positive(_get_layer(mass, 1, idx))
     previous_surface_temperature = _get_layer(temperature, 1, idx)
     surface_temperature_scale = dt_seconds / c.ci / surface_mass
@@ -471,8 +781,7 @@ function _go_energy_flux_resolved!(
         )
     end
 
-    _copy_column!(solver_diag, diag, idx, n_layers)
-    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
+    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, tdma_scratch, idx, n_layers)
 
     if _get_layer(resolved_temperature, 1, idx) > c.T0
         needs_melt = true
@@ -482,10 +791,9 @@ function _go_energy_flux_resolved!(
             _set_layer!(rhs, layer_index, idx, _get_layer(temperature, layer_index, idx))
         end
         _set_layer!(rhs, 1, idx, c.T0)
-        _copy_column!(solver_diag, diag, idx, n_layers)
-        _set_layer!(solver_diag, 1, idx, _get_layer(solver_diag, 1, idx) - surface_diag_term)
+        _set_layer!(diag, 1, idx, _get_layer(diag, 1, idx) - surface_diag_term)
 
-        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
+        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, diag, upper, rhs, tdma_scratch, idx, n_layers)
         energy_to_melting += (c.T0 - _get_layer(resolved_temperature, 1, idx)) * c.ci * surface_mass
         _set_layer!(resolved_temperature, 1, idx, c.T0)
         _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)

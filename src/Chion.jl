@@ -18,6 +18,7 @@ include("forcing.jl")
 include("timing.jl")
 include("step.jl")
 include("column_state_utils.jl")
+include("solvers/batched_tridiagonal_solver.jl")
 include("processes/albedo.jl")
 include("processes/layer_structure.jl")
 include("processes/accumulation.jl")
@@ -70,6 +71,7 @@ export load_forcing_file
 
 # Low-level / power-user exports
 export step!
+export step_interval_threads!
 export ColumnarStepWorkspace
 export update_diagnostics!
 export cpu_state, gpu_state
