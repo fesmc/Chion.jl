@@ -102,6 +102,7 @@ water. Negative layer masses are clipped to zero in the accumulation.
     return total_wet_mass
 end
 
+"""
     _column_has_liquid_water(N_storage, mass_w, idx)
 
 Return `true` when any active layer in column `idx` contains liquid water
