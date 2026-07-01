@@ -3,27 +3,19 @@ Model definitions exposed by Chion's simulation-first API.
 """
 
 """Dynamic surface albedo scheme for `BESSIModel`."""
-struct DynamicAlbedo end
+DynamicAlbedo() = :dynamic
 """Constant surface albedo scheme for `BESSIModel`."""
-struct ConstantAlbedo end
+ConstantAlbedo() = :constant
 """Use prescribed surface albedo from `SnowpackForcing`."""
-struct PrescribedAlbedo end
+PrescribedAlbedo() = :prescribed
 """BESSI low-density densification scheme."""
-struct BESSIDensification end
+BESSIDensification() = :bessi
 """HTESSEL-style low-density densification scheme."""
-struct HTESSELDensification end
+HTESSELDensification() = :htessel
 """Use the constant fresh-snow density parameter."""
-struct ConstantFreshSnowDensity end
+ConstantFreshSnowDensity() = :constant
 """Use the temperature/wind-dependent fresh-snow density parameterization."""
-struct ParameterizedFreshSnowDensity end
-
-_albedo_symbol(::DynamicAlbedo) = :dynamic
-_albedo_symbol(::ConstantAlbedo) = :constant
-_albedo_symbol(::PrescribedAlbedo) = :prescribed
-_densification_symbol(::BESSIDensification) = :bessi
-_densification_symbol(::HTESSELDensification) = :htessel
-_fresh_snow_symbol(::ConstantFreshSnowDensity) = :constant
-_fresh_snow_symbol(::ParameterizedFreshSnowDensity) = :parameterized
+ParameterizedFreshSnowDensity() = :parameterized
 
 """
     BESSIModel(grid; albedo=DynamicAlbedo(), densification=BESSIDensification(), ...)
@@ -31,14 +23,13 @@ _fresh_snow_symbol(::ParameterizedFreshSnowDensity) = :parameterized
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
 `CurrentState` and owned by `Simulation.now`.
 """
-struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel{G}
+struct BESSIModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     grid::G
     c::C
     Ntot::Int
     mass_max::Float64
     mass_split::Float64
     mass_min::Float64
-    rho_max::Float64
     density_init::Float64
     temperature_init::Float64
     diurnal_shortwave_substeps::Bool
@@ -50,7 +41,7 @@ struct BESSIModel{G <: AbstractSnowpackGrid, C <: SnowpackPhysicalConstants} <: 
 end
 
 function BESSIModel(
-    grid::AbstractSnowpackGrid;
+    grid::SnowpackGrid;
     albedo=DynamicAlbedo(),
     densification=BESSIDensification(),
     fresh_snow_density=ConstantFreshSnowDensity(),
@@ -58,7 +49,6 @@ function BESSIModel(
     mass_max::Real=DEFAULT_MASS_MAX,
     mass_split::Real=DEFAULT_MASS_SPLIT,
     mass_min::Real=DEFAULT_MASS_MIN,
-    rho_max::Real=DEFAULT_RHO_MAX,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
     diurnal_shortwave::Bool=false,
@@ -77,19 +67,20 @@ function BESSIModel(
     resolved_diurnal_shortwave_substeps = diurnal_shortwave_substeps || diurnal_shortwave
     c = SnowpackPhysicalConstants(
         Float64;
-        albedo_scheme=_albedo_symbol(albedo),
-        low_density_densification=_densification_symbol(densification),
-        fresh_snow_density_scheme=_fresh_snow_symbol(fresh_snow_density),
+        albedo_scheme=albedo,
+        low_density_densification=densification,
+        fresh_snow_density_scheme=fresh_snow_density,
         kwargs...,
     )
+    mass_max, mass_split, mass_min =
+        _domain_thresholds(Float64, mass_max, mass_split, mass_min)
     return BESSIModel(
         grid,
         c,
         Ntot,
-        Float64(mass_max),
-        Float64(mass_split),
-        Float64(mass_min),
-        Float64(rho_max),
+        mass_max,
+        mass_split,
+        mass_min,
         Float64(density_init),
         Float64(temperature_init),
         resolved_diurnal_shortwave_substeps,
@@ -101,35 +92,10 @@ function BESSIModel(
     )
 end
 
-function SnowpackDomain(model::BESSIModel)
-    grid = model.grid
-    return SnowpackDomain(;
-        c=model.c,
-        Ntot=model.Ntot,
-        ncol=ncols(grid),
-        mass_max=model.mass_max,
-        mass_split=model.mass_split,
-        mass_min=model.mass_min,
-        rho_max=model.rho_max,
-        x=grid.x,
-        y=grid.y,
-        js=grid.js,
-        is=grid.is,
-        mask=grid.mask,
-    )
-end
-
-model_domain(model::BESSIModel) = SnowpackDomain(model)
-model_domain(model::AbstractSnowModel) = model.grid
-
 """PISM-style expectation-integral monthly PDD parameterization."""
-struct StochasticMonthlyPDD
-    temperature_sigma::Float64
-end
-
 function StochasticMonthlyPDD(; temperature_sigma::Real=5.0)
     temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
-    return StochasticMonthlyPDD(Float64(temperature_sigma))
+    return (temperature_sigma=Float64(temperature_sigma),)
 end
 
 """
@@ -141,20 +107,20 @@ state is stored in `PDDState` and owned by `Simulation.now`. Monthly forcing
 steps use a PISM-style expectation integral with normally-distributed
 unresolved temperature variability.
 """
-struct PDDModel{G <: AbstractSnowpackGrid} <: AbstractSnowModel{G}
+struct PDDModel{G <: SnowpackGrid}
     grid::G
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
-    monthly_method::StochasticMonthlyPDD
+    monthly_method::NamedTuple{(:temperature_sigma,), Tuple{Float64}}
 end
 
 function PDDModel(
-    grid::AbstractSnowpackGrid;
+    grid::SnowpackGrid;
     ddf_snow::Real=3.0,
     ddf_ice::Real=8.0,
     refreezing_fraction::Real=0.6,
-    monthly_method::StochasticMonthlyPDD=StochasticMonthlyPDD(),
+    monthly_method::NamedTuple{(:temperature_sigma,), Tuple{Float64}}=StochasticMonthlyPDD(),
 )
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
     ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")

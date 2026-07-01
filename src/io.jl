@@ -39,65 +39,6 @@ function scatter_to_grid(values::Vector{Float64}, js::Vector{Int}, is::Vector{In
     return out
 end
 
-function monthly_vectors_to_grids(values::Matrix{Float64}, js::Vector{Int}, is::Vector{Int}, grid_shape::Tuple{Int, Int})
-    nmonth, nvalid = size(values)
-    ny, nx = grid_shape
-    out = fill(NaN, nmonth, ny, nx)
-    @inbounds for m in 1:nmonth, idx in 1:nvalid
-        out[m, js[idx], is[idx]] = values[m, idx]
-    end
-    return out
-end
-
-function collect_final_layer_grids(
-    domain::AbstractSnowpackDomain,
-    js::Vector{Int},
-    is::Vector{Int},
-    grid_shape::Tuple{Int, Int},
-    nlayer::Int,
-)
-    ny, nx = grid_shape
-    ncol = length(js)
-    n_active = fill(Int32(0), ny, nx)
-    layer_density     = fill(NaN, nlayer, ny, nx)
-    layer_thickness   = fill(NaN, nlayer, ny, nx)
-    layer_snow_mass   = fill(NaN, nlayer, ny, nx)
-    layer_liquid_mass = fill(NaN, nlayer, ny, nx)
-    layer_temperature_c = fill(NaN, nlayer, ny, nx)
-    c = domain.c
-    @inbounds for col in 1:ncol
-        j, i = js[col], is[col]
-        n_active[j, i] = Int32(domain.N[col])
-        for k in 1:nlayer
-            rho = domain.density[k, col]
-            m   = domain.mass[k, col]
-            layer_density[k, j, i]       = rho
-            layer_snow_mass[k, j, i]     = m
-            layer_liquid_mass[k, j, i]   = domain.mass_w[k, col]
-            layer_temperature_c[k, j, i] = domain.temperature[k, col] - c.T0
-            layer_thickness[k, j, i]     = rho > 0 ? m / rho : 0.0
-        end
-    end
-    return (
-        n_active=n_active,
-        layer_density=layer_density,
-        layer_thickness=layer_thickness,
-        layer_snow_mass=layer_snow_mass,
-        layer_liquid_mass=layer_liquid_mass,
-        layer_temperature_c=layer_temperature_c,
-    )
-end
-
-function _empty_layer_grids()
-    return (
-        n_active=Matrix{Int32}(undef, 0, 0),
-        layer_density=Array{Float64}(undef, 0, 0, 0),
-        layer_thickness=Array{Float64}(undef, 0, 0, 0),
-        layer_snow_mass=Array{Float64}(undef, 0, 0, 0),
-        layer_liquid_mass=Array{Float64}(undef, 0, 0, 0),
-        layer_temperature_c=Array{Float64}(undef, 0, 0, 0),
-    )
-end
 struct NetcdfOutput
     dataset::NCDataset
     vars::Dict{Symbol, Any}
@@ -105,9 +46,6 @@ struct NetcdfOutput
     buffer_point_int::Matrix{Int32}
     buffer_layer_float::Array{Float32, 3}
     buffer_time_point_float::Array{Float32, 3}
-    max_steps::Int
-    max_days::Int
-    years::Int
 end
 
 _meta_value(meta, key::Symbol, default) = hasproperty(meta, key) ? getproperty(meta, key) : default
@@ -160,9 +98,6 @@ function init_state_netcdf(path::AbstractString, options, time_values::Vector{Da
         zeros(Int32, nx, ny),
         fill(NaN32, Int(nlayer), nx, ny),
         fill(NaN32, min(Int(ntime), 240), nx, ny),
-        ntime,
-        ntime,
-        options.years,
     )
 end
 
@@ -252,37 +187,22 @@ function _scatter_matrix_to_grid!(dest::Array{Float32, 3}, values, layout)
     return dest
 end
 
-function _scatter_monthly_matrix_to_grid!(dest::Array{Float32, 3}, values::AbstractMatrix, first_row::Int, nrecord::Int, layout)
+function _scatter_monthly_matrix_to_grid!(dest::Array{Float32, 3}, host::AbstractMatrix, first_row::Int, nrecord::Int, layout)
     fill!(dest, NaN32)
-    host = Array(values)
     @inbounds for row in 1:nrecord, col in eachindex(layout.js)
         dest[row, layout.is[col], layout.js[col]] = Float32(host[first_row + row - 1, col])
     end
     return view(dest, 1:nrecord, :, :)
 end
 
-function _state_output_grid(state, key::Symbol, layout)
-    values = getfield(state, key)
-    if values isa AbstractVector
-        return scatter_to_grid(_host_vector(values; copy_array=true), layout.js, layout.is, _grid_shape(layout))
-    elseif values isa AbstractMatrix
-        host = Array(values)
-        grids = fill(NaN, size(host, 1), _grid_shape(layout)...)
-        @inbounds for col in eachindex(layout.js), layer in axes(host, 1)
-            grids[layer, layout.js[col], layout.is[col]] = host[layer, col]
-        end
-        return grids
-    end
-    error("Cannot write state field `$key` with type $(typeof(values)).")
-end
-
-function write_monthly_year_nc!(out::NetcdfOutput, state, first_record_index::Int, layout)
+function write_monthly_output_nc!(out::NetcdfOutput, state, first_record_index::Int, layout)
     nrecord = state.count
     nrecord == 0 && return out
     chunk_len = size(out.buffer_time_point_float, 1)
     for key in keys(out.vars)
         hasfield(typeof(state), key) || continue
         values = getfield(state, key)
+        host = Array(values)
         var = out.vars[key]
         offset = 0
         while offset < nrecord
@@ -290,7 +210,7 @@ function write_monthly_year_nc!(out::NetcdfOutput, state, first_record_index::In
             record_start = first_record_index + offset
             record_stop = record_start + n - 1
             var[record_start:record_stop, :, :] =
-                _scatter_monthly_matrix_to_grid!(out.buffer_time_point_float, values, offset + 1, n, layout)
+                _scatter_monthly_matrix_to_grid!(out.buffer_time_point_float, host, offset + 1, n, layout)
             offset += n
         end
     end

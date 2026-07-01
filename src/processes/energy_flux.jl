@@ -528,7 +528,7 @@ for temporary arrays and returns the same diagnostic named tuple as
 `_go_energy_flux_resolved!`.
 """
 function go_energy_flux!(
-    domain::AbstractSnowpackDomain,
+    domain,
     idx::Int,
     air_temperature,
     shortwave_down,
@@ -548,7 +548,7 @@ function go_energy_flux!(
         domain.density,
         domain.temperature,
         domain.Tsrf,
-        domain.albedo_dynamic,
+        domain.albedo,
         idx,
         domain.c,
         scratch,

@@ -19,7 +19,7 @@ function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: 
     return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
-EnergyWorkspace(domain::AbstractSnowpackDomain) =
+EnergyWorkspace(domain) =
     EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
 
 struct ColumnarStepWorkspace{LWT,ET}
@@ -34,9 +34,9 @@ function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where 
     )
 end
 
-function ColumnarStepWorkspace(domain::AbstractSnowpackDomain)
+function ColumnarStepWorkspace(domain)
     NF = number_type(domain.c)
-    return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, column_count(domain))
+    return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, ncols(domain))
 end
 
 Adapt.@adapt_structure EnergyWorkspace
@@ -177,7 +177,7 @@ function column_step_core!(
     sublimation = domain.sublimation
     latent_heat_flux_sum = domain.latent_heat_flux_sum
     Tsrf = domain.Tsrf
-    albedo_dynamic = domain.albedo_dynamic
+    albedo_dynamic = domain.albedo
     c = domain.c
 
     dt_seconds = forcing.dt_days * c.seconds_per_day
@@ -452,7 +452,7 @@ end
     backend isa KernelAbstractions.CPU ? _cpu_time_block_steps() : 1
 
 @inline function _launch_step_columns_kernel!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     time_start::Int,
     time_stop::Int,
@@ -484,7 +484,7 @@ end
 end
 
 function _step_range!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     time_range,
     workspace::ColumnarStepWorkspace,
@@ -520,17 +520,17 @@ associated with `domain.mass`. The same kernel runs on CPU or GPU depending on
 the storage backend of the domain and workspace arrays.
 """
 function step!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace;
     kwargs...,
 )
-    return step!(domain, forcing, time_index, workspace, 1:column_count(domain); kwargs...)
+    return step!(domain, forcing, time_index, workspace, 1:ncols(domain); kwargs...)
 end
 
 function step!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace,
@@ -549,16 +549,16 @@ time loop runs in Julia, while each time step is advanced by the same
 KernelAbstractions batch kernel on the storage backend of `workspace`.
 """
 function step!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace;
     kwargs...,
 )
-    return step!(domain, forcing, workspace, 1:column_count(domain); kwargs...)
+    return step!(domain, forcing, workspace, 1:ncols(domain); kwargs...)
 end
 
 function step!(
-    domain::AbstractSnowpackDomain,
+    domain,
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace,
     active_indices;

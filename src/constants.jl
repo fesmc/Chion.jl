@@ -27,12 +27,11 @@ const DEFAULT_UNIVERSAL_GAS_CONSTANT = 8.31446261815324
 # ---------------------------------------------------------------------------
 # Snowpack column defaults
 # ---------------------------------------------------------------------------
-const DEFAULT_NTOT = 2
+const DEFAULT_NTOT = 15
 const DEFAULT_N_ACTIVE = 0
 const DEFAULT_MASS_MAX = 500.0
 const DEFAULT_MASS_SPLIT = 300.0
 const DEFAULT_MASS_MIN = 100.0
-const DEFAULT_RHO_MAX = 900.0
 const DEFAULT_DENSITY_INIT = 300.0
 const DEFAULT_TEMPERATURE_INIT = 273.0
 

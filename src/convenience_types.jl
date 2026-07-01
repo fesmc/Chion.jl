@@ -5,7 +5,6 @@ struct RunOptions
     input_label::String
     output_dir::String
     netcdf_path::String
-    write_outputs::Bool
     write_netcdf::Bool
     netcdf_variables::Vector{Symbol}
     years::Int
@@ -34,7 +33,6 @@ function RunOptions(;
     input_label::AbstractString="",
     output_dir::AbstractString="",
     netcdf_path::AbstractString="",
-    write_outputs::Bool=true,
     write_netcdf::Bool=true,
     netcdf_variables=copy(NETCDF_VARIABLES),
     years::Integer=10,
@@ -48,7 +46,6 @@ function RunOptions(;
         String(input_label),
         resolved_output_dir,
         String(netcdf_path),
-        write_outputs,
         write_netcdf,
         normalize_netcdf_variables(netcdf_variables),
         normalize_years(years),
@@ -67,9 +64,6 @@ struct SimulationResult
     status::Symbol
     years_completed::Int
     timings::StepTimingStats
-    simulation_wall_sec::Float64
     run_wall_sec::Float64
     netcdf_path::String
-    summary_path::String
-    history_csv_path::String
 end

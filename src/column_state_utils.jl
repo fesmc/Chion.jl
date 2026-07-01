@@ -122,5 +122,5 @@ above the empty-layer tolerance.
     return false
 end
 
-@inline _column_has_liquid_water(domain::AbstractSnowpackDomain, idx::Int) =
+@inline _column_has_liquid_water(domain, idx::Int) =
     _column_has_liquid_water(domain.N, domain.mass_w, idx)

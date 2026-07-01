@@ -11,9 +11,8 @@ Simulation orchestration for Chion.
 Couple a model configuration with forcing, reference state, current state, and
 execution/output options.
 """
-mutable struct Simulation{M <: AbstractSnowModel, D, R <: AbstractState, S <: AbstractState}
+mutable struct Simulation{M, R, S}
     model::M
-    domain::D
     forcing::SnowpackForcing
     ref::R
     now::S
@@ -21,17 +20,16 @@ mutable struct Simulation{M <: AbstractSnowModel, D, R <: AbstractState, S <: Ab
 end
 
 function Simulation(
-    model::AbstractSnowModel;
+    model;
     forcing::SnowpackForcing,
-    state::Union{Nothing, AbstractState}=nothing,
-    options::RunOptions=RunOptions(years=1, write_outputs=false, write_netcdf=false, netcdf_variables=Symbol[]),
+    state=nothing,
+    options::RunOptions=RunOptions(years=1, write_netcdf=false, netcdf_variables=Symbol[]),
     years::Union{Nothing, Integer}=nothing,
     backend=nothing,
     history_year_stride::Union{Nothing, Integer}=nothing,
     netcdf_variables=nothing,
     output_dir::Union{Nothing, AbstractString}=nothing,
     netcdf_path::Union{Nothing, AbstractString}=nothing,
-    write_outputs::Union{Nothing, Bool}=nothing,
     write_netcdf::Union{Nothing, Bool}=nothing,
     name::Union{Nothing, AbstractString}=nothing,
     input_label::Union{Nothing, AbstractString}=nothing,
@@ -43,7 +41,6 @@ function Simulation(
         input_label=isnothing(input_label) ? options.input_label : input_label,
         output_dir=isnothing(output_dir) ? options.output_dir : output_dir,
         netcdf_path=isnothing(netcdf_path) ? options.netcdf_path : netcdf_path,
-        write_outputs=isnothing(write_outputs) ? options.write_outputs : write_outputs,
         write_netcdf=resolved_write_netcdf,
         netcdf_variables=resolved_netcdf_variables,
         years=isnothing(years) ? options.years : years,
@@ -51,12 +48,8 @@ function Simulation(
         history_year_stride=isnothing(history_year_stride) ? options.history_year_stride : history_year_stride,
     )
     now_state = isnothing(state) ? initial_state(model) : state
-    return Simulation(model, model_domain(model), forcing, reference_state(now_state), now_state, run_options)
+    return Simulation(model, forcing, reference_state(now_state), now_state, run_options)
 end
-
-state(sim::Simulation) = sim.now
-get_state(sim::Simulation, idx::Int=1) = get_state(sim.now, idx)
-print_state(sim::Simulation, idx::Int=1) = print_state(sim.now, idx)
 
 function _normalize_model_name(model)
     name = lowercase(strip(String(model)))
@@ -65,7 +58,7 @@ function _normalize_model_name(model)
     error("Unsupported model '$model'. Use `:bessi` or `:pdd`.")
 end
 
-function build_model(model, grid::AbstractSnowpackGrid; kwargs...)
+function build_model(model, grid::SnowpackGrid; kwargs...)
     name = _normalize_model_name(model)
     name == :bessi && return BESSIModel(grid; kwargs...)
     name == :pdd && return PDDModel(grid; kwargs...)
@@ -74,7 +67,7 @@ end
 
 function Simulation(
     model,
-    grid::AbstractSnowpackGrid;
+    grid::SnowpackGrid;
     model_kwargs=NamedTuple(),
     kwargs...,
 )
@@ -87,7 +80,6 @@ function Base.show(io::IO, ::MIME"text/plain", sim::Simulation)
     println(io, "  model: ", typeof(sim.model))
     println(io, "  ref: ", typeof(sim.ref))
     println(io, "  now: ", typeof(sim.now))
-    println(io, "  domain: ", typeof(sim.domain))
     println(io, "  columns: ", ncols(sim.model.grid))
     println(io, "  forcing steps: ", length(sim.forcing.time_values))
     println(io, "  backend: ", sim.options.backend)
@@ -124,10 +116,11 @@ function init_integrator(
     io::IO=stdout,
 )
     run_options = options
+    sim.options = run_options
     timings = StepTimingStats()
     init_problem!(sim, run_options)
     model_runtime = init_model_runtime!(sim, run_options, timings)
-    return _new_integrator(sim, run_options, io, timings, model_runtime, nothing, nothing)
+    return _new_integrator(sim, io, timings, model_runtime)
 end
 
 finished(integrator::SimulationIntegrator) = _finished(integrator)
@@ -183,7 +176,7 @@ function _bessi_output_from_options(sim::Simulation, options::RunOptions)
         resolve_netcdf_path(options),
         options,
         sim.forcing.time_values,
-        sim.domain,
+        sim.model.grid,
         sim.now,
         vars,
         ntime=monthly_mode ? options.years * 12 : options.years * length(sim.forcing.time_values),
@@ -221,15 +214,9 @@ function run!(
     sim::Simulation{<:BESSIModel};
     options::RunOptions=sim.options,
     io::IO=stdout,
-    checkpoint_path::AbstractString="",
-    checkpoint_year_stride::Integer=1,
 )
     integrator = init_integrator(sim; options=options, io=io)
-    run!(
-        integrator;
-        checkpoint_path=checkpoint_path,
-        checkpoint_year_stride=checkpoint_year_stride,
-    )
+    run!(integrator)
     return finalize!(integrator)
 end
 
@@ -242,14 +229,8 @@ end
     return min(nsteps, integrator.time_index + block_steps - 1)
 end
 
-function _run_bessi_integrator!(
-    integrator::SimulationIntegrator;
-    checkpoint_path::AbstractString="",
-    checkpoint_year_stride::Integer=1,
-)
-    run_options = integrator.options
-    checkpoint_path == "" || error("Checkpointing was removed with the simplified BESSI state/output runtime. Re-run without `--checkpoint-path`.")
-    checkpoint_year_stride >= 1 || error("`checkpoint_year_stride` must be positive.")
+function _run_bessi_integrator!(integrator::SimulationIntegrator)
+    run_options = integrator.sim.options
 
     sim = integrator.sim
     timings = integrator.timings
@@ -259,7 +240,7 @@ function _run_bessi_integrator!(
     nc = _bessi_output_from_options(sim, run_options)
     monthly_mode = nc !== nothing && (:monthly in run_options.netcdf_variables)
     monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
-    monthly_year_state = monthly_mode ? MonthlyYearState(backend_state; nmonth=run_options.years * 12) : nothing
+    monthly_output = monthly_mode ? MonthlyOutputBuffer(backend_state; nmonth=run_options.years * 12) : nothing
     record_index = 0
     nsteps = length(sim.forcing.time_values)
     year_summary = _summary_buffers(backend_state, (:thickness, :wet_mass, :bulk_density, :base_mass))
@@ -292,7 +273,7 @@ function _run_bessi_integrator!(
                     if _is_month_boundary(sim.forcing.time_values, Int(k))
                         time_block!(timings, :write_netcdf) do
                             finalize_monthly!(monthly_state, backend_state)
-                            store_monthly!(monthly_year_state, monthly_state)
+                            store_monthly!(monthly_output, monthly_state)
                         end
                         reset_monthly!(monthly_state)
                     end
@@ -300,7 +281,7 @@ function _run_bessi_integrator!(
                     _sync_bessi_state!(sim, backend_state, is_gpu, timings)
                     record_index += 1
                     time_block!(timings, :write_netcdf) do
-                        write_nc!(nc, sim.now, record_index, sim.domain)
+                        write_nc!(nc, sim.now, record_index, sim.model.grid)
                     end
                 end
             end
@@ -337,36 +318,28 @@ function _run_bessi_integrator!(
     end
     if monthly_mode
         time_block!(timings, :write_netcdf) do
-            write_monthly_year_nc!(nc, monthly_year_state, 1, sim.domain)
+            write_monthly_output_nc!(nc, monthly_output, 1, sim.model.grid)
         end
-        record_index = monthly_year_state.count
+        record_index = monthly_output.count
     end
     _sync_bessi_state!(sim, backend_state, is_gpu, timings)
     status = :complete
     nc_path = nc === nothing ? "" : resolve_netcdf_path(run_options)
     nc !== nothing && close_output!(nc, status, record_index)
 
-    integrator.diagnostics = history
-    integrator.output = (
-        nc_path=nc_path,
-        summary_path="",
-        history_csv_path="",
-    )
+    integrator.history = history
+    integrator.netcdf_path = nc_path
 
-    run_wall_sec = (time_ns() - integrator.clocks.run_wall_t0) * 1.0e-9
-    simulation_wall_sec = (time_ns() - integrator.clocks.simulation_wall_t0) * 1.0e-9
+    run_wall_sec = (time_ns() - integrator.wall_t0) * 1.0e-9
     print_run_report(
         integrator.io,
         run_options,
         sim.forcing.time_values,
         history,
         status,
-        simulation_wall_sec,
         run_wall_sec,
         timings;
         nc_path=nc_path,
-        summary_path="",
-        history_csv_path="",
     )
     return nothing
 end
@@ -393,10 +366,10 @@ function yearly_step!(integrator::SimulationIntegrator)
     model = integrator.sim.model
     state = integrator.sim.now
     runtime = integrator.model_runtime.backend
-    grid = integrator.model_runtime.grid
+    grid = model.grid
 
     smb_before = _model_smb_ice_vector(model, state, runtime)
-    Tsrf_sum = zeros(Float64, integrator.model_runtime.ncol)
+    Tsrf_sum = zeros(Float64, ncols(grid))
 
     for time_index in 1:nsteps
         step!(integrator)
@@ -417,15 +390,7 @@ function yearly_step!(integrator::SimulationIntegrator)
     )
 end
 
-run!(
-    integrator::SimulationIntegrator;
-    checkpoint_path::AbstractString="",
-    checkpoint_year_stride::Integer=1,
-) = _run_integrator!(
-    integrator;
-    checkpoint_path=checkpoint_path,
-    checkpoint_year_stride=checkpoint_year_stride,
-)
+run!(integrator::SimulationIntegrator) = _run_integrator!(integrator)
 
 finalize!(integrator::SimulationIntegrator) = _finalize_integrator!(integrator)
 
@@ -436,14 +401,8 @@ function run!(
     sim::Simulation;
     options::RunOptions=sim.options,
     io::IO=stdout,
-    checkpoint_path::AbstractString="",
-    checkpoint_year_stride::Integer=1,
 )
     integrator = init_integrator(sim; options=options, io=io)
-    run!(
-        integrator;
-        checkpoint_path=checkpoint_path,
-        checkpoint_year_stride=checkpoint_year_stride,
-    )
+    run!(integrator)
     return finalize!(integrator)
 end

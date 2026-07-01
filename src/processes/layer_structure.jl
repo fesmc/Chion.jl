@@ -520,7 +520,7 @@ domain state in-place and returns a named tuple with transferred ice and
 runoff.
 """
 function continuous_bottom_deplete!(
-    domain::AbstractSnowpackDomain,
+    domain,
     idx::Int,
     d_m_in,
 )
@@ -534,7 +534,7 @@ function continuous_bottom_deplete!(
         domain.smb_ice,
         domain.runoff,
         domain.Tsrf,
-        domain.albedo_dynamic,
+        domain.albedo,
         idx,
         d_m_in,
         domain.c,

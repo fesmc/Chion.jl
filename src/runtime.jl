@@ -1,11 +1,6 @@
 """Model runtime preparation, backend transfer, and state finalization."""
 
-_model_grid(model::AbstractSnowModel) = model.grid
-_model_column_count(model::AbstractSnowModel) = ncols(_model_grid(model))
-model_layer_count(::AbstractSnowModel, ::AbstractState, runtime) = 0
-model_layer_count(::BESSIModel, ::CurrentState, runtime) = runtime.state.Ntot
-
-function _validate_model_outputs!(model::AbstractSnowModel, options::RunOptions)
+function _validate_model_outputs!(model, options::RunOptions)
     options.write_netcdf || return nothing
     allowed = copy(NETCDF_VARIABLES)
     append!(allowed, MONTHLY_OUTPUT_VARS)
@@ -18,8 +13,8 @@ end
 function validate_integrator_setup!(sim, options::RunOptions)
     model = sim.model
     forcing = sim.forcing
-    grid = sim.domain
-    ncol = _model_column_count(model)
+    grid = model.grid
+    ncol = ncols(grid)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the model column count.")
     if model isa BESSIModel && model.diurnal_shortwave_substeps
         all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
@@ -160,7 +155,7 @@ function _reset_model_columns!(model::BESSIModel, ::CurrentState, runtime, inact
         runtime.state.sublimation,
         runtime.state.latent_heat_flux_sum,
         runtime.state.Tsrf,
-        runtime.state.albedo_dynamic,
+        runtime.state.albedo,
         backend_indices,
         runtime.state.Ntot,
         convert(eltype(runtime.state.mass), model.density_init),
@@ -206,10 +201,10 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     return nothing
 end
 
-_reset_model_columns!(::AbstractSnowModel, ::AbstractState, runtime, inactive_indices::Vector{Int}) = nothing
+_reset_model_columns!(model, state, runtime, inactive_indices::Vector{Int}) = nothing
 
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
-    length(active) == model_runtime.ncol || error("Active mask length must match the model column count.")
+    length(active) == length(model_runtime.active) || error("Active mask length must match the model column count.")
     active_v = Vector{Bool}(active)
     active_indices = findall(active_v)
     isempty(active_indices) && error("Active mask kept no Chion columns.")
@@ -220,10 +215,10 @@ end
 
 function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
     backend = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
-    ncol = _model_column_count(sim.model)
+    ncol = ncols(sim.model.grid)
     active = trues(ncol)
     active_indices = _backend_active_indices(collect(1:ncol), backend)
-    return ModelRuntime(backend, ncol, _model_grid(sim.model), active, active_indices)
+    return ModelRuntime(backend, active, active_indices)
 end
 
 function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
@@ -308,7 +303,7 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
     return nothing
 end
 
-finalize_state!(::AbstractSnowModel, ::AbstractState, runtime, ::RunOptions, ::StepTimingStats) = nothing
+finalize_state!(model, state, runtime, ::RunOptions, ::StepTimingStats) = nothing
 
 function finalize_state!(::BESSIModel, state::CurrentState, runtime, options::RunOptions, timings::StepTimingStats)
     if runtime.is_gpu

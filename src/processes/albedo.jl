@@ -134,14 +134,14 @@ end
 Update the surface albedo of column `idx` in `domain` and return the new
 albedo.
 """
-function update_surface_albedo!(domain::AbstractSnowpackDomain, idx::Int)
+function update_surface_albedo!(domain, idx::Int)
     return _update_surface_albedo_arrays!(
         domain.N,
         domain.mass,
         domain.mass_w,
         domain.density,
         domain.temperature,
-        domain.albedo_dynamic,
+        domain.albedo,
         idx,
         domain.c,
     )

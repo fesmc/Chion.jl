@@ -302,7 +302,7 @@ Advance snow density for column `idx` of `domain` over one time step. Mutates
 `domain.density` in-place and returns `nothing`.
 """
 function go_densification!(
-    domain::AbstractSnowpackDomain,
+    domain,
     idx::Int,
     accumulation_rate,
     dt_seconds,

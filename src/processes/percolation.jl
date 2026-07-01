@@ -111,7 +111,7 @@ Run liquid-water percolation for column `idx` of `domain`. Mutates
 `domain.mass_w` and accumulates routed runoff into `domain.runoff[idx]`.
 """
 function go_percolation!(
-    domain::AbstractSnowpackDomain,
+    domain,
     idx::Int;
     max_lwc=oftype(domain.c.rho_w, 0.1),
     rho_i_tol=oftype(domain.c.rho_w, 10.0),

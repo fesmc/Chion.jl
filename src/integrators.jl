@@ -28,34 +28,28 @@ end
 
 function _new_integrator(
     sim,
-    options::RunOptions,
     io::IO,
     timings::StepTimingStats,
-    model_runtime,
-    diagnostics,
-    output;
+    model_runtime;
     time_index::Integer=1,
     completed_years::Integer=0,
 )
     return SimulationIntegrator(
         sim,
-        options,
         io,
         timings,
-        IntegratorClocks(time_ns(), time_ns()),
+        time_ns(),
         model_runtime,
-        diagnostics,
-        output,
+        NamedTuple[],
+        "",
         Int(time_index),
         Int(completed_years),
-        nothing,
-        false,
         nothing,
     )
 end
 
 _finished(integrator::SimulationIntegrator) =
-    integrator.completed_years >= integrator.options.years
+    integrator.completed_years >= integrator.sim.options.years
 
 _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
     integrator.model_runtime.backend.step_fields
@@ -89,13 +83,13 @@ function sync_forcing!(integrator::SimulationIntegrator)
     backend = integrator.model_runtime.backend
     getproperty(backend, :is_gpu) || return integrator
     time_block!(integrator.timings, :gpu_transfer) do
-        _copy_forcing!(backend.step_fields, integrator.forcing)
+        _copy_forcing!(backend.step_fields, integrator.sim.forcing)
     end
     return integrator
 end
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_index::Int)
-    integrator.finalized && error("Cannot step a finalized integrator.")
+    integrator.result !== nothing && error("Cannot step a finalized integrator.")
     _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
 
     model = integrator.sim.model
@@ -103,7 +97,7 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     model_runtime = integrator.model_runtime
     runtime = model_runtime.backend
 
-    time_counted_block!(integrator.timings, :model_step_wall, model_runtime.ncol) do
+    time_counted_block!(integrator.timings, :model_step_wall, ncols(model.grid)) do
         step_model!(model, state, model_runtime, forcing, time_index)
     end
 
@@ -117,7 +111,7 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
 end
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_range)
-    integrator.finalized && error("Cannot step a finalized integrator.")
+    integrator.result !== nothing && error("Cannot step a finalized integrator.")
     _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
 
     first_time = Int(first(time_range))
@@ -166,8 +160,8 @@ end
 function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true)
     force_dt || error("Chion's initialized stepper requires `force_dt=true`, matching the FastIsostasy coupling pattern.")
     Δt_days > 0 || error("`Δt_days` must be positive.")
-    forcing = _single_step_forcing_view(integrator.forcing, Δt_days)
-    if integrator.options.backend == :gpu
+    forcing = _single_step_forcing_view(integrator.sim.forcing, Δt_days)
+    if integrator.sim.options.backend == :gpu
         forcing = time_block!(integrator.timings, :gpu_transfer) do
             adapt(gpu_storage_type(), forcing)
         end
@@ -175,30 +169,12 @@ function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force
     return _advance_with_forcing!(integrator, forcing, 1)
 end
 
-function _should_checkpoint_after_year(integrator::SimulationIntegrator, checkpoint_path::AbstractString, checkpoint_year_stride::Integer)
-    isempty(checkpoint_path) && return false
-    stride = Int(checkpoint_year_stride)
-    stride >= 0 || error("`checkpoint_year_stride` must be >= 0.")
-    stride == 0 && return false
-    _finished(integrator) && return false
-    return mod(integrator.completed_years, stride) == 0
-end
-
-function _run_integrator!(
-    integrator::SimulationIntegrator;
-    checkpoint_path::AbstractString="",
-    checkpoint_year_stride::Integer=1,
-)
+function _run_integrator!(integrator::SimulationIntegrator)
     if integrator.sim.model isa BESSIModel
-        return _run_bessi_integrator!(
-            integrator;
-            checkpoint_path=checkpoint_path,
-            checkpoint_year_stride=checkpoint_year_stride,
-        )
+        return _run_bessi_integrator!(integrator)
     end
     while !_finished(integrator)
         _step_scheduled!(integrator)
-        checkpoint_path == "" || error("Checkpointing was removed with the simplified state/output runtime.")
     end
     return nothing
 end
@@ -225,8 +201,9 @@ function _set_active_mask!(
     mask;
     reset_newly_inactive::Bool=true,
 )
-    integrator.finalized && error("Cannot update the active mask of a finalized integrator.")
-    active = _active_mask_vector(mask, integrator.model_runtime.grid, integrator.model_runtime.ncol)
+    integrator.result !== nothing && error("Cannot update the active mask of a finalized integrator.")
+    grid = integrator.sim.model.grid
+    active = _active_mask_vector(mask, grid, ncols(grid))
     old_active = integrator.model_runtime.active
     newly_inactive = reset_newly_inactive ? findall(old_active .& .!active) : Int[]
     if !isempty(newly_inactive)
@@ -242,26 +219,21 @@ function _set_active_mask!(
 end
 
 function _finalize_integrator!(integrator::SimulationIntegrator)
-    integrator.finalized && return integrator.result
+    integrator.result !== nothing && return integrator.result
 
-    simulation_wall_sec = (time_ns() - integrator.clocks.simulation_wall_t0) * 1.0e-9
     status = _finished(integrator) ? :complete : :incomplete
     years_completed = integrator.completed_years
-    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.backend, integrator.options, integrator.timings)
+    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.backend, integrator.sim.options, integrator.timings)
 
-    run_wall_sec = (time_ns() - integrator.clocks.run_wall_t0) * 1.0e-9
+    run_wall_sec = (time_ns() - integrator.wall_t0) * 1.0e-9
     result = SimulationResult(
-        isnothing(integrator.diagnostics) ? NamedTuple[] : integrator.diagnostics,
+        integrator.history,
         status,
         years_completed,
         integrator.timings,
-        simulation_wall_sec,
         run_wall_sec,
-        isnothing(integrator.output) ? "" : integrator.output.nc_path,
-        isnothing(integrator.output) ? "" : integrator.output.summary_path,
-        isnothing(integrator.output) ? "" : integrator.output.history_csv_path,
+        integrator.netcdf_path,
     )
-    integrator.finalized = true
     integrator.result = result
     return result
 end

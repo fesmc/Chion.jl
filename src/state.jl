@@ -1,8 +1,5 @@
 """State containers owned by `Simulation.ref` and `Simulation.now`."""
 
-"""Abstract supertype for model state owned by `Simulation`."""
-abstract type AbstractSnowModelState <: AbstractState end
-
 """
     CurrentState
 
@@ -15,14 +12,13 @@ struct CurrentState{
         NI <: AbstractVector{<:Integer},
         MT <: AbstractMatrix{NF},
         VT <: AbstractVector{NF},
-    } <: AbstractSnowpackDomain{NF}
+    }
     c::SnowpackPhysicalConstants{NF}
     Ntot::Int
     ncol::Int
     mass_max::NF
     mass_split::NF
     mass_min::NF
-    rho_max::NF
     N::NI
     mass::MT
     mass_w::MT
@@ -137,132 +133,49 @@ function _initialize_current_state_arrays!(
     return state
 end
 
-"""
-    ReferenceState
-
-Snapshot of a BESSI state at simulation initialization. Arrays are copied from
-the initial `CurrentState` and are not advanced by the runtime.
-"""
-struct ReferenceState{
-        NF <: AbstractFloat,
-        NI <: AbstractVector{<:Integer},
-        MT <: AbstractMatrix{NF},
-        VT <: AbstractVector{NF},
-    } <: AbstractState
-    c::SnowpackPhysicalConstants{NF}
-    Ntot::Int
-    ncol::Int
-    mass_max::NF
-    mass_split::NF
-    mass_min::NF
-    rho_max::NF
-    N::NI
-    mass::MT
-    mass_w::MT
-    density::MT
-    temperature::MT
-    mass_base::VT
-    smb_ice::VT
-    runoff::VT
-    melt::VT
-    refreezing::VT
-    vapor_mass::VT
-    sublimation::VT
-    latent_heat_flux_sum::VT
-    Tsrf::VT
-    albedo::VT
-    thickness::VT
-    wet_mass::VT
-    bulk_density::VT
-    liquid_water::VT
-end
-
-function CurrentState(domain::SnowpackDomain; density_init::Real=DEFAULT_DENSITY_INIT, temperature_init::Real=DEFAULT_TEMPERATURE_INIT)
-    NF = number_type(domain.c)
-    state = CurrentState(
-        domain.c,
-        domain.Ntot,
-        domain.ncol,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
-        domain.rho_max,
-        Vector{Int}(undef, domain.ncol),
-        Matrix{NF}(undef, domain.Ntot, domain.ncol),
-        Matrix{NF}(undef, domain.Ntot, domain.ncol),
-        Matrix{NF}(undef, domain.Ntot, domain.ncol),
-        Matrix{NF}(undef, domain.Ntot, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-        Vector{NF}(undef, domain.ncol),
-    )
-    return _initialize_current_state_arrays!(state, density_init, temperature_init)
-end
-
 function CurrentState(model::BESSIModel)
-    return CurrentState(SnowpackDomain(model); density_init=model.density_init, temperature_init=model.temperature_init)
-end
-
-ReferenceState(state::CurrentState) = ReferenceState(
-    state.c,
-    state.Ntot,
-    state.ncol,
-    state.mass_max,
-    state.mass_split,
-    state.mass_min,
-    state.rho_max,
-    copy(state.N),
-    copy(state.mass),
-    copy(state.mass_w),
-    copy(state.density),
-    copy(state.temperature),
-    copy(state.mass_base),
-    copy(state.smb_ice),
-    copy(state.runoff),
-    copy(state.melt),
-    copy(state.refreezing),
-    copy(state.vapor_mass),
-    copy(state.sublimation),
-    copy(state.latent_heat_flux_sum),
-    copy(state.Tsrf),
-    copy(state.albedo),
-    copy(state.thickness),
-    copy(state.wet_mass),
-    copy(state.bulk_density),
-    copy(state.liquid_water),
-)
-
-@inline Base.getproperty(state::Union{CurrentState,ReferenceState}, name::Symbol) =
-    name === :albedo_dynamic ? getfield(state, :albedo) : getfield(state, name)
-
-function Base.propertynames(state::Union{CurrentState,ReferenceState}, private::Bool=false)
-    names = fieldnames(typeof(state))
-    return private ? names : (names..., :albedo_dynamic)
+    NF = number_type(model.c)
+    ncol = ncols(model.grid)
+    state = CurrentState(
+        model.c,
+        model.Ntot,
+        ncol,
+        model.mass_max,
+        model.mass_split,
+        model.mass_min,
+        Vector{Int}(undef, ncol),
+        Matrix{NF}(undef, model.Ntot, ncol),
+        Matrix{NF}(undef, model.Ntot, ncol),
+        Matrix{NF}(undef, model.Ntot, ncol),
+        Matrix{NF}(undef, model.Ntot, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+        Vector{NF}(undef, ncol),
+    )
+    return _initialize_current_state_arrays!(state, model.density_init, model.temperature_init)
 end
 
 cpu_state(state::CurrentState) = adapt(Array, state)
-cpu_domain(state::CurrentState) = cpu_state(state)
 
 function gpu_state(state::CurrentState, storage_type=gpu_storage_type())
     cuda_available() || error("CUDA is not functional in the current environment.")
     return adapt(storage_type, state)
 end
-gpu_domain(state::CurrentState, storage_type=gpu_storage_type()) = gpu_state(state, storage_type)
 
 @adapt_structure CurrentState
 
-mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}, MT <: AbstractMatrix{<:AbstractFloat}} <: AbstractState
+mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}, MT <: AbstractMatrix{<:AbstractFloat}}
     smb_ice::VT
     runoff::VT
     melt::VT
@@ -281,7 +194,7 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}, MT <: Abstrac
     prev_latent_heat_flux_sum::VT
 end
 
-mutable struct MonthlyYearState{MT <: AbstractMatrix{<:AbstractFloat}} <: AbstractState
+mutable struct MonthlyOutputBuffer{MT <: AbstractMatrix{<:AbstractFloat}}
     smb_ice::MT
     runoff::MT
     melt::MT
@@ -315,8 +228,8 @@ function MonthlyState(state::CurrentState)
     )
 end
 
-function MonthlyYearState(state::CurrentState; nmonth::Integer=12)
-    return MonthlyYearState(
+function MonthlyOutputBuffer(state::CurrentState; nmonth::Integer=12)
+    return MonthlyOutputBuffer(
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
@@ -473,18 +386,18 @@ end
     end
 end
 
-function store_monthly!(year_state::MonthlyYearState, monthly::MonthlyState)
-    row = year_state.count + 1
-    row <= size(year_state.runoff, 1) || error("Monthly output year buffer is full.")
+function store_monthly!(output::MonthlyOutputBuffer, monthly::MonthlyState)
+    row = output.count + 1
+    row <= size(output.runoff, 1) || error("Monthly output buffer is full.")
     kernel! = _store_monthly_fields_kernel!(_ka_backend(monthly.runoff))
     event = kernel!(
-        year_state.smb_ice,
-        year_state.runoff,
-        year_state.melt,
-        year_state.refreezing,
-        year_state.sublimation,
-        year_state.latent_heat_flux,
-        year_state.albedo,
+        output.smb_ice,
+        output.runoff,
+        output.melt,
+        output.refreezing,
+        output.sublimation,
+        output.latent_heat_flux,
+        output.albedo,
         monthly.smb_ice,
         monthly.runoff,
         monthly.melt,
@@ -496,17 +409,17 @@ function store_monthly!(year_state::MonthlyYearState, monthly::MonthlyState)
         ndrange=length(monthly.runoff),
     )
     _wait_monthly_event(event, monthly.runoff)
-    year_state.count = row
-    return year_state
+    output.count = row
+    return output
 end
 
-function reset_monthly_year!(year_state::MonthlyYearState)
-    year_state.count = 0
-    return year_state
+function reset_monthly_output!(output::MonthlyOutputBuffer)
+    output.count = 0
+    return output
 end
 
 """Mutable state for `PDDModel`."""
-struct PDDState{ST <: AbstractVector{Float64}} <: AbstractSnowModelState
+struct PDDState{ST <: AbstractVector{Float64}}
     snowpack_swe::ST
     smb_ice::ST
     runoff::ST
@@ -526,8 +439,8 @@ end
 initial_state(model::PDDModel) = PDDState(model)
 
 initial_state(model::BESSIModel) = CurrentState(model)
-reference_state(state::CurrentState) = ReferenceState(state)
-reference_state(state::AbstractSnowModelState) = deepcopy(state)
+reference_state(state::CurrentState) = deepcopy(state)
+reference_state(state::PDDState) = deepcopy(state)
 
 function _copy_current_state!(dest::CurrentState, src::CurrentState)
     dest.Ntot == src.Ntot || error("Cannot copy state with different `Ntot`.")

@@ -110,7 +110,7 @@ end
 Run the refreezing scheme for column `idx` of `domain`. Mutates the domain
 state in-place and returns the refrozen mass and released latent heat.
 """
-function go_refreezing!(domain::AbstractSnowpackDomain, idx::Int)
+function go_refreezing!(domain, idx::Int)
     if _n_active(domain.N, idx) <= 0
         return (
             refrozen_mass=zero(eltype(domain.mass)),
