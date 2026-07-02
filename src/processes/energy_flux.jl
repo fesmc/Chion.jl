@@ -521,14 +521,14 @@ function _go_energy_flux_resolved!(
 end
 
 """
-    go_energy_flux!(domain, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
+    go_energy_flux!(state, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
 
-Public wrapper for the column energy-flux solve on `domain`. Reuses `scratch`
+Public wrapper for the column energy-flux solve on `state`. Reuses `scratch`
 for temporary arrays and returns the same diagnostic named tuple as
 `_go_energy_flux_resolved!`.
 """
 function go_energy_flux!(
-    domain,
+    state,
     idx::Int,
     air_temperature,
     shortwave_down,
@@ -542,15 +542,15 @@ function go_energy_flux!(
     q_lh=nothing,
 )
     return _go_energy_flux_resolved!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.Tsrf,
-        domain.albedo,
+        state.N,
+        state.mass,
+        state.mass_w,
+        state.density,
+        state.temperature,
+        state.Tsrf,
+        state.albedo,
         idx,
-        domain.c,
+        state.c,
         scratch,
         air_temperature,
         shortwave_down,

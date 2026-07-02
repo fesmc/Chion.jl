@@ -19,8 +19,8 @@ function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: 
     return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
-EnergyWorkspace(domain) =
-    EnergyWorkspace(domain.mass, number_type(domain.c), domain.Ntot)
+EnergyWorkspace(state) =
+    EnergyWorkspace(state.mass, number_type(state.c), state.Ntot)
 
 struct ColumnarStepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
@@ -34,9 +34,9 @@ function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where 
     )
 end
 
-function ColumnarStepWorkspace(domain)
-    NF = number_type(domain.c)
-    return ColumnarStepWorkspace(domain.mass, NF, domain.Ntot, ncols(domain))
+function ColumnarStepWorkspace(state)
+    NF = number_type(state.c)
+    return ColumnarStepWorkspace(state.mass, NF, state.Ntot, ncols(state))
 end
 
 Adapt.@adapt_structure EnergyWorkspace
@@ -69,7 +69,7 @@ end
 end
 
 function _step_diurnal_shortwave_interval!(
-    domain,
+    state,
     idx::Int,
     forcing::SnowpackStepForcing,
     config,
@@ -104,18 +104,18 @@ function _step_diurnal_shortwave_interval!(
         ) :
         forcing.q_sw_net
     subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net)
-    return column_step_core!(domain, idx, subforcing, workspace)
+    return column_step_core!(state, idx, subforcing, workspace)
 end
 
 """
-    column_step!(domain, idx, forcing, config, workspace)
+    column_step!(state, idx, forcing, config, workspace)
 
 Advance one snowpack column by one forcing step using already-resolved arrays,
 constants, and scratch storage. This mutates the supplied state arrays
 in-place and may update runoff and SMB diagnostics.
 """
 function column_step!(
-    domain,
+    state,
     idx::Int,
     forcing::SnowpackStepForcing,
     config,
@@ -141,7 +141,7 @@ function column_step!(
                 hour_angle_start = day_start + (substep_index - 1) * substep_width
                 hour_angle_end = substep_index == n_substeps ? day_end : hour_angle_start + substep_width
                 _step_diurnal_shortwave_interval!(
-                    domain,
+                    state,
                     idx,
                     forcing,
                     config,
@@ -154,31 +154,31 @@ function column_step!(
         end
     end
 
-    return column_step_core!(domain, idx, forcing, workspace)
+    return column_step_core!(state, idx, forcing, workspace)
 end
 
 function column_step_core!(
-    domain,
+    state,
     idx::Int,
     forcing::SnowpackStepForcing,
     workspace,
 )
-    N_storage = domain.N
-    mass = domain.mass
-    mass_w = domain.mass_w
-    density = domain.density
-    temperature = domain.temperature
-    mass_base = domain.mass_base
-    smb_ice = domain.smb_ice
-    runoff = domain.runoff
-    melt = domain.melt
-    refreezing = domain.refreezing
-    vapor_mass = domain.vapor_mass
-    sublimation = domain.sublimation
-    latent_heat_flux_sum = domain.latent_heat_flux_sum
-    Tsrf = domain.Tsrf
-    albedo_dynamic = domain.albedo
-    c = domain.c
+    N_storage = state.N
+    mass = state.mass
+    mass_w = state.mass_w
+    density = state.density
+    temperature = state.temperature
+    mass_base = state.mass_base
+    smb_ice = state.smb_ice
+    runoff = state.runoff
+    melt = state.melt
+    refreezing = state.refreezing
+    vapor_mass = state.vapor_mass
+    sublimation = state.sublimation
+    latent_heat_flux_sum = state.latent_heat_flux_sum
+    Tsrf = state.Tsrf
+    albedo_dynamic = state.albedo
+    c = state.c
 
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
@@ -197,10 +197,10 @@ function column_step_core!(
         albedo_dynamic,
         idx,
         c,
-        domain.Ntot,
-        domain.mass_max,
-        domain.mass_split,
-        domain.mass_min,
+        state.Ntot,
+        state.mass_max,
+        state.mass_split,
+        state.mass_min,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
         dt_seconds,
@@ -319,8 +319,8 @@ function column_step_core!(
         c,
         forcing,
         dt_seconds,
-        domain.mass_split,
-        domain.mass_min,
+        state.mass_split,
+        state.mass_min,
     )
     _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
     _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + snow_vapor_fluxes.sublimation_mass)
@@ -338,8 +338,8 @@ function column_step_core!(
             Tsrf,
             albedo_dynamic,
             idx,
-            domain.mass_split,
-            domain.mass_min,
+            state.mass_split,
+            state.mass_min,
             melt_mass,
             c,
         )
@@ -415,7 +415,7 @@ KernelAbstractions kernel that extracts one time slice of the full forcing
 and advances each column independently in-place.
 """
 @kernel function _step_columns_kernel!(
-    domain,
+    state,
     workspace::ColumnarStepWorkspace,
     active_indices,
     forcing::SnowpackForcing,
@@ -428,13 +428,13 @@ and advances each column independently in-place.
         idx = active_indices[active_idx]
         for time_index in time_start:time_stop
             step_forcing = _step_forcing_at(forcing, idx, time_index)
-            column_step!(domain, idx, step_forcing, config, workspace)
+            column_step!(state, idx, step_forcing, config, workspace)
         end
     end
 end
 
 """
-    _launch_step_columns_kernel!(domain, forcing, time_start, time_stop, workspace, active_indices, config)
+    _launch_step_columns_kernel!(state, forcing, time_start, time_stop, workspace, active_indices, config)
 
 Launch the backend-specific batch stepping kernel for one contiguous forcing
 range and return the KernelAbstractions event.
@@ -452,7 +452,7 @@ end
     backend isa KernelAbstractions.CPU ? _cpu_time_block_steps() : 1
 
 @inline function _launch_step_columns_kernel!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     time_start::Int,
     time_stop::Int,
@@ -461,10 +461,10 @@ end
     config,
 )
     time_stop >= time_start || return nothing
-    backend = _ka_backend(domain.mass)
+    backend = _ka_backend(state.mass)
     kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend))
     return kernel!(
-        domain,
+        state,
         workspace,
         active_indices,
         forcing,
@@ -484,7 +484,7 @@ end
 end
 
 function _step_range!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     time_range,
     workspace::ColumnarStepWorkspace,
@@ -493,13 +493,13 @@ function _step_range!(
 )
     first_time, last_time = _time_range_bounds(time_range)
     first_time <= last_time || return nothing
-    backend = _ka_backend(domain.mass)
+    backend = _ka_backend(state.mass)
     block_steps = _step_time_block_steps(backend)
     time_index = first_time
     while time_index <= last_time
         time_stop = min(last_time, time_index + block_steps - 1)
         _wait_kernel(_launch_step_columns_kernel!(
-            domain,
+            state,
             forcing,
             time_index,
             time_stop,
@@ -513,24 +513,24 @@ function _step_range!(
 end
 
 """
-    step!(domain, forcing, time_index, workspace::ColumnarStepWorkspace)
+    step!(state, forcing, time_index, workspace::ColumnarStepWorkspace)
 
 Advance all columns for one time step using the KernelAbstractions backend
-associated with `domain.mass`. The same kernel runs on CPU or GPU depending on
-the storage backend of the domain and workspace arrays.
+associated with `state.mass`. The same kernel runs on CPU or GPU depending on
+the storage backend of the state and workspace arrays.
 """
 function step!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace;
     kwargs...,
 )
-    return step!(domain, forcing, time_index, workspace, 1:ncols(domain); kwargs...)
+    return step!(state, forcing, time_index, workspace, 1:ncols(state); kwargs...)
 end
 
 function step!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     time_index::Int,
     workspace::ColumnarStepWorkspace,
@@ -538,32 +538,32 @@ function step!(
     kwargs...,
 )
     config = _step_config_from_keywords(; kwargs...)
-    return _step_range!(domain, forcing, time_index:time_index, workspace, active_indices, config)
+    return _step_range!(state, forcing, time_index:time_index, workspace, active_indices, config)
 end
 
 """
-    step!(domain, forcing, workspace::ColumnarStepWorkspace)
+    step!(state, forcing, workspace::ColumnarStepWorkspace)
 
 Advance all columns through the full forcing sequence in `forcing`. The outer
 time loop runs in Julia, while each time step is advanced by the same
 KernelAbstractions batch kernel on the storage backend of `workspace`.
 """
 function step!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace;
     kwargs...,
 )
-    return step!(domain, forcing, workspace, 1:ncols(domain); kwargs...)
+    return step!(state, forcing, workspace, 1:ncols(state); kwargs...)
 end
 
 function step!(
-    domain,
+    state,
     forcing::SnowpackForcing,
     workspace::ColumnarStepWorkspace,
     active_indices;
     kwargs...,
 )
     config = _step_config_from_keywords(; kwargs...)
-    return _step_range!(domain, forcing, 1:_step_time_count(forcing), workspace, active_indices, config)
+    return _step_range!(state, forcing, 1:_step_time_count(forcing), workspace, active_indices, config)
 end

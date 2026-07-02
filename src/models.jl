@@ -2,26 +2,11 @@
 Model definitions exposed by Chion's simulation-first API.
 """
 
-"""Dynamic surface albedo scheme for `BESSIModel`."""
-DynamicAlbedo() = :dynamic
-"""Constant surface albedo scheme for `BESSIModel`."""
-ConstantAlbedo() = :constant
-"""Use prescribed surface albedo from `SnowpackForcing`."""
-PrescribedAlbedo() = :prescribed
-"""BESSI low-density densification scheme."""
-BESSIDensification() = :bessi
-"""HTESSEL-style low-density densification scheme."""
-HTESSELDensification() = :htessel
-"""Use the constant fresh-snow density parameter."""
-ConstantFreshSnowDensity() = :constant
-"""Use the temperature/wind-dependent fresh-snow density parameterization."""
-ParameterizedFreshSnowDensity() = :parameterized
-
 """
-    BESSIModel(grid; albedo=DynamicAlbedo(), densification=BESSIDensification(), ...)
+    BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`CurrentState` and owned by `Simulation.now`.
+`BESSIState` and owned by `Simulation.now`.
 """
 struct BESSIModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     grid::G
@@ -42,9 +27,9 @@ end
 
 function BESSIModel(
     grid::SnowpackGrid;
-    albedo=DynamicAlbedo(),
-    densification=BESSIDensification(),
-    fresh_snow_density=ConstantFreshSnowDensity(),
+    albedo::Symbol=:dynamic,
+    densification::Symbol=:bessi,
+    fresh_snow_density::Symbol=:constant,
     Ntot::Int=DEFAULT_NTOT,
     mass_max::Real=DEFAULT_MASS_MAX,
     mass_split::Real=DEFAULT_MASS_SPLIT,
@@ -92,15 +77,9 @@ function BESSIModel(
     )
 end
 
-"""PISM-style expectation-integral monthly PDD parameterization."""
-function StochasticMonthlyPDD(; temperature_sigma::Real=5.0)
-    temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
-    return (temperature_sigma=Float64(temperature_sigma),)
-end
-
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6,
-             monthly_method=StochasticMonthlyPDD())
+             temperature_sigma=5.0)
 
 Bulk positive-degree-day surface mass-balance model configuration. Evolving
 state is stored in `PDDState` and owned by `Simulation.now`. Monthly forcing
@@ -112,7 +91,7 @@ struct PDDModel{G <: SnowpackGrid}
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
-    monthly_method::NamedTuple{(:temperature_sigma,), Tuple{Float64}}
+    temperature_sigma::Float64
 end
 
 function PDDModel(
@@ -120,17 +99,18 @@ function PDDModel(
     ddf_snow::Real=3.0,
     ddf_ice::Real=8.0,
     refreezing_fraction::Real=0.6,
-    monthly_method::NamedTuple{(:temperature_sigma,), Tuple{Float64}}=StochasticMonthlyPDD(),
+    temperature_sigma::Real=5.0,
 )
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
     ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")
     0.0 <= refreezing_fraction <= 1.0 || error("`refreezing_fraction` must be between 0 and 1.")
+    temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
 
     return PDDModel(
         grid,
         Float64(ddf_snow),
         Float64(ddf_ice),
         Float64(refreezing_fraction),
-        monthly_method,
+        Float64(temperature_sigma),
     )
 end

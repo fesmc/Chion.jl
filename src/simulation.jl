@@ -88,38 +88,18 @@ function Base.show(io::IO, ::MIME"text/plain", sim::Simulation)
 end
 
 """
-    init_problem!(sim, options)
-
-Validate and prepare the model/forcing context before an initialized run.
-"""
-function init_problem!(sim::Simulation, options::RunOptions)
-    validate_integrator_setup!(sim, options)
-    return nothing
-end
-
-function init_problem!(
-    sim::Simulation;
-    options=sim.options,
-)
-    return init_problem!(sim, options)
-end
-
-"""
-    init_integrator(sim; options=sim.options, io=stdout)
+    init_integrator(sim; io=stdout)
 
 Initialize a runtime that can be advanced with `step!`, `run!`, and
 `finalize!`.
 """
 function init_integrator(
     sim::Simulation;
-    options::RunOptions=sim.options,
     io::IO=stdout,
 )
-    run_options = options
-    sim.options = run_options
     timings = StepTimingStats()
-    init_problem!(sim, run_options)
-    model_runtime = init_model_runtime!(sim, run_options, timings)
+    validate_integrator_setup!(sim, sim.options)
+    model_runtime = init_model_runtime!(sim, sim.options, timings)
     return _new_integrator(sim, io, timings, model_runtime)
 end
 
@@ -132,10 +112,7 @@ step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
 step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
     _step_external!(integrator, Δt_days, force_dt)
 
-_surface_temperature_vector(::BESSIModel, ::CurrentState, runtime) =
-    _host_vector(runtime.state.Tsrf; copy_array=true)
-
-_model_smb_ice_vector(::BESSIModel, ::CurrentState, runtime) =
+_model_smb_ice_vector(::BESSIModel, ::BESSIState, runtime) =
     _host_vector(runtime.state.smb_ice; copy_array=true)
 
 _model_smb_ice_vector(::PDDModel, ::PDDState, runtime) =
@@ -162,11 +139,14 @@ function _mask_inactive_yearly_outputs!(
     return nothing
 end
 
+@inline _uses_monthly_output(options::RunOptions) =
+    :monthly in options.netcdf_variables ||
+    any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
+
 function _bessi_output_from_options(sim::Simulation, options::RunOptions)
     options.write_netcdf || return nothing
-    monthly_mode = :monthly in options.netcdf_variables ||
-        any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
-        monthly_mode && length(options.netcdf_variables) > 1 &&
+    monthly_mode = _uses_monthly_output(options)
+    monthly_mode && length(options.netcdf_variables) > 1 &&
         error("`monthly` NetCDF output cannot currently be combined with other selectors.")
     vars = monthly_mode && :monthly in options.netcdf_variables ? MONTHLY_OUTPUT_VARS :
         monthly_mode ? intersect(options.netcdf_variables, MONTHLY_OUTPUT_VARS) :
@@ -198,7 +178,7 @@ end
 function _sync_bessi_state!(sim::Simulation{<:BESSIModel}, backend_state, is_gpu::Bool, timings::StepTimingStats)
     if is_gpu
         time_block!(timings, :gpu_transfer) do
-            _copy_current_state!(sim.now, cpu_state(backend_state))
+            _copy_bessi_state!(sim.now, cpu_state(backend_state))
         end
     end
     update_diagnostics!(sim.now)
@@ -212,10 +192,9 @@ end
 
 function run!(
     sim::Simulation{<:BESSIModel};
-    options::RunOptions=sim.options,
     io::IO=stdout,
 )
-    integrator = init_integrator(sim; options=options, io=io)
+    integrator = init_integrator(sim; io=io)
     run!(integrator)
     return finalize!(integrator)
 end
@@ -224,7 +203,7 @@ end
     !monthly_mode && nc === nothing
 
 @inline function _bessi_scheduled_step_stop(integrator::SimulationIntegrator, nsteps::Int)
-    runtime = integrator.model_runtime.backend
+    runtime = integrator.model_runtime.data
     block_steps = _step_time_block_steps(_ka_backend(runtime.state.mass))
     return min(nsteps, integrator.time_index + block_steps - 1)
 end
@@ -234,11 +213,11 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
 
     sim = integrator.sim
     timings = integrator.timings
-    runtime = integrator.model_runtime.backend
+    runtime = integrator.model_runtime.data
     backend_state = runtime.state
     is_gpu = runtime.is_gpu
     nc = _bessi_output_from_options(sim, run_options)
-    monthly_mode = nc !== nothing && (:monthly in run_options.netcdf_variables)
+    monthly_mode = nc !== nothing && _uses_monthly_output(run_options)
     monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
     monthly_output = monthly_mode ? MonthlyOutputBuffer(backend_state; nmonth=run_options.years * 12) : nothing
     record_index = 0
@@ -365,20 +344,20 @@ function yearly_step!(integrator::SimulationIntegrator)
 
     model = integrator.sim.model
     state = integrator.sim.now
-    runtime = integrator.model_runtime.backend
+    runtime = integrator.model_runtime.data
     grid = model.grid
 
     smb_before = _model_smb_ice_vector(model, state, runtime)
-    Tsrf_sum = zeros(Float64, ncols(grid))
+    Tsrf_sum = similar(runtime.state.Tsrf)
+    fill!(Tsrf_sum, zero(eltype(Tsrf_sum)))
 
     for time_index in 1:nsteps
         step!(integrator)
-        Tsrf = _surface_temperature_vector(model, state, runtime)
-        @. Tsrf_sum += Tsrf * weights_days[time_index]
+        @. Tsrf_sum += runtime.state.Tsrf * weights_days[time_index]
     end
 
     ice_sheet_net_forcing_yearly = _model_smb_ice_vector(model, state, runtime) .- smb_before
-    mean_T_srf_K = Tsrf_sum ./ total_days
+    mean_T_srf_K = _host_vector(Tsrf_sum; copy_array=true) ./ total_days
     _mask_inactive_yearly_outputs!(ice_sheet_net_forcing_yearly, mean_T_srf_K, integrator.model_runtime.active)
 
     return (
@@ -399,10 +378,9 @@ set_active_mask!(integrator::SimulationIntegrator, mask; kwargs...) =
 
 function run!(
     sim::Simulation;
-    options::RunOptions=sim.options,
     io::IO=stdout,
 )
-    integrator = init_integrator(sim; options=options, io=io)
+    integrator = init_integrator(sim; io=io)
     run!(integrator)
     return finalize!(integrator)
 end

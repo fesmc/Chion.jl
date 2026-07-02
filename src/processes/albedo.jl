@@ -129,20 +129,20 @@ function _update_surface_albedo_arrays!(
 end
 
 """
-    update_surface_albedo!(domain, idx)
+    update_surface_albedo!(state, idx)
 
-Update the surface albedo of column `idx` in `domain` and return the new
+Update the surface albedo of column `idx` in `state` and return the new
 albedo.
 """
-function update_surface_albedo!(domain, idx::Int)
+function update_surface_albedo!(state, idx::Int)
     return _update_surface_albedo_arrays!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.albedo,
+        state.N,
+        state.mass,
+        state.mass_w,
+        state.density,
+        state.temperature,
+        state.albedo,
         idx,
-        domain.c,
+        state.c,
     )
 end

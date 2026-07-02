@@ -171,8 +171,6 @@ end
 end
 
 @inline function _solar_longitude_deg_from_calendar_day(day_of_year)
-
-    ##check this again
     days_since_j2000_like_year_start = day_of_year - 1.0
     mean_longitude = 280.46646 + 0.98564736 * days_since_j2000_like_year_start
     mean_anomaly = 357.52911 + 0.98560028 * days_since_j2000_like_year_start
@@ -338,12 +336,6 @@ end
         day_of_year=forcing.day_of_year[time_index],
         solar_longitude_deg=forcing.solar_longitude_deg[time_index],
     )
-end
-
-@inline function forcing_step_kind(forcing::SnowpackForcing, time_index::Int)
-    ## for monthly pdd
-    dt = _step_dt(forcing.dt_days, time_index)
-    return 27.0 <= dt <= 32.0 ? :monthly : :scheduled
 end
 
 function SnowpackForcing(;

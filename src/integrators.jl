@@ -52,7 +52,7 @@ _finished(integrator::SimulationIntegrator) =
     integrator.completed_years >= integrator.sim.options.years
 
 _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
-    integrator.model_runtime.backend.step_fields
+    integrator.model_runtime.data.step_fields
 
 function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
     copyto!(dest.dt_days, src.dt_days)
@@ -80,10 +80,10 @@ function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
 end
 
 function sync_forcing!(integrator::SimulationIntegrator)
-    backend = integrator.model_runtime.backend
-    getproperty(backend, :is_gpu) || return integrator
+    data = integrator.model_runtime.data
+    getproperty(data, :is_gpu) || return integrator
     time_block!(integrator.timings, :gpu_transfer) do
-        _copy_forcing!(backend.step_fields, integrator.sim.forcing)
+        _copy_forcing!(data.step_fields, integrator.sim.forcing)
     end
     return integrator
 end
@@ -95,7 +95,6 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     model = integrator.sim.model
     state = integrator.sim.now
     model_runtime = integrator.model_runtime
-    runtime = model_runtime.backend
 
     time_counted_block!(integrator.timings, :model_step_wall, ncols(model.grid)) do
         step_model!(model, state, model_runtime, forcing, time_index)
@@ -210,7 +209,7 @@ function _set_active_mask!(
         _reset_model_columns!(
             integrator.sim.model,
             integrator.sim.now,
-            integrator.model_runtime.backend,
+            integrator.model_runtime.data,
             newly_inactive,
         )
     end
@@ -223,7 +222,7 @@ function _finalize_integrator!(integrator::SimulationIntegrator)
 
     status = _finished(integrator) ? :complete : :incomplete
     years_completed = integrator.completed_years
-    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.backend, integrator.sim.options, integrator.timings)
+    finalize_state!(integrator.sim.model, integrator.sim.now, integrator.model_runtime.data, integrator.sim.options, integrator.timings)
 
     run_wall_sec = (time_ns() - integrator.wall_t0) * 1.0e-9
     result = SimulationResult(

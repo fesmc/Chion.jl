@@ -179,7 +179,8 @@ Load a generic NetCDF forcing file into a `SnowpackGrid` and
 `RF`, and `SWD`; optional turbulent/radiative flux fields and prescribed
 surface albedo are loaded when present and requested. If no explicit pressure
 field is requested, the static `surface_height_name` field is used to derive
-air pressure with the barometric formula.
+air pressure with the barometric formula. Set `mask_name` and `mask_threshold`
+to load only columns selected by a spatial mask variable.
 """
 function load_forcing_file(
     path::AbstractString;
@@ -200,6 +201,8 @@ function load_forcing_file(
     air_pressure_temperature_mode=:annual_mean,
     prescribed_albedo_name::Union{Nothing, AbstractString}=nothing,
     latitude_name::Union{Nothing, AbstractString}="LAT",
+    mask_name::Union{Nothing, AbstractString}=nothing,
+    mask_threshold::Real=0.0,
     air_temperature_in_celsius::Bool=true,
     precipitation_in_mmwe_day::Bool=true,
     air_pressure_default::Float64=DEFAULT_SEA_LEVEL_AIR_PRESSURE,
@@ -300,29 +303,43 @@ function load_forcing_file(
         snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
         rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
 
-        js = repeat(collect(1:ny), inner=nx)
-        is = repeat(collect(1:nx), outer=ny)
-        grid = SnowpackGrid(nx * ny; x=x, y=y, js=js, is=is, mask=ones(ny, nx))
+        mask = ones(Float64, ny, nx)
+        rows = collect(1:(nx * ny))
+        if !isnothing(mask_name)
+            mask_data, mask_dims = _read_variable_data(ds, mask_name)
+            mask = _as_y_x(mask_data, mask_dims, ny, nx, mask_name)
+            mask_columns = _column_vector_y_x(mask)
+            rows = findall(
+                isfinite.(mask_columns) .&
+                (mask_columns .>= mask_threshold),
+            )
+            isempty(rows) && error("`$mask_name` selected no columns.")
+        end
+
+        js = repeat(collect(1:ny), inner=nx)[rows]
+        is = repeat(collect(1:nx), outer=ny)[rows]
+        grid = SnowpackGrid(length(rows); x=x, y=y, js=js, is=is, mask=mask)
+        select_columns(field) = isnothing(mask_name) ? field : field[rows, :]
         forcing = SnowpackForcing(
             time_values=time_values,
             dt_days=dt_days,
-            air_temperature=air_temperature,
-            snowfall_rate=snowfall_rate,
-            rainfall_rate=rainfall_rate,
-            shortwave_down=sw_m,
-            wind_speed=wind_m,
-            q_lw_down=q_lw_m,
-            has_q_lw_down=has_q_lw_m,
-            q_sh=q_sh_m,
-            has_q_sh=has_q_sh_m,
-            q_lh=q_lh_m,
-            has_q_lh=has_q_lh_m,
-            relative_humidity=relative_humidity_m,
-            has_relative_humidity=has_relative_humidity_m,
-            air_pressure=air_pressure_m,
-            prescribed_albedo=prescribed_albedo_m,
-            has_prescribed_albedo=has_prescribed_albedo_m,
-            latitude_deg=latitude_deg,
+            air_temperature=select_columns(air_temperature),
+            snowfall_rate=select_columns(snowfall_rate),
+            rainfall_rate=select_columns(rainfall_rate),
+            shortwave_down=select_columns(sw_m),
+            wind_speed=select_columns(wind_m),
+            q_lw_down=select_columns(q_lw_m),
+            has_q_lw_down=select_columns(has_q_lw_m),
+            q_sh=select_columns(q_sh_m),
+            has_q_sh=select_columns(has_q_sh_m),
+            q_lh=select_columns(q_lh_m),
+            has_q_lh=select_columns(has_q_lh_m),
+            relative_humidity=select_columns(relative_humidity_m),
+            has_relative_humidity=select_columns(has_relative_humidity_m),
+            air_pressure=select_columns(air_pressure_m),
+            prescribed_albedo=select_columns(prescribed_albedo_m),
+            has_prescribed_albedo=select_columns(has_prescribed_albedo_m),
+            latitude_deg=isnothing(latitude_deg) || isnothing(mask_name) ? latitude_deg : latitude_deg[rows],
         )
         return (grid=grid, forcing=forcing)
     finally

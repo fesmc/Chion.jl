@@ -105,33 +105,33 @@ function go_refreezing!(
 end
 
 """
-    go_refreezing!(domain, idx)
+    go_refreezing!(state, idx)
 
-Run the refreezing scheme for column `idx` of `domain`. Mutates the domain
+Run the refreezing scheme for column `idx` of `state`. Mutates the state
 state in-place and returns the refrozen mass and released latent heat.
 """
-function go_refreezing!(domain, idx::Int)
-    if _n_active(domain.N, idx) <= 0
+function go_refreezing!(state, idx::Int)
+    if _n_active(state.N, idx) <= 0
         return (
-            refrozen_mass=zero(eltype(domain.mass)),
-            released_latent_heat=zero(eltype(domain.mass)),
+            refrozen_mass=zero(eltype(state.mass)),
+            released_latent_heat=zero(eltype(state.mass)),
         )
     end
 
     refrozen_mass = _go_refreezing!(
-        domain.N,
-        domain.mass_w,
-        domain.mass,
-        domain.density,
-        domain.temperature,
+        state.N,
+        state.mass_w,
+        state.mass,
+        state.density,
+        state.temperature,
         idx,
-        domain.c.T0,
-        domain.c.ci,
-        domain.c.Lm,
-        domain.c.rho_i,
+        state.c.T0,
+        state.c.ci,
+        state.c.Lm,
+        state.c.rho_i,
     )
     return (
         refrozen_mass=refrozen_mass,
-        released_latent_heat=refrozen_mass * domain.c.Lm,
+        released_latent_heat=refrozen_mass * state.c.Lm,
     )
 end

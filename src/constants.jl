@@ -13,8 +13,6 @@ const EPS_EMPTY_LAYER = 1.0e-10
 # Time conversion defaults
 # ---------------------------------------------------------------------------
 const DEFAULT_SECONDS_PER_DAY = 86_400.0
-const DEFAULT_SECONDS_PER_MONTH = DEFAULT_SECONDS_PER_DAY * 30.0
-const DEFAULT_SECONDS_PER_YEAR = DEFAULT_SECONDS_PER_MONTH * 12.0
 
 # ---------------------------------------------------------------------------
 # Atmospheric defaults
@@ -84,11 +82,8 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     ϵ_air::NF
     ϵ_snow::NF
     σ::NF
-    R::NF
     T0::NF
     seconds_per_day::NF
-    seconds_per_month::NF
-    seconds_per_year::NF
     low_density_densification::UInt8
 end
 
@@ -199,11 +194,8 @@ function SnowpackPhysicalConstants(::Type{NF};
     ϵ_air::Real=0.8,
     ϵ_snow::Real=0.98,
     σ::Real=5.670373e-8,
-    R::Real=8.314,
     T0::Real=273.15,
     seconds_per_day::Real=DEFAULT_SECONDS_PER_DAY,
-    seconds_per_month::Real=DEFAULT_SECONDS_PER_MONTH,
-    seconds_per_year::Real=DEFAULT_SECONDS_PER_YEAR,
     low_density_densification::Symbol=:bessi,
 ) where {NF <: AbstractFloat}
     return SnowpackPhysicalConstants(
@@ -230,11 +222,8 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, ϵ_air),
         convert(NF, ϵ_snow),
         convert(NF, σ),
-        convert(NF, R),
         convert(NF, T0),
         convert(NF, seconds_per_day),
-        convert(NF, seconds_per_month),
-        convert(NF, seconds_per_year),
         _normalize_low_density_densification(low_density_densification),
     )
 end

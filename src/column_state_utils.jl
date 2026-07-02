@@ -1,5 +1,5 @@
 """
-State access helpers shared across column, domain, and array-backed kernels.
+State access helpers shared across column, state, and array-backed kernels.
 """
 
 """
@@ -122,5 +122,5 @@ above the empty-layer tolerance.
     return false
 end
 
-@inline _column_has_liquid_water(domain, idx::Int) =
-    _column_has_liquid_water(domain.N, domain.mass_w, idx)
+@inline _column_has_liquid_water(state, idx::Int) =
+    _column_has_liquid_water(state.N, state.mass_w, idx)

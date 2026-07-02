@@ -10,6 +10,8 @@ degree days melt snow first, and any remaining melt potential ablates ice.
 
 @inline _pdd_step_mass(rate, dt_days) = max(rate, zero(rate)) * dt_days * 86_400.0
 @inline _normal_pdf(x) = 0.3989422804014327 * exp(-0.5 * x * x)
+@inline _is_monthly_pdd_step(forcing::SnowpackForcing, time_index::Int) =
+    27.0 <= _step_dt(forcing.dt_days, time_index) <= 32.0
 
 @inline function _normal_cdf(x)
     t = inv(1.0 + 0.2316419 * abs(x))
@@ -90,14 +92,14 @@ end
 function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, time_index::Int)
     ncol = ncols(model.grid)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the PDD model column count.")
-    if forcing_step_kind(forcing, time_index) === :monthly
+    if _is_monthly_pdd_step(forcing, time_index)
         scratch = (
-            a=Vector{Float64}(undef, ncol),
-            b=Vector{Float64}(undef, ncol),
-            c=Vector{Float64}(undef, ncol),
-            d=Vector{Float64}(undef, ncol),
-            e=Vector{Float64}(undef, ncol),
-            f=Vector{Float64}(undef, ncol),
+            snowfall=Vector{Float64}(undef, ncol),
+            rainfall=Vector{Float64}(undef, ncol),
+            pdd=Vector{Float64}(undef, ncol),
+            available_snow=Vector{Float64}(undef, ncol),
+            snow_melt=Vector{Float64}(undef, ncol),
+            remaining_pdd=Vector{Float64}(undef, ncol),
         )
         pdd_monthly_step!(
             state.snowpack_swe,
@@ -210,12 +212,12 @@ function pdd_step!(
     sf = @view forcing.snowfall_rate[:, time_index]
     rf = @view forcing.rainfall_rate[:, time_index]
 
-    snowfall       = scratch.a
-    rainfall       = scratch.b
-    pdd            = scratch.c
-    available_snow = scratch.d
-    snow_melt      = scratch.e
-    remaining_pdd  = scratch.f
+    snowfall       = scratch.snowfall
+    rainfall       = scratch.rainfall
+    pdd            = scratch.pdd
+    available_snow = scratch.available_snow
+    snow_melt      = scratch.snow_melt
+    remaining_pdd  = scratch.remaining_pdd
 
     scale = dt * 86_400.0
     @. snowfall       = max(sf, 0.0) * scale
@@ -251,15 +253,15 @@ function pdd_monthly_step!(
     sf = @view forcing.snowfall_rate[:, time_index]
     rf = @view forcing.rainfall_rate[:, time_index]
 
-    snowfall       = scratch.a
-    rainfall       = scratch.b
-    pdd            = scratch.c
-    available_snow = scratch.d
-    snow_melt      = scratch.e
-    remaining_pdd  = scratch.f
+    snowfall       = scratch.snowfall
+    rainfall       = scratch.rainfall
+    pdd            = scratch.pdd
+    available_snow = scratch.available_snow
+    snow_melt      = scratch.snow_melt
+    remaining_pdd  = scratch.remaining_pdd
 
     scale = dt * 86_400.0
-    sigma = model.monthly_method.temperature_sigma
+    sigma = model.temperature_sigma
     @. snowfall       = max(sf, 0.0) * scale
     @. rainfall       = max(rf, 0.0) * scale
     @. pdd            = _pism_expected_positive_degree_days(T, dt, sigma)
@@ -354,7 +356,7 @@ function pdd_monthly_step!(
         model.ddf_snow,
         model.ddf_ice,
         model.refreezing_fraction,
-        model.monthly_method.temperature_sigma;
+        model.temperature_sigma;
         ndrange=length(snowpack_swe),
     )
     _wait_kernel(event)

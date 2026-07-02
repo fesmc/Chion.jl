@@ -1,6 +1,6 @@
 # Output grids, NetCDF schema, and output helpers for Simulation runs.
 
-const io_dict = Dict{Symbol, NamedTuple}(
+const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
     :thickness => (name="thickness", long_name="Snow thickness", units="m"),
     :wet_mass => (name="wet_mass", long_name="Snow wet mass", units="mmWE"),
     :bulk_density => (name="bulk_density", long_name="Bulk snow density", units="kg m-3"),
@@ -39,7 +39,7 @@ function scatter_to_grid(values::Vector{Float64}, js::Vector{Int}, is::Vector{In
     return out
 end
 
-struct NetcdfOutput
+struct NetCDFOutput
     dataset::NCDataset
     vars::Dict{Symbol, Any}
     buffer_point_float::Matrix{Float32}
@@ -65,23 +65,23 @@ function state_output_vars(selected)
     return unique(vars)
 end
 
-function init_state_netcdf(path::AbstractString, options, time_values::Vector{DateTime}, domain, state, vars::Vector{Symbol}; ntime::Integer=options.years * length(time_values), nlayer::Integer=getproperty(state, :Ntot))
+function init_state_netcdf(path::AbstractString, options, time_values::Vector{DateTime}, layout, state, vars::Vector{Symbol}; ntime::Integer=options.years * length(time_values), nlayer::Integer=getproperty(state, :Ntot))
     mkpath(dirname(path))
     ds = NCDataset(path, "c")
-    ny, nx = _grid_shape(domain)
+    ny, nx = _grid_shape(layout)
     defDim(ds, "t", Int(ntime))
     defDim(ds, "x", nx)
     defDim(ds, "y", ny)
     defDim(ds, "layer", Int(nlayer))
-    _write_nc_var!(ds, "x", ("x",), (key=:x, long_name="X coordinate", units="km", integer=false), domain.x)
-    _write_nc_var!(ds, "y", ("y",), (key=:y, long_name="Y coordinate", units="km", integer=false), domain.y)
-    _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(domain.mask, (2, 1))))
+    _write_nc_var!(ds, "x", ("x",), (key=:x, long_name="X coordinate", units="km", integer=false), layout.x)
+    _write_nc_var!(ds, "y", ("y",), (key=:y, long_name="Y coordinate", units="km", integer=false), layout.y)
+    _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(layout.mask, (2, 1))))
     handles = Dict{Symbol, Any}()
     for key in vars
         values = key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
             getfield(state, :latent_heat_flux_sum) :
             getfield(state, key)
-        meta = get(io_dict, key, (name=String(key), long_name=String(key), units="", integer=eltype(values) <: Integer))
+        meta = get(NETCDF_METADATA, key, (name=String(key), long_name=String(key), units="", integer=eltype(values) <: Integer))
         if values isa AbstractVector
             handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("t", "x", "y"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
         elseif values isa AbstractMatrix
@@ -91,7 +91,7 @@ function init_state_netcdf(path::AbstractString, options, time_values::Vector{Da
     ds.attrib["title"] = options.name
     ds.attrib["source_model"] = "Chion"
     ds.attrib["created"] = string(now())
-    return NetcdfOutput(
+    return NetCDFOutput(
         ds,
         handles,
         fill(NaN32, nx, ny),
@@ -143,7 +143,7 @@ function normalize_netcdf_variables(spec)
         elseif key in NETCDF_VARIABLES || key in MONTHLY_OUTPUT_VARS
             push!(selected, key)
         else
-            error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, or a CurrentState field name.")
+            error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, or a BESSIState field name.")
         end
     end
     return unique(selected)
@@ -195,7 +195,7 @@ function _scatter_monthly_matrix_to_grid!(dest::Array{Float32, 3}, host::Abstrac
     return view(dest, 1:nrecord, :, :)
 end
 
-function write_monthly_output_nc!(out::NetcdfOutput, state, first_record_index::Int, layout)
+function write_monthly_output_nc!(out::NetCDFOutput, state, first_record_index::Int, layout)
     nrecord = state.count
     nrecord == 0 && return out
     chunk_len = size(out.buffer_time_point_float, 1)
@@ -217,7 +217,7 @@ function write_monthly_output_nc!(out::NetcdfOutput, state, first_record_index::
     return out
 end
 
-function write_nc!(out::NetcdfOutput, state, record_index::Int, layout)
+function write_nc!(out::NetCDFOutput, state, record_index::Int, layout)
     for key in keys(out.vars)
         hasfield(typeof(state), key) || continue
         values = getfield(state, key)
@@ -235,7 +235,7 @@ function write_nc!(out::NetcdfOutput, state, record_index::Int, layout)
     return out
 end
 
-function close_output!(out::NetcdfOutput, status::Symbol, records_written::Int)
+function close_output!(out::NetCDFOutput, status::Symbol, records_written::Int)
     out.dataset.attrib["status"] = string(status)
     out.dataset.attrib["records_written"] = string(records_written)
     close(out.dataset)

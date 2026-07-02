@@ -74,26 +74,6 @@ function timing_rows(stats::StepTimingStats)
     return rows, total
 end
 
-@inline _time_block!(::Nothing, ::Symbol, f::F) where {F <: Function} = f()
-
-@inline function _time_block!(stats::StepTimingStats, key::Symbol, f::F) where {F <: Function}
-    t0 = time_ns()
-    value = f()
-    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
-    return value
-end
-
-@inline _time_block!(f::F, stats, key::Symbol) where {F <: Function} = _time_block!(stats, key, f)
-
-@inline _time_call!(::Nothing, ::Symbol, f, args...) = f(args...)
-
-@inline function _time_call!(stats::StepTimingStats, key::Symbol, f, args...)
-    t0 = time_ns()
-    value = f(args...)
-    add_timing!(stats, key, (time_ns() - t0) * 1.0e-9)
-    return value
-end
-
 """
     time_block!(stats, key, f; synchronize=nothing)
 

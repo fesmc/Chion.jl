@@ -1,6 +1,6 @@
 """Model runtime preparation, backend transfer, and state finalization."""
 
-function _validate_model_outputs!(model, options::RunOptions)
+function _validate_model_outputs!(options::RunOptions)
     options.write_netcdf || return nothing
     allowed = copy(NETCDF_VARIABLES)
     append!(allowed, MONTHLY_OUTPUT_VARS)
@@ -20,16 +20,18 @@ function validate_integrator_setup!(sim, options::RunOptions)
         all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
     end
     if model isa BESSIModel && _uses_prescribed_albedo(model.c)
-        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `PrescribedAlbedo`.")
+        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
     end
+    model isa PDDModel && options.write_netcdf &&
+        error("NetCDF output is not implemented for PDDModel; set `write_netcdf=false`.")
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
-    _validate_model_outputs!(model, options)
+    _validate_model_outputs!(options)
     return nothing
 end
 
-function _prepare_backend!(timings::StepTimingStats, state::CurrentState, forcing::SnowpackForcing; is_gpu::Bool)
+function _prepare_backend!(timings::StepTimingStats, state::BESSIState, forcing::SnowpackForcing; is_gpu::Bool)
     step_fields = forcing
     if is_gpu
         cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
@@ -50,7 +52,7 @@ function _prepare_backend!(timings::StepTimingStats, state::CurrentState, forcin
     return (state=state, step_fields=step_fields, workspace=workspace, is_gpu=false)
 end
 
-function prepare_runtime!(model::BESSIModel, state::CurrentState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
+function prepare_runtime!(model::BESSIModel, state::BESSIState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
     return _prepare_backend!(timings, state, forcing; is_gpu=options.backend == :gpu)
 end
 
@@ -77,18 +79,18 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
     end
     ncol = ncols(model.grid)
     scratch = (
-        a=Vector{Float64}(undef, ncol),
-        b=Vector{Float64}(undef, ncol),
-        c=Vector{Float64}(undef, ncol),
-        d=Vector{Float64}(undef, ncol),
-        e=Vector{Float64}(undef, ncol),
-        f=Vector{Float64}(undef, ncol),
+        snowfall=Vector{Float64}(undef, ncol),
+        rainfall=Vector{Float64}(undef, ncol),
+        pdd=Vector{Float64}(undef, ncol),
+        available_snow=Vector{Float64}(undef, ncol),
+        snow_melt=Vector{Float64}(undef, ncol),
+        remaining_pdd=Vector{Float64}(undef, ncol),
     )
     return (snowpack_swe=state.snowpack_swe, smb_ice=state.smb_ice, runoff=state.runoff, pdd_sum=state.pdd_sum, step_fields=forcing, scratch=scratch, is_gpu=false)
 end
 
-_backend_active_indices(indices::Vector{Int}, backend) =
-    getproperty(backend, :is_gpu) ? adapt(gpu_storage_type(), indices) : indices
+_backend_active_indices(indices::Vector{Int}, data) =
+    getproperty(data, :is_gpu) ? adapt(gpu_storage_type(), indices) : indices
 
 @kernel function _reset_bessi_columns_kernel!(
     N,
@@ -136,7 +138,7 @@ _backend_active_indices(indices::Vector{Int}, backend) =
     end
 end
 
-function _reset_model_columns!(model::BESSIModel, ::CurrentState, runtime, inactive_indices::Vector{Int})
+function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
     backend_indices = _backend_active_indices(inactive_indices, runtime)
     kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.state.mass))
@@ -201,28 +203,26 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     return nothing
 end
 
-_reset_model_columns!(model, state, runtime, inactive_indices::Vector{Int}) = nothing
-
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
     length(active) == length(model_runtime.active) || error("Active mask length must match the model column count.")
     active_v = Vector{Bool}(active)
     active_indices = findall(active_v)
     isempty(active_indices) && error("Active mask kept no Chion columns.")
     model_runtime.active = active_v
-    model_runtime.active_indices = _backend_active_indices(active_indices, model_runtime.backend)
+    model_runtime.active_indices = _backend_active_indices(active_indices, model_runtime.data)
     return model_runtime
 end
 
 function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
-    backend = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
+    data = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
     ncol = ncols(sim.model.grid)
     active = trues(ncol)
-    active_indices = _backend_active_indices(collect(1:ncol), backend)
-    return ModelRuntime(backend, active, active_indices)
+    active_indices = _backend_active_indices(collect(1:ncol), data)
+    return ModelRuntime(data, active, active_indices)
 end
 
-function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
-    runtime = model_runtime.backend
+function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+    runtime = model_runtime.data
     return _step_range!(
         runtime.state,
         forcing,
@@ -233,8 +233,8 @@ function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRunt
     )
 end
 
-function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_range)
-    runtime = model_runtime.backend
+function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_range)
+    runtime = model_runtime.data
     return _step_range!(
         runtime.state,
         forcing,
@@ -246,9 +246,9 @@ function step_model!(model::BESSIModel, ::CurrentState, model_runtime::ModelRunt
 end
 
 function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
-    runtime = model_runtime.backend
-    if runtime.snowpack_swe isa Vector{Float64}
-        if forcing_step_kind(forcing, time_index) === :monthly
+    runtime = model_runtime.data
+    if !runtime.is_gpu
+        if _is_monthly_pdd_step(forcing, time_index)
             pdd_monthly_step!(
                 runtime.snowpack_swe,
                 runtime.smb_ice,
@@ -274,7 +274,7 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
             )
         end
     else
-        if forcing_step_kind(forcing, time_index) === :monthly
+        if _is_monthly_pdd_step(forcing, time_index)
             pdd_monthly_step!(
                 runtime.snowpack_swe,
                 runtime.smb_ice,
@@ -303,19 +303,17 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
     return nothing
 end
 
-finalize_state!(model, state, runtime, ::RunOptions, ::StepTimingStats) = nothing
-
-function finalize_state!(::BESSIModel, state::CurrentState, runtime, options::RunOptions, timings::StepTimingStats)
+function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats)
     if runtime.is_gpu
         time_block!(timings, :gpu_transfer) do
-            _copy_current_state!(state, cpu_state(runtime.state))
+            _copy_bessi_state!(state, cpu_state(runtime.state))
         end
     end
     update_diagnostics!(state)
     return nothing
 end
 
-function finalize_state!(::PDDModel, state::PDDState, runtime, options::RunOptions, timings::StepTimingStats)
+function finalize_state!(::PDDModel, state::PDDState, runtime, ::RunOptions, timings::StepTimingStats)
     runtime.is_gpu || return nothing
     time_block!(timings, :gpu_transfer) do
         copyto!(state.snowpack_swe, Array(runtime.snowpack_swe))

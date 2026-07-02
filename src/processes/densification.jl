@@ -296,24 +296,24 @@ function _go_densification!(
 end
 
 """
-    go_densification!(domain, idx, accumulation_rate, dt_seconds)
+    go_densification!(state, idx, accumulation_rate, dt_seconds)
 
-Advance snow density for column `idx` of `domain` over one time step. Mutates
-`domain.density` in-place and returns `nothing`.
+Advance snow density for column `idx` of `state` over one time step. Mutates
+`state.density` in-place and returns `nothing`.
 """
 function go_densification!(
-    domain,
+    state,
     idx::Int,
     accumulation_rate,
     dt_seconds,
 )
     return _go_densification!(
-        domain.N,
-        domain.mass,
-        domain.density,
-        domain.temperature,
+        state.N,
+        state.mass,
+        state.density,
+        state.temperature,
         idx,
-        domain.c,
+        state.c,
         accumulation_rate,
         dt_seconds,
     )

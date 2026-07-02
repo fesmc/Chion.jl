@@ -513,30 +513,30 @@ function _enforce_snow_depth_cap!(
 end
 
 """
-    continuous_bottom_deplete!(domain, idx, d_m_in)
+    continuous_bottom_deplete!(state, idx, d_m_in)
 
-Public wrapper for basal depletion of column `idx` in `domain`. Mutates the
-domain state in-place and returns a named tuple with transferred ice and
+Public wrapper for basal depletion of column `idx` in `state`. Mutates the
+state state in-place and returns a named tuple with transferred ice and
 runoff.
 """
 function continuous_bottom_deplete!(
-    domain,
+    state,
     idx::Int,
     d_m_in,
 )
     return _continuous_bottom_deplete!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
-        domain.temperature,
-        domain.mass_base,
-        domain.smb_ice,
-        domain.runoff,
-        domain.Tsrf,
-        domain.albedo,
+        state.N,
+        state.mass,
+        state.mass_w,
+        state.density,
+        state.temperature,
+        state.mass_base,
+        state.smb_ice,
+        state.runoff,
+        state.Tsrf,
+        state.albedo,
         idx,
         d_m_in,
-        domain.c,
+        state.c,
     )
 end

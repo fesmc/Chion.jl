@@ -62,13 +62,6 @@ function make_year_record_and_deltas!(
     )
 end
 
-function _copy_summary_fields!(summary, device_summary, fields)
-    for field in fields
-        copyto!(getfield(summary, field), getfield(device_summary, field))
-    end
-    return summary
-end
-
 function year_log_line(record)
     return @sprintf(
         "year=%d mean_th=%.5f m mean_swe=%.5f mmWE mean_base=%.5f mmWE mean_abs_dth=%.5f m mean_abs_dswe=%.5f mmWE mean_abs_dbase=%.5f mmWE",

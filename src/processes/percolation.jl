@@ -1,5 +1,5 @@
 """
-Liquid-water percolation for column and domain states.
+Liquid-water percolation for column and state states.
 """
 
 """
@@ -18,7 +18,7 @@ Return `true` when `layer_index` is the last active snow layer in column
 end
 
 """
-    _go_percolation!(N_storage, mass, mass_w, density, idx, ice_density, water_density; max_lwc=0.1, rho_i_tol=10.0)
+    _go_percolation!(N_storage, mass, mass_w, density, idx, ice_density, water_density; max_lwc=0.1)
 
 Route excess liquid water downward through column `idx` until each layer is at
 or below the liquid-water-content threshold. Mutates `mass_w` in-place and
@@ -33,7 +33,6 @@ function _go_percolation!(
     ice_density,
     water_density;
     max_lwc=oftype(water_density, 0.1),
-    rho_i_tol=oftype(water_density, 10.0),
 )
     runoff = zero(water_density)
     n_layers = _n_active(N_storage, idx)
@@ -88,7 +87,6 @@ function go_percolation!(
     ice_density,
     water_density;
     max_lwc=oftype(water_density, 0.1),
-    rho_i_tol=oftype(water_density, 10.0),
 )
     N_ref = Ref(length(solid_mass))
     return _go_percolation!(
@@ -100,37 +98,34 @@ function go_percolation!(
         ice_density,
         water_density;
         max_lwc=max_lwc,
-        rho_i_tol=rho_i_tol,
     )
 end
 
 """
-    go_percolation!(domain, idx; ...)
+    go_percolation!(state, idx; ...)
 
-Run liquid-water percolation for column `idx` of `domain`. Mutates
-`domain.mass_w` and accumulates routed runoff into `domain.runoff[idx]`.
+Run liquid-water percolation for column `idx` of `state`. Mutates
+`state.mass_w` and accumulates routed runoff into `state.runoff[idx]`.
 """
 function go_percolation!(
-    domain,
+    state,
     idx::Int;
-    max_lwc=oftype(domain.c.rho_w, 0.1),
-    rho_i_tol=oftype(domain.c.rho_w, 10.0),
+    max_lwc=oftype(state.c.rho_w, 0.1),
 )
-    if _n_active(domain.N, idx) <= 0 || _get_layer(domain.mass, 1, idx) <= zero(eltype(domain.mass))
-        return zero(eltype(domain.mass))
+    if _n_active(state.N, idx) <= 0 || _get_layer(state.mass, 1, idx) <= zero(eltype(state.mass))
+        return zero(eltype(state.mass))
     end
 
     runoff = _go_percolation!(
-        domain.N,
-        domain.mass,
-        domain.mass_w,
-        domain.density,
+        state.N,
+        state.mass,
+        state.mass_w,
+        state.density,
         idx,
-        domain.c.rho_i,
-        domain.c.rho_w;
+        state.c.rho_i,
+        state.c.rho_w;
         max_lwc=max_lwc,
-        rho_i_tol=rho_i_tol,
     )
-    _set_scalar!(domain.runoff, idx, _get_scalar(domain.runoff, idx) + runoff)
+    _set_scalar!(state.runoff, idx, _get_scalar(state.runoff, idx) + runoff)
     return runoff
 end
