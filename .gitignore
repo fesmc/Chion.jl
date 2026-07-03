@@ -1,3 +1,17 @@
 .DS_Store
 plots
 Manifest.toml
+*.nc
+*.zip
+*.pdf
+*.txt
+*.log
+*.err
+*.csv
+*.svg
+*.sh
+*.out
+examples/scripts/old
+examples/shared
+.codex
+*.sh
