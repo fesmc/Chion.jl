@@ -12,3 +12,6 @@ Manifest.toml
 *.sh
 *.out
 examples/scripts/old
+examples/shared
+.codex
+*.sh
