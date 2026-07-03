@@ -1,14 +1,13 @@
 # Chion.jl
 
 Chion is a fast, intermediate-complexity snowpack mass and energy balance model.
-It supports single-column and gridded snowpack runs, threaded CPU execution,
-single-GPU execution through `CUDA.jl`, and optional summary, CSV, and NetCDF
-outputs.
+It supports single-column and gridded snowpack runs, CPU execution,
+single-GPU execution through `CUDA.jl`, and optional NetCDF output.
 
 The current public workflow is:
 
 1. Build a `SnowpackGrid`.
-2. Build a `BESSIModel`.
+2. Build a `BESSIModel` or `PDDModel`.
 3. Build a `SnowpackForcing`, or load one with `load_forcing_file`.
 4. Build a `Simulation`.
 5. Execute it with `run!`.
@@ -20,8 +19,8 @@ API may still change.
 
 - Snowpack mass and energy balance core with layer-based state
 - Simulation-first public API for manual and file-backed forcing workflows
-- Threaded CPU and single-GPU execution backends
-- Optional summary, history CSV, and NetCDF outputs
+- CPU and single-GPU execution backends
+- Per-year BESSI history and optional NetCDF output
 - Pluto notebooks and script entry points for demos and larger runs
 
 ## Installation
@@ -51,12 +50,12 @@ High-level forcing inputs use Celsius and `mmWE/day`.
 ```julia
 using Chion
 
-grid = SnowpackGrid(CPU(), 1)
+grid = SnowpackGrid(1)
 
 model = BESSIModel(grid;
-    albedo=DynamicAlbedo(),
-    densification=BESSIDensification(),
-    fresh_snow_density=ConstantFreshSnowDensity(),
+    albedo=:dynamic,
+    densification=:bessi,
+    fresh_snow_density=:constant,
     Ntot=5,
 )
 
@@ -70,15 +69,27 @@ forcing = SnowpackForcing(
 
 simulation = Simulation(model;
     forcing=forcing,
-    cycles=1,
+    years=1,
     backend=:threads,
-    save=:none,
-    write_outputs=false,
+    write_netcdf=false,
 )
 
 result = run!(simulation)
-state = SnowpackState(simulation.model.domain)
+state = simulation.now
 ```
+
+For coupled runs, use the initialized stepper API:
+
+```julia
+integrator = init_integrator(simulation)
+integrator.sim.forcing.air_temperature .= 265.15
+sync_forcing!(integrator)
+step!(integrator, 1.0, true)
+result = finalize!(integrator)
+```
+
+`simulation.ref` remains the reference state; `simulation.now` is the evolving
+state.
 
 ## File-Backed Forcing
 
@@ -90,8 +101,9 @@ loaded = load_forcing_file("forcing.nc")
 
 simulation = Simulation(BESSIModel(loaded.grid);
     forcing=loaded.forcing,
-    cycles=1,
-    save=:final,
+    years=1,
+    netcdf_variables=:all,
+    write_netcdf=true,
 )
 
 result = run!(simulation)
@@ -101,32 +113,26 @@ The generic loader accepts common `(time, y, x)` layouts and MAR-style
 `(x, y, TIME)` fields, including singleton layer dimensions such as
 `(x, y, ATMLAY, TIME)`.
 
+Spatial selection can be applied while loading:
+
+```julia
+loaded = load_forcing_file("forcing.nc";
+    mask_name="MSK",
+    mask_threshold=50.0,
+)
+```
+
 ## Running Scripts
 
-The script entry points in `examples/scripts/` are the fastest way to run the
-packaged workflows.
+There is an example script running the Greenland ice sheet on 10km resolution forced by MAR climatology in `examples/scripts/`.
+
+Edit the `CONFIG` and `MODEL_OPTIONS` blocks in
+`examples/scripts/run_gris_forcing_file_case.jl`, then run:
 
 ```bash
-julia --project=. examples/scripts/run_synthetic_simulation.jl \
-  --backend=threads \
-  --cycles=3 \
-  --nx=2 \
-  --ny=2 \
-  --no-nc
+julia --project=. examples/scripts/run_gris_forcing_file_case.jl
 ```
 
-```bash
-julia --project=. examples/scripts/run_gris_forcing_file_case.jl \
-  --forcing-file=/path/to/forcing.nc \
-  --backend=gpu \
-  --cycles=2 \
-  --no-output \
-  --no-nc
-```
-
-`examples/scripts/run_gris_equilibrium.jl` is still available as a
-performance-oriented Greenland script while the public examples move to the
-simulation API.
 
 ## Documentation
 
@@ -139,26 +145,17 @@ julia --project=docs docs/make.jl
 Useful return values:
 
 - `result.status`: run termination status
-- `result.history`: per-cycle summary records
-- `result.summary_path`, `result.history_csv_path`, `result.netcdf_path`: output paths when enabled
+- `result.history`: per-year BESSI summary records
+- `result.netcdf_path`: NetCDF output path when enabled
 
 ## Outputs And Backends
 
-- `backend=:threads` runs on CPU with threading.
-- `backend=:cpu` runs the same CPU path without threaded column stepping.
+- `backend=:threads` runs on CPU.
+- `backend=:cpu` is accepted as an alias for `:threads`.
 - `backend=:gpu` runs on a CUDA device when available.
-- `save=:none` skips NetCDF entirely.
+- `write_netcdf=false` skips NetCDF entirely.
 - NetCDF output requires spatial grid coordinates.
-- `write_outputs=false` skips summary and history CSV files.
-- `history_stride` controls how often cycle metrics are recorded.
+- `history_year_stride` controls how often BESSI year metrics are recorded.
+- `netcdf_variables=:all` selects the fields exposed by the chosen model.
+- `netcdf_variables=:monthly` writes monthly BESSI or PDD diagnostics.
 
-## Tests
-
-Run the test suite with:
-
-```bash
-julia --project=. test/runtests.jl
-```
-
-The tests cover the public simulation workflow, file-backed forcing, NetCDF
-output behavior, and cleanup checks for removed legacy API names.
