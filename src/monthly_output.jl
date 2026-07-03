@@ -164,3 +164,53 @@ function store_monthly!(output::MonthlyOutputBuffer, monthly::MonthlyState)
     output.count = row
     return output
 end
+
+function pdd_monthly_output_buffer(runtime; nmonth::Integer)
+    dims = (Int(nmonth), length(runtime.snowpack_swe))
+    allocate(field) = similar(field, Float32, dims)
+    return (
+        snowpack_swe=allocate(runtime.snowpack_swe),
+        smb_ice=allocate(runtime.smb_ice),
+        runoff=allocate(runtime.runoff),
+        pdd_sum=allocate(runtime.pdd_sum),
+    )
+end
+
+@kernel function _store_pdd_monthly_fields_kernel!(
+    output_snowpack_swe,
+    output_smb_ice,
+    output_runoff,
+    output_pdd_sum,
+    snowpack_swe,
+    smb_ice,
+    runoff,
+    pdd_sum,
+    row::Int,
+)
+    idx = @index(Global)
+    if idx <= length(snowpack_swe)
+        output_snowpack_swe[row, idx] = snowpack_swe[idx]
+        output_smb_ice[row, idx] = smb_ice[idx]
+        output_runoff[row, idx] = runoff[idx]
+        output_pdd_sum[row, idx] = pdd_sum[idx]
+    end
+end
+
+function store_pdd_monthly!(output, monthly, row::Int)
+    row <= size(output.runoff, 1) || error("PDD monthly output buffer is full.")
+    kernel! = _store_pdd_monthly_fields_kernel!(_ka_backend(monthly.runoff))
+    event = kernel!(
+        output.snowpack_swe,
+        output.smb_ice,
+        output.runoff,
+        output.pdd_sum,
+        monthly.snowpack_swe,
+        monthly.smb_ice,
+        monthly.runoff,
+        monthly.pdd_sum,
+        row;
+        ndrange=length(monthly.runoff),
+    )
+    _wait_monthly_event(event, monthly.runoff)
+    return output
+end

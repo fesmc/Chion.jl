@@ -20,12 +20,23 @@ const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
     :mass_w => (name="mass_w", long_name="Layer liquid-water mass", units="kg m-2"),
     :density => (name="density", long_name="Layer density", units="kg m-3"),
     :temperature => (name="temperature", long_name="Layer temperature", units="K"),
+    :snowpack_swe => (name="snowpack_swe", long_name="Snowpack water equivalent", units="mmWE"),
+    :pdd_sum => (name="pdd_sum", long_name="Cumulative positive degree days", units="degC day"),
 )
 
 const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
 const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf]
 const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
 const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
+const PDD_OUTPUT_VARS = [:snowpack_swe, :smb_ice, :runoff, :pdd_sum]
+const ALL_OUTPUT_VARS = unique(vcat(NETCDF_VARIABLES, MONTHLY_OUTPUT_VARS, PDD_OUTPUT_VARS))
+
+output_variables(::BESSIModel) = NETCDF_VARIABLES
+output_variables(::PDDModel) = PDD_OUTPUT_VARS
+monthly_output_variables(::BESSIModel) = MONTHLY_OUTPUT_VARS
+monthly_output_variables(::PDDModel) = PDD_OUTPUT_VARS
+supports_monthly_output(::Union{BESSIModel, PDDModel}) = true
+
 @inline _grid_shape(layout) = size(layout.mask)
 
 @inline _host_vector(data::Vector{Float64}; copy_array::Bool=false) = copy_array ? copy(data) : data
@@ -50,22 +61,23 @@ end
 
 _meta_value(meta, key::Symbol, default) = hasproperty(meta, key) ? getproperty(meta, key) : default
 
-function state_output_vars(selected)
+function state_output_vars(model, selected)
     isempty(selected) && return Symbol[]
+    allowed = output_variables(model)
     vars = Symbol[]
     for key in selected
-        if key == :monthly
-            append!(vars, MONTHLY_OUTPUT_VARS)
+        if key == :monthly && supports_monthly_output(model)
+            append!(vars, monthly_output_variables(model))
         elseif key == :all
-            append!(vars, DEFAULT_STATE_OUTPUT_VARS)
-        elseif key in (:mass, :mass_w, :density, :temperature, :N, :thickness, :wet_mass, :bulk_density, :liquid_water, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux_sum, :Tsrf, :albedo)
+            append!(vars, allowed)
+        elseif key in allowed
             push!(vars, key)
         end
     end
     return unique(vars)
 end
 
-function init_state_netcdf(path::AbstractString, options, time_values::Vector{DateTime}, layout, state, vars::Vector{Symbol}; ntime::Integer=options.years * length(time_values), nlayer::Integer=getproperty(state, :Ntot))
+function init_state_netcdf(path::AbstractString, options, time_values::Vector{DateTime}, layout, state, vars::Vector{Symbol}; ntime::Integer=options.years * length(time_values), nlayer::Integer=1)
     mkpath(dirname(path))
     ds = NCDataset(path, "c")
     ny, nx = _grid_shape(layout)
@@ -135,15 +147,15 @@ function normalize_netcdf_variables(spec)
         key == :n && (key = :N)
         key == :tsrf && (key = :Tsrf)
         if key == :all
-            append!(selected, NETCDF_VARIABLES)
+            push!(selected, :all)
         elseif key == :none
             continue
         elseif key == :monthly
             push!(selected, :monthly)
-        elseif key in NETCDF_VARIABLES || key in MONTHLY_OUTPUT_VARS
+        elseif key in ALL_OUTPUT_VARS
             push!(selected, key)
         else
-            error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, or a BESSIState field name.")
+            error("Unsupported NetCDF variable selector '$token'. Use `all`, `none`, `monthly`, or a model output field name.")
         end
     end
     return unique(selected)

@@ -139,28 +139,32 @@ function _mask_inactive_yearly_outputs!(
     return nothing
 end
 
-@inline _uses_monthly_output(options::RunOptions) =
+@inline _uses_monthly_output(::BESSIModel, options::RunOptions) =
     :monthly in options.netcdf_variables ||
     any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
 
-function _bessi_output_from_options(sim::Simulation, options::RunOptions)
+@inline _uses_monthly_output(::PDDModel, options::RunOptions) =
+    :monthly in options.netcdf_variables
+
+function _state_output_from_options(sim::Simulation, options::RunOptions, state=sim.now)
     options.write_netcdf || return nothing
-    monthly_mode = _uses_monthly_output(options)
+    monthly_mode = _uses_monthly_output(sim.model, options)
     monthly_mode && length(options.netcdf_variables) > 1 &&
         error("`monthly` NetCDF output cannot currently be combined with other selectors.")
-    vars = monthly_mode && :monthly in options.netcdf_variables ? MONTHLY_OUTPUT_VARS :
-        monthly_mode ? intersect(options.netcdf_variables, MONTHLY_OUTPUT_VARS) :
-        state_output_vars(options.netcdf_variables)
+    monthly_vars = monthly_output_variables(sim.model)
+    vars = monthly_mode && :monthly in options.netcdf_variables ? monthly_vars :
+        monthly_mode ? intersect(options.netcdf_variables, monthly_vars) :
+        state_output_vars(sim.model, options.netcdf_variables)
     isempty(vars) && return nothing
     return init_state_netcdf(
         resolve_netcdf_path(options),
         options,
         sim.forcing.time_values,
         sim.model.grid,
-        sim.now,
+        state,
         vars,
         ntime=monthly_mode ? options.years * 12 : options.years * length(sim.forcing.time_values),
-        nlayer=sim.now.Ntot,
+        nlayer=hasproperty(state, :Ntot) ? getproperty(state, :Ntot) : 1,
     )
 end
 
@@ -216,8 +220,8 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     runtime = integrator.model_runtime.data
     backend_state = runtime.state
     is_gpu = runtime.is_gpu
-    nc = _bessi_output_from_options(sim, run_options)
-    monthly_mode = nc !== nothing && _uses_monthly_output(run_options)
+    nc = _state_output_from_options(sim, run_options)
+    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, run_options)
     monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
     monthly_output = monthly_mode ? MonthlyOutputBuffer(backend_state; nmonth=run_options.years * 12) : nothing
     record_index = 0
@@ -320,6 +324,75 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
         timings;
         nc_path=nc_path,
     )
+    return nothing
+end
+
+function _run_pdd_integrator!(integrator::SimulationIntegrator)
+    sim = integrator.sim
+    options = sim.options
+    runtime = integrator.model_runtime.data
+    nc = _state_output_from_options(sim, options, runtime)
+    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, options)
+    monthly = if monthly_mode
+        (
+            snowpack_swe=runtime.snowpack_swe,
+            smb_ice=similar(runtime.smb_ice),
+            runoff=similar(runtime.runoff),
+            pdd_sum=similar(runtime.pdd_sum),
+        )
+    else
+        nothing
+    end
+    previous = if monthly_mode
+        (
+            smb_ice=copy(runtime.smb_ice),
+            runoff=copy(runtime.runoff),
+            pdd_sum=copy(runtime.pdd_sum),
+        )
+    else
+        nothing
+    end
+    monthly_output = monthly_mode ?
+        pdd_monthly_output_buffer(runtime; nmonth=options.years * 12) :
+        nothing
+    record_index = 0
+
+    while !_finished(integrator)
+        k = integrator.time_index
+        _step_scheduled!(integrator)
+        if monthly_mode && _is_month_boundary(sim.forcing.time_values, k)
+            @. monthly.smb_ice = runtime.smb_ice - previous.smb_ice
+            @. monthly.runoff = runtime.runoff - previous.runoff
+            @. monthly.pdd_sum = runtime.pdd_sum - previous.pdd_sum
+            record_index += 1
+            time_block!(integrator.timings, :write_netcdf) do
+                store_pdd_monthly!(monthly_output, monthly, record_index)
+            end
+            copyto!(previous.smb_ice, runtime.smb_ice)
+            copyto!(previous.runoff, runtime.runoff)
+            copyto!(previous.pdd_sum, runtime.pdd_sum)
+        elseif nc !== nothing && !monthly_mode
+            record_index += 1
+            time_block!(integrator.timings, :write_netcdf) do
+                write_nc!(nc, runtime, record_index, sim.model.grid)
+            end
+        end
+    end
+
+    if monthly_mode
+        time_block!(integrator.timings, :write_netcdf) do
+            write_monthly_output_nc!(
+                nc,
+                (; monthly_output..., count=record_index),
+                1,
+                sim.model.grid,
+            )
+        end
+    end
+
+    status = :complete
+    integrator.netcdf_path = nc === nothing ? "" : resolve_netcdf_path(options)
+    nc !== nothing && close_output!(nc, status, record_index)
     return nothing
 end
 

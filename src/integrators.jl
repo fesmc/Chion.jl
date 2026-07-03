@@ -171,6 +171,8 @@ end
 function _run_integrator!(integrator::SimulationIntegrator)
     if integrator.sim.model isa BESSIModel
         return _run_bessi_integrator!(integrator)
+    elseif integrator.sim.model isa PDDModel
+        return _run_pdd_integrator!(integrator)
     end
     while !_finished(integrator)
         _step_scheduled!(integrator)

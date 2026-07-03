@@ -1,12 +1,17 @@
 """Model runtime preparation, backend transfer, and state finalization."""
 
-function _validate_model_outputs!(options::RunOptions)
+function _validate_model_outputs!(model, options::RunOptions)
     options.write_netcdf || return nothing
-    allowed = copy(NETCDF_VARIABLES)
-    append!(allowed, MONTHLY_OUTPUT_VARS)
-    append!(allowed, (:all, :none, :monthly))
+    allowed = copy(output_variables(model))
+    append!(allowed, (:all, :none))
+    if supports_monthly_output(model)
+        append!(allowed, monthly_output_variables(model))
+        push!(allowed, :monthly)
+    end
     unsupported = setdiff(options.netcdf_variables, allowed)
-    isempty(unsupported) || error("Unsupported NetCDF variables: $(join(string.(unsupported), ", ")).")
+    isempty(unsupported) || error(
+        "Unsupported NetCDF variables for $(nameof(typeof(model))): $(join(string.(unsupported), ", ")).",
+    )
     return nothing
 end
 
@@ -22,12 +27,10 @@ function validate_integrator_setup!(sim, options::RunOptions)
     if model isa BESSIModel && _uses_prescribed_albedo(model.c)
         all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
     end
-    model isa PDDModel && options.write_netcdf &&
-        error("NetCDF output is not implemented for PDDModel; set `write_netcdf=false`.")
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
-    _validate_model_outputs!(options)
+    _validate_model_outputs!(model, options)
     return nothing
 end
 
