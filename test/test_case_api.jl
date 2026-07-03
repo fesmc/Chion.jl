@@ -44,6 +44,7 @@ function _write_sample_forcing_file(path::AbstractString)
 
         defVar(ds, "x", Float64, ("x",))[:] = [0.0, 10_000.0]
         defVar(ds, "y", Float64, ("y",))[:] = [0.0, 10_000.0]
+        defVar(ds, "MSK", Float64, ("x", "y"))[:, :] = [100.0 0.0; 75.0 25.0]
 
         time = defVar(ds, "time", Float64, ("time",))
         time.attrib["units"] = "days since 2001-01-01 12:00:00"
@@ -95,10 +96,10 @@ end
 @testset "Run API" begin
     @testset "BESSIModel scheme types" begin
         grid = SnowpackGrid(1)
-        m1 = BESSIModel(grid; albedo=DynamicAlbedo())
-        m2 = BESSIModel(grid; albedo=ConstantAlbedo())
-        m3 = BESSIModel(grid; densification=HTESSELDensification())
-        m4 = BESSIModel(grid; fresh_snow_density=ParameterizedFreshSnowDensity())
+        m1 = BESSIModel(grid; albedo=:dynamic)
+        m2 = BESSIModel(grid; albedo=:constant)
+        m3 = BESSIModel(grid; densification=:htessel)
+        m4 = BESSIModel(grid; fresh_snow_density=:parameterized)
         @test m1.c.albedo_scheme == Chion.ALBEDO_DYNAMIC
         @test m2.c.albedo_scheme == Chion.ALBEDO_CONSTANT
         @test m3.c.low_density_densification == Chion.LOW_DENSIFICATION_HTESSEL
@@ -147,7 +148,6 @@ end
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_exact.nc"),
                 backend=:cpu,
-                write_outputs=false,
                 years=1,
                 history_year_stride=1,
             )
@@ -176,7 +176,6 @@ end
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_group.nc"),
                 backend=:threads,
-                write_outputs=false,
                 years=1,
                 history_year_stride=1,
             )
@@ -199,7 +198,6 @@ end
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_mixed.nc"),
                 backend=:threads,
-                write_outputs=false,
                 years=1,
                 history_year_stride=1,
             )
@@ -213,70 +211,79 @@ end
         end
     end
 
+    @testset "Direct monthly variable selection records values" begin
+        mktempdir() do dir
+            model, forcing, _ = _sample_model_forcing_grid()
+            path = joinpath(dir, "monthly_lhf.nc")
+            result = run!(Simulation(model;
+                forcing=forcing,
+                netcdf_variables=:latent_heat_flux,
+                write_netcdf=true,
+                netcdf_path=path,
+                backend=:threads,
+                years=1,
+            ); io=devnull)
+            @test result.status == :complete
+            ds = NCDataset(path)
+            @test ds.attrib["records_written"] == "3"
+            @test all(isfinite, Float64.(ds["latent_heat_flux"][1:3, :, :]))
+            close(ds)
+        end
+    end
+
     @testset "Simulation can skip NetCDF entirely" begin
         model, forcing, _ = _sample_model_forcing_grid()
         sim = Simulation(model; forcing=forcing,
             backend=:threads,
-            write_outputs=false,
             years=1,
         )
         result = run!(sim)
         @test result.status == :complete
         @test result.netcdf_path == ""
-        @test result.summary_path == ""
-        @test result.history_csv_path == ""
     end
 
-    @testset "BESSI CPU interval step matches serial column stepping" begin
+    @testset "BESSI KA interval step matches serial column stepping" begin
         model, forcing, _ = _sample_model_forcing_grid()
-        serial = CurrentState(model)
-        threaded = CurrentState(model)
-        serial_workspace = ColumnarStepWorkspace(serial)
-        threaded_workspace = ColumnarStepWorkspace(threaded)
+        serial = BESSIState(model)
+        stepped = BESSIState(model)
+        serial_workspace = Chion.ColumnarStepWorkspace(serial)
+        stepped_workspace = Chion.ColumnarStepWorkspace(stepped)
         kwargs = Chion._bessi_step_kwargs(model)
+        config = Chion._step_config_from_keywords(; kwargs...)
 
         for time_index in eachindex(forcing.time_values)
             @inbounds for idx in 1:serial.ncol
-                Chion._step_column_from_fields!(
+                Chion.column_step!(
                     serial,
-                    forcing,
-                    Int(time_index),
-                    serial_workspace,
                     idx,
-                    true,
-                    kwargs.diurnal_shortwave_substeps,
-                    kwargs.diurnal_shortwave_threshold,
-                    kwargs.diurnal_shortwave_max_substeps,
-                    kwargs.diurnal_shortwave_min_air_temperature,
-                    kwargs.diurnal_temperature_cycle,
-                    kwargs.diurnal_temperature_amplitude,
+                    Chion._step_forcing_at(forcing, idx, Int(time_index)),
+                    config,
+                    serial_workspace,
                 )
             end
         end
 
-        step_interval_threads!(
-            threaded,
+        step!(
+            stepped,
             forcing,
-            eachindex(forcing.time_values),
-            threaded_workspace,
-            1:threaded.ncol;
-            chunk_size=2,
+            stepped_workspace,
+            1:stepped.ncol;
             kwargs...,
         )
 
-        @test threaded.N == serial.N
-        @test threaded.mass ≈ serial.mass
-        @test threaded.mass_w ≈ serial.mass_w
-        @test threaded.density ≈ serial.density
-        @test threaded.temperature ≈ serial.temperature
-        @test threaded.smb_ice ≈ serial.smb_ice
-        @test threaded.runoff ≈ serial.runoff
-        @test threaded.Tsrf ≈ serial.Tsrf
+        @test stepped.N == serial.N
+        @test stepped.mass ≈ serial.mass
+        @test stepped.mass_w ≈ serial.mass_w
+        @test stepped.density ≈ serial.density
+        @test stepped.temperature ≈ serial.temperature
+        @test stepped.smb_ice ≈ serial.smb_ice
+        @test stepped.runoff ≈ serial.runoff
+        @test stepped.Tsrf ≈ serial.Tsrf
     end
 
     @testset "Simulation owns reference and current state" begin
         model, forcing, _ = _sample_model_forcing_grid()
-        sim = Simulation(model; forcing=forcing, years=1, write_outputs=false)
+        sim = Simulation(model; forcing=forcing, years=1)
         @test sim.ref !== sim.now
         @test all(sim.ref.mass .== 0.0)
         run!(sim; io=devnull)
@@ -286,11 +293,11 @@ end
 
     @testset "initialized integrator matches run wrapper" begin
         model_a, forcing, _ = _sample_model_forcing_grid()
-        sim_run = Simulation(model_a; forcing=forcing, years=1, write_outputs=false)
+        sim_run = Simulation(model_a; forcing=forcing, years=1)
         result_run = run!(sim_run; io=devnull)
 
         model_b = BESSIModel(model_a.grid; Ntot=4)
-        sim_manual = Simulation(model_b; forcing=forcing, years=1, write_outputs=false)
+        sim_manual = Simulation(model_b; forcing=forcing, years=1)
         integrator = init_integrator(sim_manual; io=devnull)
         run!(integrator)
         result_manual = finalize!(integrator)
@@ -299,6 +306,30 @@ end
         @test result_run.years_completed == result_manual.years_completed == 1
         @test sim_run.now.mass ≈ sim_manual.now.mass
         @test sim_run.now.smb_ice ≈ sim_manual.now.smb_ice
+    end
+
+    @testset "yearly_step! returns weighted annual coupling fields" begin
+        model, forcing, grid = _sample_model_forcing_grid()
+
+        expected_sim = Simulation(model; forcing=forcing, years=1)
+        expected_integrator = init_integrator(expected_sim; io=devnull)
+        expected_smb_before = copy(expected_sim.now.smb_ice)
+        expected_temperature_sum = zeros(Float64, grid.ncol)
+        for time_index in eachindex(forcing.dt_days)
+            step!(expected_integrator)
+            @. expected_temperature_sum +=
+                expected_integrator.model_runtime.data.state.Tsrf * forcing.dt_days[time_index]
+        end
+
+        coupled_sim = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
+        coupled_integrator = init_integrator(coupled_sim; io=devnull)
+        coupling = yearly_step!(coupled_integrator)
+
+        @test coupling.mean_T_srf_K ≈ expected_temperature_sum ./ sum(forcing.dt_days)
+        @test coupling.ice_sheet_net_forcing_yearly ≈
+            expected_sim.now.smb_ice .- expected_smb_before
+        @test coupling.mean_T_srf_K_grid ≈
+            Chion.scatter_to_grid(coupling.mean_T_srf_K, grid.js, grid.is, size(grid.mask))
     end
 
     @testset "external forcing step matches scheduled forcing" begin
@@ -310,10 +341,10 @@ end
             rainfall_mm_day=[0.0],
             shortwave_down=[100.0],
         )
-        scheduled = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
+        scheduled = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
         run!(scheduled; io=devnull)
 
-        external = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
+        external = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
         integrator = init_integrator(external; io=devnull)
         step!(integrator, 1.0, true)
         result = finalize!(integrator)
@@ -332,13 +363,12 @@ end
             rainfall_mm_day=0.0,
             shortwave_down=100.0,
         )
-        sim = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1, write_outputs=false)
+        sim = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
         integrator = init_integrator(sim; io=devnull)
         surface_height = [0.0, 1000.0]
 
-        @test integrator.forcing === integrator.sim.forcing
-        integrator.forcing.surface_height .= surface_height
-        update_air_pressure!(integrator.forcing)
+        integrator.sim.forcing.surface_height .= surface_height
+        update_air_pressure!(integrator.sim.forcing)
         sync_forcing!(integrator)
 
         expected = Chion.air_pressure_from_surface_height(
@@ -348,8 +378,8 @@ end
             time_values=forcing.time_values,
             temperature_mode=:instantaneous,
         )
-        @test integrator.forcing.air_pressure ≈ expected
-        @test integrator.model_runtime.backend.step_fields.air_pressure ≈ expected
+        @test integrator.sim.forcing.air_pressure ≈ expected
+        @test integrator.model_runtime.data.step_fields.air_pressure ≈ expected
     end
 
     @testset "non-spatial grids only require coordinates for NetCDF" begin
@@ -362,12 +392,12 @@ end
             rainfall_mm_day=0.0,
             shortwave_down=[100.0, 120.0],
         )
-        result = run!(Simulation(model; forcing=forcing, years=1, write_outputs=false))
+        result = run!(Simulation(model; forcing=forcing, years=1))
         @test result.status == :complete
         @test result.netcdf_path == ""
 
         err = _captured_exception() do
-            run!(Simulation(model; forcing=forcing, netcdf_variables=:thickness, write_netcdf=true, years=1, write_outputs=false))
+            run!(Simulation(model; forcing=forcing, netcdf_variables=:thickness, write_netcdf=true, years=1))
         end
         @test err isa Exception
         @test occursin("spatial coordinates", sprint(showerror, err))
@@ -381,11 +411,15 @@ end
             @test size(loaded.forcing.snowfall_rate) == (4, 2)
             @test sort(collect(zip(loaded.grid.js, loaded.grid.is))) == [(1, 1), (1, 2), (2, 1), (2, 2)]
 
+            masked = load_forcing_file(forcing_path; mask_name="MSK", mask_threshold=50.0)
+            @test size(masked.forcing.air_temperature) == (2, 2)
+            @test collect(zip(masked.grid.js, masked.grid.is)) == [(1, 1), (1, 2)]
+            @test masked.grid.mask == [100.0 75.0; 0.0 25.0]
+
             sim = Simulation(BESSIModel(loaded.grid; Ntot=4);
                 forcing=loaded.forcing,
                 years=1,
                 backend=:threads,
-                write_outputs=false,
             )
             result = run!(sim)
             @test result.status == :complete
@@ -414,7 +448,7 @@ end
             shortwave_down=150.0,
         )
         pdd = build_model(:pdd, grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.0)
-        pdd_sim = Simulation(pdd; forcing=f, years=1, write_outputs=false)
+        pdd_sim = Simulation(pdd; forcing=f, years=1)
         result = run!(pdd_sim)
         @test result.status == :complete
         @test pdd_sim.now.snowpack_swe[1] ≈ 0.0 atol=1e-12
@@ -426,7 +460,6 @@ end
             model_kwargs=(ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.0),
             forcing=f,
             years=1,
-            write_outputs=false,
         )
         @test run!(named).status == :complete
 
@@ -442,11 +475,63 @@ end
             result = run!(Simulation(spatial_pdd;
                 forcing=f,
                 years=1,
-                write_outputs=false,
             ))
             @test result.status == :complete
             @test result.netcdf_path == ""
             @test result.years_completed == 1
+
+            output_path = joinpath(dir, "pdd.nc")
+            output_sim = Simulation(spatial_pdd;
+                forcing=f,
+                write_netcdf=true,
+                netcdf_variables=:all,
+                netcdf_path=output_path,
+                years=1,
+            )
+            output_result = run!(output_sim)
+            @test output_result.status == :complete
+            @test output_result.netcdf_path == output_path
+
+            ds = NCDataset(output_path)
+            @test all(haskey(ds, name) for name in ("snowpack_swe", "smb_ice", "runoff", "pdd_sum"))
+            @test !haskey(ds, "thickness")
+            @test size(ds["smb_ice"]) == (2, 1, 1)
+            @test ds.attrib["records_written"] == "2"
+            @test ds["smb_ice"][2, 1, 1] ≈ output_sim.now.smb_ice[1] atol=1e-5
+            @test ds["pdd_sum"][2, 1, 1] ≈ output_sim.now.pdd_sum[1] atol=1e-5
+            close(ds)
+
+            monthly_path = joinpath(dir, "pdd_monthly.nc")
+            monthly_sim = Simulation(PDDModel(spatial_grid;
+                    ddf_snow=3.0,
+                    ddf_ice=8.0,
+                    refreezing_fraction=0.0,
+                );
+                forcing=f,
+                write_netcdf=true,
+                netcdf_variables=:monthly,
+                netcdf_path=monthly_path,
+                years=1,
+            )
+            @test run!(monthly_sim).status == :complete
+            ds = NCDataset(monthly_path)
+            @test ds.attrib["records_written"] == "1"
+            @test ds["smb_ice"][1, 1, 1] ≈ monthly_sim.now.smb_ice[1] atol=1e-5
+            @test ds["runoff"][1, 1, 1] ≈ monthly_sim.now.runoff[1] atol=1e-5
+            @test ds["pdd_sum"][1, 1, 1] ≈ monthly_sim.now.pdd_sum[1] atol=1e-5
+            close(ds)
+
+            err = _captured_exception() do
+                init_integrator(Simulation(PDDModel(spatial_grid);
+                    forcing=f,
+                    write_netcdf=true,
+                    netcdf_variables=:thickness,
+                    netcdf_path=joinpath(dir, "unsupported.nc"),
+                    years=1,
+                ))
+            end
+            @test err isa Exception
+            @test occursin("Unsupported NetCDF variables for PDDModel", sprint(showerror, err))
         end
     end
 
@@ -460,7 +545,11 @@ end
         exported_names = Set(names(Chion))
         for name in (:ForcingData, :SnowpackStepFields, :GridLayout, :LoadedProblem,
                 :RunConfig, :SimulationOptions, :OutputOptions,
-                :run_case, :prescribed_case, :synthetic_case)
+                :run_case, :prescribed_case, :synthetic_case,
+                :CurrentState, :StochasticMonthlyPDD,
+                :DynamicAlbedo, :ConstantAlbedo, :PrescribedAlbedo,
+                :BESSIDensification, :HTESSELDensification,
+                :ConstantFreshSnowDensity, :ParameterizedFreshSnowDensity)
             @test !(name in exported_names)
         end
 
