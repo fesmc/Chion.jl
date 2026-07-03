@@ -4,12 +4,17 @@ Energy-flux temperature solver for array-backed snowpack states.
 
 @inline _safe_positive(x) = x > EPS_TINY ? x : oftype(x, EPS_TINY)
 
-@inline _copy_column!(dst::AbstractMatrix, src::AbstractMatrix, idx::Int, n::Int) =
-    copyto!(view(dst, 1:n, idx), view(src, 1:n, idx))
+@inline function _copy_column!(dst::AbstractMatrix, src::AbstractMatrix, idx::Int, n::Int)
+    @inbounds for i in 1:n
+        dst[i, idx] = src[i, idx]
+    end
+    return nothing
+end
 @inline function _copy_column!(dst::AbstractVector, src::AbstractVector, ::Int, n::Int)
     @inbounds @simd for i in 1:n
         dst[i] = src[i]
     end
+    return nothing
 end
 
 """
