@@ -4,7 +4,7 @@ CurrentModule = Chion
 
 # Albedo
 
-Surface albedo is stored in `domain.albedo_dynamic[idx]` and is updated before
+Surface albedo is stored in `state.albedo[idx]` and is updated before
 the energy solve. The energy solver then treats that diagnosed value as the
 surface albedo for absorbed shortwave radiation.
 

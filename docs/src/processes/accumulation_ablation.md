@@ -59,7 +59,7 @@ After mass addition, the code:
 1. splits the surface layer when `mass[1] > mass_max`
 2. frees space at the bottom when all `Ntot` layers are already active
 3. merges or rebalances the surface when `mass[1] < mass_min`
-4. applies the excess-mass cap described on the
+4. applies the snow-depth cap described on the
    [Layer Structure And Basal Transfer](layer_structure.md) page
 
 ## Melt

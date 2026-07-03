@@ -47,28 +47,26 @@ the removed solid fraction:
 Removed solid mass is accumulated in `mass_base` and `smb_ice`; removed liquid
 water is sent to runoff.
 
-## Excess-Mass Cap
+## Snow-Depth Cap
 
-After accumulation, the code applies an excess-mass cap.
+After accumulation, the code applies a snow-depth cap.
 
-For very small columns (`Ntot <= 3`), the cap is
+The reference depth is the depth of a 15-layer column at
+300 kg m^-3 density:
 
 ```math
-M_{\max} = 1.5\,m_{\mathrm{split}}.
+H_{\mathrm{ref}} =
+\frac{15 \times 1.5 \times m_{\mathrm{split}}}{300\,\mathrm{kg\,m^{-3}}}.
 ```
 
-For the standard multi-layer case, the code uses the fixed BESSI reference cap
+This cap is independent of the active `Ntot` in the current run, so a reduced
+layer count can still represent the same maximum physical depth.
+
+If the active solid snow depth exceeds this reference depth, the code depletes
+only enough basal mass to remove the excess depth:
 
 ```math
-M_{\mathrm{ref}} = 15 \times 1.5 \times m_{\mathrm{split}},
-```
-
-independent of the active `Ntot` in the current run.
-
-If the active solid mass exceeds this reference cap, the code depletes the full excess basal mass
-
-```math
-\Delta m_{\mathrm{base}} = M_{\mathrm{solid}} - M_{\mathrm{ref}}.
+\Delta H_{\mathrm{base}} = H_{\mathrm{solid}} - H_{\mathrm{ref}}.
 ```
 
 ## API
@@ -82,5 +80,5 @@ _split_surface_layer!
 _merge_surface_layer!
 _merge_bottom_layer!
 _continuous_bottom_deplete!
-_enforce_mass_cap!
+_enforce_snow_depth_cap!
 ```

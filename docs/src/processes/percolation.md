@@ -46,8 +46,6 @@ is routed onward because they cannot retain it.
 
 - the current default is `max_lwc = 0.1`
 - returned runoff has units ``\mathrm{kg\,m^{-2}}``
-- `rho_i_tol` is still accepted by the function signatures but is not used by
-  the current implementation
 
 ## API
 

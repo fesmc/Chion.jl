@@ -17,6 +17,7 @@ makedocs(
             "Layer Structure And Basal Transfer" => "processes/layer_structure.md",
             "Densification" => "processes/densification.md",
             "Energy Balance" => "processes/energy.md",
+            "Diurnal Shortwave Cycle" => "processes/diurnal_cycle.md",
             "Percolation" => "processes/percolation.md",
             "Refreezing" => "processes/refreezing.md",
         ],

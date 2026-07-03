@@ -31,9 +31,9 @@ where `V` is the wind speed and the final result is clamped to
 
 ### Default wind-speed behavior
 
-`step!` falls back to `wind_speed = 5.0 m s^-1` when no explicit wind speed is
-supplied. The documented formula therefore matches the behavior of a `step!`
-call that omits `wind_speed`.
+`SnowpackForcing` uses `wind_speed = 5.0 m s^-1` when no explicit wind speed is
+supplied. The generic forcing-file loader uses the same default unless
+`wind_default` is changed.
 
 ### Formula check
 

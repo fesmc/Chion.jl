@@ -10,6 +10,10 @@ extensive derivation-style description, but the formulas below have been
 checked against the current Julia implementation in `src/processes/energy_flux.jl`
 and `src/processes/surface_fluxes.jl`.
 
+For daily forcing, the optional
+[Diurnal Shortwave Cycle](diurnal_cycle.md) can subdivide a forcing step
+before this energy solve is applied.
+
 ## Surface Flux Parameterization
 
 At the surface, the model combines absorbed shortwave radiation, longwave
@@ -52,7 +56,7 @@ Q_{sw} = (1-\alpha)\,Q_{\mathrm{sw,down}},
 ```
 
 where ``\alpha`` is the already diagnosed surface albedo stored in
-`albedo_dynamic[idx]`.
+`albedo[idx]`.
 
 ### Longwave Radiation
 
@@ -137,12 +141,33 @@ Q_{\mathrm{rain}} =
 P_{\mathrm{rain}} c_w (T_{\mathrm{air}} - T_0).
 ```
 
-If `q_lh` is prescribed, the code uses it directly and disables these internal
-snowfall/rain heat-term diagnoses.
+If `q_lh` is prescribed, the code treats it as an additional turbulent latent
+heat flux. It is added to these snowfall/rain heat-term diagnoses rather than
+replacing them. If `q_lh` is not prescribed and relative humidity is
+available in the forcing, Chion falls back to a vapor-pressure
+parameterization:
 
-One implementation detail worth stating explicitly: when both snowfall and
-rainfall are positive, the snowfall branch takes precedence in
-`_diagnose_latent_heat_flux_coefficients`.
+```math
+Q_{\mathrm{vap}} =
+\frac{D_{\mathrm{lf}}}{p_{\mathrm{air}}}
+\left(RH\,e_{\mathrm{sat,w}}(T_{\mathrm{air}}) - e_{\mathrm{sat,i}}(T_s)\right),
+```
+
+with
+
+```math
+D_{\mathrm{lf}} =
+r\,\frac{D_{\mathrm{sh}}}{c_{p,\mathrm{air}}}\,0.622\,(L_v + L_m).
+```
+
+Here ``r`` is `latent_heat_flux_ratio`, defaulting to 1.0. The saturation
+vapor pressure over ice is linearized about the previous surface temperature
+for the implicit surface solve. `relative_humidity` may be supplied either as a
+fraction (`0.0` to `1.0`) or as percent (`0.0` to `100.0`). If neither `q_lh`
+nor relative humidity is
+available, the turbulent latent heat term is zero.
+
+When both snowfall and rainfall are positive, the snowfall branch takes precedence in `_diagnose_latent_heat_flux_coefficients`.
 
 ### Combined Linearized Surface Forcing
 
@@ -175,37 +200,11 @@ c_i \rho_s \frac{\partial T}{\partial t}
 = \frac{\partial}{\partial z}\!\left( K(\rho_s)\,\frac{\partial T}{\partial z} \right).
 ```
 
-### Thermal Conductivity Options
-
-`diffusion_model` selects one of three conductivity closures:
-
-- `1`: Yen-style
-- `2`: Sturm piecewise
-- `3` or anything else: Van Dusen-style polynomial
-
-The implemented formulas are:
+### Thermal Conductivity
 
 ```math
 K(\rho) = K_i \left(\frac{\rho}{1000}\right)^{1.88}
 ```
-
-for `diffusion_model = 1`,
-
-```math
-K(\rho)=
-\begin{cases}
-0.023 + 0.234\times 10^{-3}\rho, & \rho \le 156 \\
-0.138 - 1.01\times 10^{-3}\rho + 3.233\times 10^{-6}\rho^2, & \rho > 156
-\end{cases}
-```
-
-for `diffusion_model = 2`, and
-
-```math
-K(\rho)=2.1\times 10^{-2} + 4.2\times 10^{-4}\rho + 2.2\times 10^{-9}\rho^3
-```
-
-for the fallback branch.
 
 ### Interface Conductance
 
@@ -270,5 +269,4 @@ go_energy_flux!
 
 ```@docs; canonical=false
 _go_energy_flux_resolved!
-_debm_melt_window_fluxes
 ```
