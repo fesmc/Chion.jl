@@ -11,3 +11,4 @@ Manifest.toml
 *.svg
 *.sh
 *.out
+examples/scripts/old
