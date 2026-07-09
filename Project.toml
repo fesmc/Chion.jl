@@ -15,6 +15,7 @@ Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 
 [compat]
 julia = "1.7, 1.8, 1.9, 1.10, 1.11"
@@ -29,7 +30,7 @@ Printf = "1"
 ProgressMeter = "1"
 Statistics = "1"
 TimerOutputs = "0.5"
-
+Documenter = "1.17"
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
