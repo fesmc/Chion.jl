@@ -136,7 +136,8 @@ julia --project=. examples/scripts/run_gris_forcing_file_case.jl
 
 ## Documentation
 
-Detailed documentation lives in `docs/src/`. Build it locally with:
+Read the [Chion.jl documentation](https://fesmc.github.io/Chion.jl/dev/).
+The documentation source lives in `docs/src/`. Build it locally with:
 
 ```bash
 julia --project=docs docs/make.jl
@@ -158,4 +159,3 @@ Useful return values:
 - `history_year_stride` controls how often BESSI year metrics are recorded.
 - `netcdf_variables=:all` selects the fields exposed by the chosen model.
 - `netcdf_variables=:monthly` writes monthly BESSI or PDD diagnostics.
-
