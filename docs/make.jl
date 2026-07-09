@@ -30,3 +30,7 @@ makedocs(
         ],
     ],
 )
+
+deploydocs(
+    repo = "github.com/fesmc/Chion.jl.git",
+)
