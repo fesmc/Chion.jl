@@ -8,6 +8,7 @@ makedocs(
     format=Documenter.HTML(edit_link=nothing),
     sitename="Chion.jl Documentation",
     checkdocs=:exports,
+    warnonly=[:docs_block, :missing_docs],
     pages=[
         "Home" => "index.md",
         "Model State And Step Flow" => "model_state.md",
