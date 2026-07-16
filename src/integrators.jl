@@ -26,6 +26,13 @@ function _single_step_forcing_view(forcing::SnowpackForcing, dt_days::Real)
     )
 end
 
+@inline _copy_forcing_field!(dest, src) = copyto!(dest, src)
+@inline _copy_forcing_field!(::ConstantForcingMatrix, ::ConstantForcingMatrix) = nothing
+@inline _copy_forcing_field!(dest::ColumnForcingMatrix, src::ColumnForcingMatrix) =
+    copyto!(dest.values, src.values)
+@inline _copy_forcing_field!(dest::TimeForcingMatrix, src::TimeForcingMatrix) =
+    copyto!(dest.values, src.values)
+
 function _new_integrator(
     sim,
     io::IO,
@@ -58,24 +65,24 @@ function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
     copyto!(dest.dt_days, src.dt_days)
     copyto!(dest.day_of_year, src.day_of_year)
     copyto!(dest.solar_longitude_deg, src.solar_longitude_deg)
-    copyto!(dest.air_temperature, src.air_temperature)
-    copyto!(dest.snowfall_rate, src.snowfall_rate)
-    copyto!(dest.rainfall_rate, src.rainfall_rate)
-    copyto!(dest.shortwave_down, src.shortwave_down)
-    copyto!(dest.latitude_deg, src.latitude_deg)
-    copyto!(dest.wind_speed, src.wind_speed)
-    copyto!(dest.q_lw_down, src.q_lw_down)
-    copyto!(dest.has_q_lw_down, src.has_q_lw_down)
-    copyto!(dest.q_sh, src.q_sh)
-    copyto!(dest.has_q_sh, src.has_q_sh)
-    copyto!(dest.q_lh, src.q_lh)
-    copyto!(dest.has_q_lh, src.has_q_lh)
-    copyto!(dest.relative_humidity, src.relative_humidity)
-    copyto!(dest.has_relative_humidity, src.has_relative_humidity)
-    copyto!(dest.surface_height, src.surface_height)
-    copyto!(dest.air_pressure, src.air_pressure)
-    copyto!(dest.prescribed_albedo, src.prescribed_albedo)
-    copyto!(dest.has_prescribed_albedo, src.has_prescribed_albedo)
+    _copy_forcing_field!(dest.air_temperature, src.air_temperature)
+    _copy_forcing_field!(dest.snowfall_rate, src.snowfall_rate)
+    _copy_forcing_field!(dest.rainfall_rate, src.rainfall_rate)
+    _copy_forcing_field!(dest.shortwave_down, src.shortwave_down)
+    _copy_forcing_field!(dest.latitude_deg, src.latitude_deg)
+    _copy_forcing_field!(dest.wind_speed, src.wind_speed)
+    _copy_forcing_field!(dest.q_lw_down, src.q_lw_down)
+    _copy_forcing_field!(dest.has_q_lw_down, src.has_q_lw_down)
+    _copy_forcing_field!(dest.q_sh, src.q_sh)
+    _copy_forcing_field!(dest.has_q_sh, src.has_q_sh)
+    _copy_forcing_field!(dest.q_lh, src.q_lh)
+    _copy_forcing_field!(dest.has_q_lh, src.has_q_lh)
+    _copy_forcing_field!(dest.relative_humidity, src.relative_humidity)
+    _copy_forcing_field!(dest.has_relative_humidity, src.has_relative_humidity)
+    _copy_forcing_field!(dest.surface_height, src.surface_height)
+    _copy_forcing_field!(dest.air_pressure, src.air_pressure)
+    _copy_forcing_field!(dest.prescribed_albedo, src.prescribed_albedo)
+    _copy_forcing_field!(dest.has_prescribed_albedo, src.has_prescribed_albedo)
     return dest
 end
 
