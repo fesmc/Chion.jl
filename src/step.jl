@@ -3,20 +3,18 @@
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
-struct EnergyWorkspace{LT,DT,UT,RT,IT,PT,TT,KT}
+struct EnergyWorkspace{LT,DT,UT,RT,IT,PT}
     lower::LT
     diag::DT
     upper::UT
     rhs::RT
     interface_conductance::IT
     previous_temperature::PT
-    layer_thickness::TT
-    thermal_conductivity::KT
 end
 
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(storage, NF, dims...)
-    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
+    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
 end
 
 EnergyWorkspace(state) =
