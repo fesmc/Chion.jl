@@ -6,8 +6,8 @@ using Statistics: mean
 @inline completed_year_count(history::Vector{NamedTuple}, status::Symbol, years::Int) =
     status === :complete ? years : isempty(history) ? 0 : min(history[end].year, years)
 
-@inline year_metrics_schedule_label(stride::Int) =
-    stride == 0 ? "final year only" : stride == 1 ? "every year" : "every $(stride) years + final"
+@inline year_metrics_schedule_label(stride::Int, enabled::Bool=true) =
+    !enabled ? "disabled" : stride == 0 ? "final year only" : stride == 1 ? "every year" : "every $(stride) years + final"
 
 @inline function _finite_mean(data)
     finite = filter(isfinite, data)
@@ -92,7 +92,7 @@ function print_run_report(
     println(io, "Backend         : ", String(options.backend))
     println(io, "Years           : ", completed_year_count(history, status, options.years))
     println(io, "Status          : ", string(status))
-    println(io, "Year metrics    : ", year_metrics_schedule_label(options.history_year_stride))
+    println(io, "Year metrics    : ", year_metrics_schedule_label(options.history_year_stride, options.compute_year_metrics))
     println(io, @sprintf("Run wall total  : %.3f s", run_wall_sec))
     haskey(timings.to.inner_timers, "model_step_wall") && println(io, @sprintf("Model step wall : %.3f s", TimerOutputs.time(timings.to.inner_timers["model_step_wall"]) * 1e-9))
     println(io, "Output NetCDF   : ", isempty(nc_path) ? "skipped" : abspath(nc_path))
