@@ -1,3 +1,66 @@
+"""Read-only matrix whose entries all have the same value."""
+struct ConstantForcingMatrix{T} <: AbstractMatrix{T}
+    value::T
+    dims::Tuple{Int, Int}
+end
+
+Base.size(field::ConstantForcingMatrix) = field.dims
+@inline function Base.getindex(field::ConstantForcingMatrix, column::Int, time::Int)
+    @boundscheck checkbounds(field, column, time)
+    return field.value
+end
+Base.IndexStyle(::Type{<:ConstantForcingMatrix}) = IndexCartesian()
+Adapt.@adapt_structure ConstantForcingMatrix
+
+"""Logical matrix that repeats one value per column over all timesteps."""
+struct ColumnForcingMatrix{T, V <: AbstractVector{T}} <: AbstractMatrix{T}
+    values::V
+    ntime::Int
+end
+
+Base.size(field::ColumnForcingMatrix) = (length(field.values), field.ntime)
+@inline function Base.getindex(field::ColumnForcingMatrix, column::Int, time::Int)
+    @boundscheck checkbounds(field, column, time)
+    return @inbounds field.values[column]
+end
+@inline function Base.setindex!(field::ColumnForcingMatrix, value, column::Int, time::Int)
+    @boundscheck checkbounds(field, column, time)
+    @inbounds field.values[column] = value
+    return value
+end
+Base.IndexStyle(::Type{<:ColumnForcingMatrix}) = IndexCartesian()
+Adapt.@adapt_structure ColumnForcingMatrix
+
+"""Logical matrix that repeats one value per timestep over all columns."""
+struct TimeForcingMatrix{T, V <: AbstractVector{T}} <: AbstractMatrix{T}
+    values::V
+    ncol::Int
+end
+
+Base.size(field::TimeForcingMatrix) = (field.ncol, length(field.values))
+@inline function Base.getindex(field::TimeForcingMatrix, column::Int, time::Int)
+    @boundscheck checkbounds(field, column, time)
+    return @inbounds field.values[time]
+end
+@inline function Base.setindex!(field::TimeForcingMatrix, value, column::Int, time::Int)
+    @boundscheck checkbounds(field, column, time)
+    @inbounds field.values[time] = value
+    return value
+end
+Base.IndexStyle(::Type{<:TimeForcingMatrix}) = IndexCartesian()
+Adapt.@adapt_structure TimeForcingMatrix
+
+@inline _constant_forcing_matrix(value, dims::Tuple{Int, Int}) =
+    ConstantForcingMatrix(value, dims)
+
+@inline _map_forcing_field(f, field::ConstantForcingMatrix) =
+    ConstantForcingMatrix(f(field.value), field.dims)
+@inline _map_forcing_field(f, field::ColumnForcingMatrix) =
+    ColumnForcingMatrix(f.(field.values), field.ntime)
+@inline _map_forcing_field(f, field::TimeForcingMatrix) =
+    TimeForcingMatrix(f.(field.values), field.ncol)
+@inline _map_forcing_field(f, field) = f.(field)
+
 @inline function _synthesized_time_values(dt_days::Vector{Float64})
     base = DateTime(2000, 1, 1, 12)
     out = Vector{DateTime}(undef, length(dt_days))
@@ -24,12 +87,12 @@ end
 
 @inline function _forcing_numeric_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
     if field isa Number
-        return fill(Float64(field), ncol, ntime)
+        return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
     data = collect(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
-        return repeat(reshape(Float64.(data), 1, ntime), ncol, 1)
+        return TimeForcingMatrix(Float64.(data), ncol)
     elseif ndims(data) == 2
         size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
         return Matrix{Float64}(data)
@@ -39,12 +102,12 @@ end
 
 @inline function _forcing_bool_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
     if field isa Bool
-        return fill(field, ncol, ntime)
+        return _constant_forcing_matrix(field, (ncol, ntime))
     end
     data = collect(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
-        return Matrix{Bool}(repeat(reshape(Bool.(data), 1, ntime), ncol, 1))
+        return TimeForcingMatrix(Bool.(data), ncol)
     elseif ndims(data) == 2
         size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
         return Matrix{Bool}(Bool.(data))
@@ -54,12 +117,12 @@ end
 
 @inline function _forcing_column_metadata_matrix(field, ncol::Int, ntime::Int, name::AbstractString)
     if field isa Number
-        return fill(Float64(field), ncol, ntime)
+        return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
     data = collect(field)
     if ndims(data) == 1
         length(data) == ncol || error("`$name` vector input must have length $ncol.")
-        return repeat(reshape(Float64.(data), ncol, 1), 1, ntime)
+        return ColumnForcingMatrix(Float64.(data), ntime)
     elseif ndims(data) == 2
         size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
         return Matrix{Float64}(data)
@@ -313,29 +376,31 @@ end
 @inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
 
 @inline function _step_forcing_at(forcing::SnowpackForcing, idx::Int, time_index::Int)
-    air_temperature = forcing.air_temperature[idx, time_index]
-    return SnowpackStepForcing(
-        air_temperature,
-        _step_dt(forcing.dt_days, time_index),
-        forcing.snowfall_rate[idx, time_index],
-        forcing.rainfall_rate[idx, time_index],
-        forcing.shortwave_down[idx, time_index],
-        forcing.wind_speed[idx, time_index];
-        q_lw_down=forcing.q_lw_down[idx, time_index],
-        has_q_lw_down=forcing.has_q_lw_down[idx, time_index],
-        q_sh=forcing.q_sh[idx, time_index],
-        has_q_sh=forcing.has_q_sh[idx, time_index],
-        q_lh=forcing.q_lh[idx, time_index],
-        has_q_lh=forcing.has_q_lh[idx, time_index],
-        relative_humidity=forcing.relative_humidity[idx, time_index],
-        has_relative_humidity=forcing.has_relative_humidity[idx, time_index],
-        air_pressure=forcing.air_pressure[idx, time_index],
-        prescribed_albedo=forcing.prescribed_albedo[idx, time_index],
-        has_prescribed_albedo=forcing.has_prescribed_albedo[idx, time_index],
-        latitude_deg=forcing.latitude_deg[idx, time_index],
-        day_of_year=forcing.day_of_year[time_index],
-        solar_longitude_deg=forcing.solar_longitude_deg[time_index],
-    )
+    @inbounds begin
+        air_temperature = forcing.air_temperature[idx, time_index]
+        return SnowpackStepForcing(
+            air_temperature,
+            _step_dt(forcing.dt_days, time_index),
+            forcing.snowfall_rate[idx, time_index],
+            forcing.rainfall_rate[idx, time_index],
+            forcing.shortwave_down[idx, time_index],
+            forcing.wind_speed[idx, time_index];
+            q_lw_down=forcing.q_lw_down[idx, time_index],
+            has_q_lw_down=forcing.has_q_lw_down[idx, time_index],
+            q_sh=forcing.q_sh[idx, time_index],
+            has_q_sh=forcing.has_q_sh[idx, time_index],
+            q_lh=forcing.q_lh[idx, time_index],
+            has_q_lh=forcing.has_q_lh[idx, time_index],
+            relative_humidity=forcing.relative_humidity[idx, time_index],
+            has_relative_humidity=forcing.has_relative_humidity[idx, time_index],
+            air_pressure=forcing.air_pressure[idx, time_index],
+            prescribed_albedo=forcing.prescribed_albedo[idx, time_index],
+            has_prescribed_albedo=forcing.has_prescribed_albedo[idx, time_index],
+            latitude_deg=forcing.latitude_deg[idx, time_index],
+            day_of_year=forcing.day_of_year[time_index],
+            solar_longitude_deg=forcing.solar_longitude_deg[time_index],
+        )
+    end
 end
 
 function SnowpackForcing(;
@@ -395,9 +460,18 @@ function SnowpackForcing(;
         isnothing(air_temperature_c) && error("`air_temperature_c` is required.")
         isnothing(snowfall_mm_day) && error("`snowfall_mm_day` is required.")
         isnothing(rainfall_mm_day) && error("`rainfall_mm_day` is required.")
-        air_temperature = _forcing_numeric_matrix(air_temperature_c, column_count, ntime, "air_temperature_c") .+ 273.15
-        snowfall_rate = _forcing_numeric_matrix(snowfall_mm_day, column_count, ntime, "snowfall_mm_day") ./ 86_400.0
-        rainfall_rate = _forcing_numeric_matrix(rainfall_mm_day, column_count, ntime, "rainfall_mm_day") ./ 86_400.0
+        air_temperature = _map_forcing_field(
+            temperature -> temperature + 273.15,
+            _forcing_numeric_matrix(air_temperature_c, column_count, ntime, "air_temperature_c"),
+        )
+        snowfall_rate = _map_forcing_field(
+            rate -> rate / 86_400.0,
+            _forcing_numeric_matrix(snowfall_mm_day, column_count, ntime, "snowfall_mm_day"),
+        )
+        rainfall_rate = _map_forcing_field(
+            rate -> rate / 86_400.0,
+            _forcing_numeric_matrix(rainfall_mm_day, column_count, ntime, "rainfall_mm_day"),
+        )
     else
         isnothing(air_temperature) && error("`air_temperature` or `air_temperature_c` is required.")
         isnothing(snowfall_rate) && error("`snowfall_rate` or `snowfall_mm_day` is required.")
@@ -409,27 +483,37 @@ function SnowpackForcing(;
 
     dims = size(air_temperature)
     shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
-    wind_speed_m = isnothing(wind_speed) ? fill(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
+    wind_speed_m = isnothing(wind_speed) ? _constant_forcing_matrix(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
     latitude_deg_m = isnothing(latitude_deg) ? fill(NaN, dims) : _forcing_column_metadata_matrix(latitude_deg, column_count, ntime, "latitude_deg")
-    q_lw_down_m = isnothing(q_lw_down) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
-    has_q_lw_down_m = isnothing(q_lw_down) ? fill(false, dims) : isnothing(has_q_lw_down) ? fill(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down")
-    q_sh_m = isnothing(q_sh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
-    has_q_sh_m = isnothing(q_sh) ? fill(false, dims) : isnothing(has_q_sh) ? fill(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
-    q_lh_m = isnothing(q_lh) ? zeros(Float64, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
-    has_q_lh_m = isnothing(q_lh) ? fill(false, dims) : isnothing(has_q_lh) ? fill(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
+    q_lw_down_m = isnothing(q_lw_down) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
+    has_q_lw_down_m = isnothing(q_lw_down) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_lw_down) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down")
+    q_sh_m = isnothing(q_sh) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
+    has_q_sh_m = isnothing(q_sh) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_sh) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
+    q_lh_m = isnothing(q_lh) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
+    has_q_lh_m = isnothing(q_lh) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_lh) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
     relative_humidity_m = if !isnothing(relative_humidity)
         _forcing_numeric_matrix(relative_humidity, column_count, ntime, "relative_humidity")
     else
-        zeros(Float64, dims)
+        _constant_forcing_matrix(0.0, dims)
     end
     has_relative_humidity_m = if isnothing(relative_humidity)
-        fill(false, dims)
+        _constant_forcing_matrix(false, dims)
     elseif isnothing(has_relative_humidity)
-        Matrix{Bool}(isfinite.(relative_humidity_m))
+        _map_forcing_field(isfinite, relative_humidity_m)
     else
         _forcing_bool_matrix(has_relative_humidity, column_count, ntime, "has_relative_humidity")
     end
-    relative_humidity_m[.!has_relative_humidity_m] .= 0.0
+    if !isnothing(relative_humidity)
+        if isnothing(has_relative_humidity)
+            relative_humidity_m = _map_forcing_field(
+                value -> isfinite(value) ? value : 0.0,
+                relative_humidity_m,
+            )
+        else
+            relative_humidity_m = Matrix(relative_humidity_m)
+            relative_humidity_m[.!has_relative_humidity_m] .= 0.0
+        end
+    end
     time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
     surface_height_m = isnothing(surface_height) ? fill(NaN, dims) : _forcing_column_metadata_matrix(surface_height, column_count, ntime, "surface_height")
@@ -446,8 +530,8 @@ function SnowpackForcing(;
     else
         fill(DEFAULT_SEA_LEVEL_AIR_PRESSURE, dims)
     end
-    prescribed_albedo_m = isnothing(prescribed_albedo) ? zeros(Float64, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
-    has_prescribed_albedo_m = isnothing(prescribed_albedo) ? fill(false, dims) : isnothing(has_prescribed_albedo) ? fill(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
+    prescribed_albedo_m = isnothing(prescribed_albedo) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
+    has_prescribed_albedo_m = isnothing(prescribed_albedo) ? _constant_forcing_matrix(false, dims) : isnothing(has_prescribed_albedo) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
