@@ -59,6 +59,34 @@ function prepare_runtime!(model::BESSIModel, state::BESSIState, forcing::Snowpac
     return _prepare_backend!(timings, state, forcing; is_gpu=options.backend == :gpu)
 end
 
+function _gpu_pdd_forcing(forcing::SnowpackForcing)
+    to_gpu(field) = adapt(gpu_storage_type(), field)
+    return SnowpackForcing(
+        forcing.time_values,
+        forcing.dt_days,
+        forcing.day_of_year,
+        forcing.solar_longitude_deg,
+        to_gpu(forcing.air_temperature),
+        to_gpu(forcing.snowfall_rate),
+        to_gpu(forcing.rainfall_rate),
+        forcing.shortwave_down,
+        forcing.latitude_deg,
+        forcing.wind_speed,
+        forcing.q_lw_down,
+        forcing.has_q_lw_down,
+        forcing.q_sh,
+        forcing.has_q_sh,
+        forcing.q_lh,
+        forcing.has_q_lh,
+        forcing.relative_humidity,
+        forcing.has_relative_humidity,
+        forcing.surface_height,
+        forcing.air_pressure,
+        forcing.prescribed_albedo,
+        forcing.has_prescribed_albedo,
+    )
+end
+
 function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
     is_gpu = options.backend == :gpu
     if is_gpu
@@ -76,7 +104,7 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
             adapt(gpu_storage_type(), state.pdd_sum)
         end
         step_fields = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), forcing)
+            _gpu_pdd_forcing(forcing)
         end
         return (snowpack_swe=snowpack_swe, smb_ice=smb_ice, runoff=runoff, pdd_sum=pdd_sum, step_fields=step_fields, is_gpu=true)
     end
@@ -309,7 +337,7 @@ end
 function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats)
     if runtime.is_gpu
         time_block!(timings, :gpu_transfer) do
-            _copy_bessi_state!(state, cpu_state(runtime.state))
+            _copy_bessi_state!(state, runtime.state)
         end
     end
     update_diagnostics!(state)
