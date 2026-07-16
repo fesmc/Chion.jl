@@ -140,9 +140,11 @@ end
     ddf_snow,
     ddf_ice,
     refreezing_fraction,
+    active_indices,
 )
-    idx = @index(Global)
-    if idx <= length(snowpack_swe)
+    active_idx = @index(Global)
+    if active_idx <= length(active_indices)
+        idx = active_indices[active_idx]
         _pdd_step_column!(
             snowpack_swe,
             smb_ice,
@@ -174,9 +176,11 @@ end
     ddf_ice,
     refreezing_fraction,
     temperature_sigma,
+    active_indices,
 )
-    idx = @index(Global)
-    if idx <= length(snowpack_swe)
+    active_idx = @index(Global)
+    if active_idx <= length(active_indices)
+        idx = active_indices[active_idx]
         _pdd_apply_column_pdd!(
             snowpack_swe,
             smb_ice,
@@ -308,6 +312,7 @@ function pdd_step!(
     ddf_snow,
     ddf_ice,
     refreezing_fraction,
+    active_indices,
 )
     size(forcing.air_temperature, 1) == length(snowpack_swe) || error("Forcing column count must match the PDD state column count.")
     length(pdd_sum) == length(snowpack_swe) || error("PDD diagnostic length must match the PDD state column count.")
@@ -324,8 +329,9 @@ function pdd_step!(
         _step_dt(forcing.dt_days, time_index),
         ddf_snow,
         ddf_ice,
-        refreezing_fraction;
-        ndrange=length(snowpack_swe),
+        refreezing_fraction,
+        active_indices;
+        ndrange=length(active_indices),
     )
     _wait_kernel(event)
     return nothing
@@ -339,6 +345,7 @@ function pdd_monthly_step!(
     forcing::SnowpackForcing,
     time_index::Int,
     model::PDDModel,
+    active_indices,
 )
     size(forcing.air_temperature, 1) == length(snowpack_swe) || error("Forcing column count must match the PDD state column count.")
     length(pdd_sum) == length(snowpack_swe) || error("PDD diagnostic length must match the PDD state column count.")
@@ -356,12 +363,56 @@ function pdd_monthly_step!(
         model.ddf_snow,
         model.ddf_ice,
         model.refreezing_fraction,
-        model.temperature_sigma;
-        ndrange=length(snowpack_swe),
+        model.temperature_sigma,
+        active_indices;
+        ndrange=length(active_indices),
     )
     _wait_kernel(event)
     return nothing
 end
+
+
+pdd_step!(
+    snowpack_swe::AbstractVector,
+    smb_ice::AbstractVector,
+    runoff::AbstractVector,
+    pdd_sum::AbstractVector,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    ddf_snow,
+    ddf_ice,
+    refreezing_fraction,
+) = pdd_step!(
+    snowpack_swe,
+    smb_ice,
+    runoff,
+    pdd_sum,
+    forcing,
+    time_index,
+    ddf_snow,
+    ddf_ice,
+    refreezing_fraction,
+    1:length(snowpack_swe),
+)
+
+pdd_monthly_step!(
+    snowpack_swe::AbstractVector,
+    smb_ice::AbstractVector,
+    runoff::AbstractVector,
+    pdd_sum::AbstractVector,
+    forcing::SnowpackForcing,
+    time_index::Int,
+    model::PDDModel,
+) = pdd_monthly_step!(
+    snowpack_swe,
+    smb_ice,
+    runoff,
+    pdd_sum,
+    forcing,
+    time_index,
+    model,
+    1:length(snowpack_swe),
+)
 
 function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing)
     for time_index in 1:_step_time_count(forcing)
