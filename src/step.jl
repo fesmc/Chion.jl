@@ -392,7 +392,6 @@ function column_step_core!(
             c.rho_i,
         )
         _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
-        has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
     end
 
     if use_prescribed_albedo
@@ -438,16 +437,14 @@ Launch the backend-specific batch stepping kernel for one contiguous forcing
 range and return the KernelAbstractions event.
 """
 @inline _step_kernel_workgroupsize(backend) =
-    backend isa KernelAbstractions.CPU ? 512 : 256
+    backend isa KernelAbstractions.CPU ? 16 : 256
 
-@inline function _cpu_time_block_steps()
-    value = get(ENV, "CHION_CPU_TIME_BLOCK_STEPS", "30")
+@inline function _step_time_block_steps(backend)
+    name = backend isa KernelAbstractions.CPU ? "CHION_CPU_TIME_BLOCK_STEPS" : "CHION_GPU_TIME_BLOCK_STEPS"
+    value = get(ENV, name, "1")
     parsed = tryparse(Int, value)
     return isnothing(parsed) || parsed < 1 ? 1 : parsed
 end
-
-@inline _step_time_block_steps(backend) =
-    backend isa KernelAbstractions.CPU ? _cpu_time_block_steps() : 1
 
 @inline function _launch_step_columns_kernel!(
     state,
