@@ -45,7 +45,7 @@ function _new_integrator(
         sim,
         io,
         timings,
-        time_ns(),
+        Int(time_ns()),
         model_runtime,
         NamedTuple[],
         "",

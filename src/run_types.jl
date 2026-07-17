@@ -66,18 +66,18 @@ struct SimulationResult
     netcdf_path::String
 end
 
-mutable struct ModelRuntime
-    data
+mutable struct ModelRuntime{D,A}
+    data::D
     active::Vector{Bool}
-    active_indices
+    active_indices::A
 end
 
-mutable struct SimulationIntegrator
-    sim
+mutable struct SimulationIntegrator{S,R<:ModelRuntime}
+    sim::S
     io::IO
     timings::StepTimingStats
     wall_t0::Int
-    model_runtime::ModelRuntime
+    model_runtime::R
     history::Vector{NamedTuple}
     netcdf_path::String
     time_index::Int

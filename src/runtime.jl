@@ -247,7 +247,7 @@ end
 function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
     data = prepare_runtime!(sim.model, sim.now, sim.forcing, options, timings)
     ncol = ncols(sim.model.grid)
-    active = trues(ncol)
+    active = fill(true, ncol)
     active_indices = _backend_active_indices(collect(1:ncol), data)
     return ModelRuntime(data, active, active_indices)
 end
