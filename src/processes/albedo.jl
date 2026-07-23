@@ -81,10 +81,10 @@ function _refresh_dynamic_albedo_from_snowfall!(
 end
 
 """
-    _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c)
+    _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c, dt_days)
 
 Update the diagnosed surface albedo for column `idx` in-place using either the
-constant or dynamic albedo scheme.
+constant or dynamic albedo scheme. Dynamic snow aging is scaled by `dt_days`.
 """
 function _update_surface_albedo_arrays!(
     N_storage,
@@ -95,6 +95,7 @@ function _update_surface_albedo_arrays!(
     albedo_dynamic,
     idx::Int,
     c::SnowpackPhysicalConstants,
+    dt_days,
 )
     if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
@@ -109,9 +110,13 @@ function _update_surface_albedo_arrays!(
 
     previous_albedo = clamp(_get_scalar(albedo_dynamic, idx), c.alpha_wet, c.alpha_dry)
     surface_temperature = _get_layer(temperature, 1, idx)
+    aging_decrement = (
+        (surface_temperature - c.T0) * oftype(surface_temperature, 1.35e-3) +
+        oftype(surface_temperature, 0.0278)
+    ) * oftype(surface_temperature, dt_days)
     updated_albedo = min(
         previous_albedo,
-        previous_albedo - ((surface_temperature - c.T0) * oftype(surface_temperature, 1.35e-3) + oftype(surface_temperature, 0.0278)),
+        previous_albedo - aging_decrement,
     )
     updated_albedo = max(updated_albedo, c.alpha_wet)
 
@@ -129,12 +134,12 @@ function _update_surface_albedo_arrays!(
 end
 
 """
-    update_surface_albedo!(state, idx)
+    update_surface_albedo!(state, idx, dt_days=1)
 
 Update the surface albedo of column `idx` in `state` and return the new
-albedo.
+albedo. `dt_days` controls the elapsed time applied to dynamic snow aging.
 """
-function update_surface_albedo!(state, idx::Int)
+function update_surface_albedo!(state, idx::Int, dt_days=one(eltype(state.mass)))
     return _update_surface_albedo_arrays!(
         state.N,
         state.mass,
@@ -144,5 +149,6 @@ function update_surface_albedo!(state, idx::Int)
         state.albedo,
         idx,
         state.c,
+        dt_days,
     )
 end

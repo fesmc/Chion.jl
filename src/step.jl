@@ -240,6 +240,7 @@ function column_step_core!(
             albedo_dynamic,
             idx,
             c,
+            forcing.dt_days,
         )
     end
 
