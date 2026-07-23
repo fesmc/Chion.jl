@@ -7,7 +7,7 @@ Firn densification translated into array-backed kernels.
     temperature,
     ice_density,
     accumulation_rate,
-) = oftype(density, 0.011) * exp(-oftype(temperature, 10160.0) / oftype(temperature, 8.13) / temperature) *
+) = oftype(density, 0.011) * exp(-oftype(temperature, 10160.0) / oftype(temperature, 8.314) / temperature) *
     (ice_density - density) * max(accumulation_rate, zero(accumulation_rate))
 
 @inline _htessel_snow_viscosity(
@@ -148,7 +148,7 @@ firn and near-close-off firn.
         oftype(density, 87.425) * density_ratio +
         oftype(density, 30.673)
     )
-    return oftype(density, 25400.0) * exp(-oftype(density, 60000.0) / oftype(density, 8.13) / temperature) *
+    return oftype(density, 25400.0) * exp(-oftype(density, 60000.0) / oftype(density, 8.314) / temperature) *
            density * densification_shape_factor * pressure_excess_mpa^3
 end
 
@@ -171,7 +171,7 @@ Return the high-density densification tendency used near pore close-off.
 
     densification_shape_factor = oftype(density, 3) / oftype(density, 16) *
                                  relative_porosity / denominator^3
-    return oftype(density, 25400.0) * exp(-oftype(density, 60000.0) / oftype(density, 8.13) / temperature) *
+    return oftype(density, 25400.0) * exp(-oftype(density, 60000.0) / oftype(density, 8.314) / temperature) *
            density * densification_shape_factor * pressure_excess_mpa^3
 end
 

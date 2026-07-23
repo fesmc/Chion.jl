@@ -39,7 +39,7 @@ The BESSI-style tendency is
 ```math
 \dot{\rho} =
 0.011
-\exp\!\left(-\frac{10160}{8.13\,T}\right)
+\exp\!\left(-\frac{10160}{8.314\,T}\right)
 (\rho_i - \rho)\max(A_t, 0),
 ```
 
@@ -87,7 +87,7 @@ The code uses
 ```math
 \dot{\rho} =
 25400
-\exp\!\left(-\frac{60000}{8.13\,T}\right)
+\exp\!\left(-\frac{60000}{8.314\,T}\right)
 \rho\,f(\rho)\,(\Delta P)^3,
 ```
 
