@@ -5,8 +5,19 @@ Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 using Printf
 using Chion
+using Plots
 
 const DEFAULT_OUTPUT_DIR = joinpath(@__DIR__, "..", "plots", "diurnal_shortwave")
+
+# Present-day (0 ka) row of ZB18a(1,1), from Kocken and Zeebe's
+# paleoinsolation data set: https://github.com/japhir/paleoinsolation.
+# The source longitude of perihelion is shifted by pi before use, matching
+# the conversion in src/paleoinsolation.f90 in that repository.
+const ZB18A_1_1_PRESENT_DAY = (
+    eccentricity=1.670545044954422e-2,
+    obliquity_rad=4.090928042223287e-1,
+    lpx_rad=mod(1.796246057579526 - pi, 2pi),
+)
 
 arg_value(args, name, default) = begin
     prefix = "--$(name)="
@@ -26,20 +37,18 @@ function print_help()
     println("  julia --project=. examples/scripts/plot_diurnal_shortwave_cycle.jl [options]")
     println()
     println("Options:")
-    println("  --latitudes=LIST             Comma-separated degrees north (default: 65)")
+    println("  --latitudes=LIST             Comma-separated degrees north, one PDF panel each (default: 40,50,60,70)")
     println("  --solar-longitudes=LIST      Comma-separated degrees, e.g. 0,90,180,270 (default: 90)")
     println("  --shortwave-mean=VALUE       Target daily mean W m^-2 for normalized curves (default: 200)")
-    println("  --eccentricity=VALUE         Paleo orbital eccentricity (default: 0.0)")
-    println("  --obliquity-deg=VALUE        Paleo obliquity degrees (default: 23.439291)")
-    println("  --lpx-deg=VALUE              Paleo longitude of perihelion degrees (default: 0)")
     println("  --solar-constant=VALUE       Paleo solar constant W m^-2 (default: 1360.7)")
     println("  --samples=N                  Samples across one day (default: 289)")
-    println("  --threshold=VALUE            Chion substep threshold W m^-2 (default: 0)")
-    println("  --max-substeps=N             Chion max adaptive substeps, 1 to 24 (default: 3)")
-    println("  --air-temperature-c=VALUE    Daily mean air temperature for substep criterion (default: 0)")
+    println("  --substeps=LIST              Substep-average curves to plot (default: 4,8,12,24)")
     println("  --output-dir=PATH            Output directory (default: examples/plots/diurnal_shortwave)")
 end
 
+# Daily TOA insolation matches Kocken and Zeebe (2026),
+# doi:10.1029/2025PA005287, src/insolation.f90.  The instantaneous form
+# below is the corresponding solar-zenith-angle expression.
 function paleo_insolation(
     eccentricity,
     obliquity_rad,
@@ -82,13 +91,14 @@ function chion_instantaneous(shortwave_mean, latitude_deg, solar_longitude_deg, 
     return max(0.0, scale * (terms.sin_lat_sin_dec + terms.cos_lat_cos_dec * cos(hour_angle)))
 end
 
-function paleo_normalized(shortwave_mean, eccentricity, obliquity_rad, lpx_rad, latitude_deg, solar_longitude_deg, hour_angle)
+function paleo_normalized(shortwave_mean, eccentricity, obliquity_rad, lpx_rad, latitude_deg, solar_longitude_deg, hour_angle; solar_constant=1360.7)
     daily_mean = paleo_insolation(
         eccentricity,
         obliquity_rad,
         lpx_rad;
         longitude_rad=deg2rad(solar_longitude_deg),
         latitude_rad=deg2rad(latitude_deg),
+        solar_constant=solar_constant,
     )
     daily_mean <= 0 && return 0.0
     instantaneous = paleo_insolation(
@@ -97,22 +107,14 @@ function paleo_normalized(shortwave_mean, eccentricity, obliquity_rad, lpx_rad, 
         lpx_rad;
         longitude_rad=deg2rad(solar_longitude_deg),
         latitude_rad=deg2rad(latitude_deg),
+        solar_constant=solar_constant,
         hour_angle=hour_angle,
     )
     return shortwave_mean * instantaneous / daily_mean
 end
 
-function substep_intervals(latitude_deg, solar_longitude_deg, shortwave_mean, threshold, max_substeps, air_temperature_c)
-    count = Chion._diurnal_shortwave_substep_count(
-        1.0,
-        shortwave_mean,
-        air_temperature_c + 273.15,
-        -8.0 + 273.15,
-        latitude_deg,
-        solar_longitude_deg,
-        threshold,
-        max_substeps,
-    )
+function substep_intervals(count)
+    count >= 1 || error("Each substep count must be at least 1.")
     width = 2pi / count
     return [
         (-pi + (i - 1) * width, i == count ? pi : -pi + i * width)
@@ -135,81 +137,60 @@ function substep_average_curve(shortwave_mean, latitude_deg, solar_longitude_deg
     return 0.0
 end
 
-function write_csv(path, rows)
+function write_csv(path, rows, substep_counts)
     open(path, "w") do io
-        println(io, "hour_angle_rad,hour,chion_w_m2,paleo_normalized_w_m2,substep_average_w_m2")
+        headers = ["substep_average_$(count)_w_m2" for count in substep_counts]
+        println(io, join(["hour_angle_rad", "hour", "chion_w_m2", "paleo_normalized_w_m2", headers...], ','))
         for row in rows
-            @printf(
-                io,
-                "%.10f,%.10f,%.10f,%.10f,%.10f\n",
-                row.hour_angle,
-                row.hour,
-                row.chion,
-                row.paleo,
-                row.substep,
-            )
+            values = [row.hour_angle, row.hour, row.chion, row.paleo, row.substeps...]
+            println(io, join((@sprintf("%.10f", value) for value in values), ','))
         end
     end
 end
 
-function svg_polyline(points, width, height, xmin, xmax, ymin, ymax)
-    coords = String[]
-    for (x, y) in points
-        px = 70 + (x - xmin) / (xmax - xmin) * (width - 100)
-        py = height - 55 - (y - ymin) / (ymax - ymin) * (height - 95)
-        push!(coords, @sprintf("%.2f,%.2f", px, py))
+panel_label(index) = index <= 26 ? "($(Char('a' + index - 1)))" : "($(index))"
+
+function write_pdf(path, cases, substep_counts, shortwave_mean; solar_longitude_deg)
+    panels = Any[]
+    substep_colors = [:purple, :green, :magenta, :orange]
+    substep_linestyles = [:dash, :dot, :dashdot, :dashdotdot]
+    for (index, case) in enumerate(cases)
+        rows = case.rows
+        hours = [row.hour for row in rows]
+        ymax = 1.32 * maximum(max(row.chion, row.paleo, shortwave_mean, maximum(row.substeps)) for row in rows)
+        panel = plot(
+            title="$(case.latitude_deg)°N",
+            xlabel="Hour from solar noon",
+            ylabel="Shortwave Radiation (W m⁻²)",
+            xlims=(-12, 12),
+            xticks=-12:4:12,
+            ylims=(0, ymax),
+            grid=true,
+            legend=index == 1 ? :topright : false,
+            legendfontsize=7,
+            left_margin=15Plots.mm,
+            bottom_margin=6Plots.mm,
+        )
+        annotate!(panel, -14.4, 1.04 * ymax, text(panel_label(index), 12, :black, :left))
+        hline!(panel, [shortwave_mean]; label=index == 1 ? "target daily mean" : false, color=:black, linestyle=:dash, linewidth=2)
+        plot!(panel, hours, [row.paleo for row in rows]; label=index == 1 ? "paleo normalized" : false, color=:blue, linewidth=2.5)
+        for substep_index in eachindex(substep_counts)
+            plot!(panel, hours, [row.substeps[substep_index] for row in rows]; label=index == 1 ? "$(substep_counts[substep_index])-substep average" : false, color=substep_colors[mod1(substep_index, length(substep_colors))], linestyle=substep_linestyles[mod1(substep_index, length(substep_linestyles))], linewidth=1.8)
+        end
+        push!(panels, panel)
     end
-    return join(coords, " ")
+    ncols = min(2, length(panels))
+    nrows = cld(length(panels), ncols)
+    figure = plot(panels...; layout=(nrows, ncols), size=(1150, 390 * nrows))
+    savefig(figure, path)
 end
 
-function write_svg(path, rows; title, subtitle)
-    width = 980
-    height = 540
-    xmin, xmax = -12.0, 12.0
-    ymax = maximum(max(row.chion, row.paleo, row.substep) for row in rows)
-    ymax = max(1.0, ceil(ymax / 50) * 50)
-    ymin = 0.0
-
-    chion_points = [(row.hour, row.chion) for row in rows]
-    paleo_points = [(row.hour, row.paleo) for row in rows]
-    substep_points = [(row.hour, row.substep) for row in rows]
-
-    open(path, "w") do io
-        println(io, """<svg xmlns="http://www.w3.org/2000/svg" width="$width" height="$height" viewBox="0 0 $width $height">""")
-        println(io, """<rect width="100%" height="100%" fill="white"/>""")
-        println(io, """<text x="70" y="36" font-family="Arial" font-size="20" font-weight="700">$title</text>""")
-        println(io, """<text x="70" y="60" font-family="Arial" font-size="13" fill="#555">$subtitle</text>""")
-        println(io, """<line x1="70" y1="$(height - 55)" x2="$(width - 30)" y2="$(height - 55)" stroke="#333"/>""")
-        println(io, """<line x1="70" y1="80" x2="70" y2="$(height - 55)" stroke="#333"/>""")
-
-        for hour in -12:4:12
-            x = 70 + (hour - xmin) / (xmax - xmin) * (width - 100)
-            println(io, """<line x1="$x" y1="80" x2="$x" y2="$(height - 55)" stroke="#eee"/>""")
-            println(io, """<text x="$x" y="$(height - 32)" text-anchor="middle" font-family="Arial" font-size="12">$hour</text>""")
-        end
-        for y in range(ymin, ymax; length=6)
-            py = height - 55 - (y - ymin) / (ymax - ymin) * (height - 95)
-            println(io, """<line x1="70" y1="$py" x2="$(width - 30)" y2="$py" stroke="#eee"/>""")
-            println(io, """<text x="58" y="$(py + 4)" text-anchor="end" font-family="Arial" font-size="12">$(round(Int, y))</text>""")
-        end
-
-        println(io, """<polyline points="$(svg_polyline(substep_points, width, height, xmin, xmax, ymin, ymax))" fill="none" stroke="#777" stroke-width="2.5" stroke-dasharray="6 5"/>""")
-        println(io, """<polyline points="$(svg_polyline(paleo_points, width, height, xmin, xmax, ymin, ymax))" fill="none" stroke="#2b6cb0" stroke-width="3"/>""")
-        println(io, """<polyline points="$(svg_polyline(chion_points, width, height, xmin, xmax, ymin, ymax))" fill="none" stroke="#c2410c" stroke-width="2" stroke-dasharray="3 4"/>""")
-        println(io, """<text x="$(width - 250)" y="95" font-family="Arial" font-size="13" fill="#2b6cb0">paleo normalized</text>""")
-        println(io, """<text x="$(width - 250)" y="117" font-family="Arial" font-size="13" fill="#c2410c">Chion instantaneous</text>""")
-        println(io, """<text x="$(width - 250)" y="139" font-family="Arial" font-size="13" fill="#777">Chion substep averages</text>""")
-        println(io, """<text x="$(width / 2)" y="$(height - 8)" text-anchor="middle" font-family="Arial" font-size="13">Hour from solar noon</text>""")
-        println(io, """<text x="18" y="$(height / 2)" transform="rotate(-90 18 $(height / 2))" text-anchor="middle" font-family="Arial" font-size="13">Shortwave (W m^-2)</text>""")
-        println(io, "</svg>")
-    end
-end
-
-function run_case(; latitude_deg, solar_longitude_deg, shortwave_mean, eccentricity, obliquity_deg, lpx_deg, solar_constant, samples, threshold, max_substeps, air_temperature_c, output_dir)
+function run_case(; latitude_deg, solar_longitude_deg, shortwave_mean, solar_constant, samples, substep_counts, output_dir)
     hour_angles = collect(range(-pi, pi; length=samples))
-    intervals = substep_intervals(latitude_deg, solar_longitude_deg, shortwave_mean, threshold, max_substeps, air_temperature_c)
-    obliquity_rad = deg2rad(obliquity_deg)
-    lpx_rad = deg2rad(lpx_deg)
+    intervals = [substep_intervals(count) for count in substep_counts]
+    eccentricity = ZB18A_1_1_PRESENT_DAY.eccentricity
+    obliquity_rad = ZB18A_1_1_PRESENT_DAY.obliquity_rad
+    lpx_rad = ZB18A_1_1_PRESENT_DAY.lpx_rad
 
     rows = map(hour_angles) do h
         hour = 12 * h / pi
@@ -217,8 +198,8 @@ function run_case(; latitude_deg, solar_longitude_deg, shortwave_mean, eccentric
             hour_angle=h,
             hour=hour,
             chion=chion_instantaneous(shortwave_mean, latitude_deg, solar_longitude_deg, h),
-            paleo=paleo_normalized(shortwave_mean, eccentricity, obliquity_rad, lpx_rad, latitude_deg, solar_longitude_deg, h),
-            substep=substep_average_curve(shortwave_mean, latitude_deg, solar_longitude_deg, intervals, h),
+            paleo=paleo_normalized(shortwave_mean, eccentricity, obliquity_rad, lpx_rad, latitude_deg, solar_longitude_deg, h; solar_constant),
+            substeps=[substep_average_curve(shortwave_mean, latitude_deg, solar_longitude_deg, interval, h) for interval in intervals],
         )
     end
 
@@ -237,29 +218,14 @@ function run_case(; latitude_deg, solar_longitude_deg, shortwave_mean, eccentric
     slug = @sprintf("lat_%+.2f_lon_%06.2f", latitude_deg, solar_longitude_deg)
     slug = replace(slug, "+" => "p", "-" => "m", "." => "p")
     csv_path = joinpath(output_dir, "$(slug).csv")
-    svg_path = joinpath(output_dir, "$(slug).svg")
-    write_csv(csv_path, rows)
-    write_svg(
-        svg_path,
-        rows;
-        title=@sprintf("Diurnal shortwave: %.2f deg lat, %.2f deg solar longitude", latitude_deg, solar_longitude_deg),
-        subtitle=@sprintf(
-            "target daily mean %.1f W m^-2; paleo e=%.5f, obliquity=%.4f deg, lpx=%.2f deg; paleo daily TOA %.1f W m^-2; max diff %.3g W m^-2",
-            shortwave_mean,
-            eccentricity,
-            obliquity_deg,
-            lpx_deg,
-            paleo_daily,
-            max_abs_diff,
-        ),
-    )
+    write_csv(csv_path, rows, substep_counts)
 
     return (
         latitude_deg=latitude_deg,
         solar_longitude_deg=solar_longitude_deg,
+        rows=rows,
         csv_path=csv_path,
-        svg_path=svg_path,
-        substeps=length(intervals),
+        substeps=join(substep_counts, ";"),
         mean_chion=mean_chion,
         mean_paleo=mean_paleo,
         max_abs_diff=max_abs_diff,
@@ -276,17 +242,13 @@ function main(args)
     output_dir = arg_value(args, "output-dir", DEFAULT_OUTPUT_DIR)
     mkpath(output_dir)
 
-    latitudes = parse_list(arg_value(args, "latitudes", "65"), Float64)
+    latitudes = parse_list(arg_value(args, "latitudes", "40,50,60,70"), Float64)
     solar_longitudes = parse_list(arg_value(args, "solar-longitudes", "90"), Float64)
     shortwave_mean = parse(Float64, arg_value(args, "shortwave-mean", "200"))
-    eccentricity = parse(Float64, arg_value(args, "eccentricity", "0.0"))
-    obliquity_deg = parse(Float64, arg_value(args, "obliquity-deg", "23.439291"))
-    lpx_deg = parse(Float64, arg_value(args, "lpx-deg", "0.0"))
     solar_constant = parse(Float64, arg_value(args, "solar-constant", "1360.7"))
     samples = parse(Int, arg_value(args, "samples", "289"))
-    threshold = parse(Float64, arg_value(args, "threshold", "0.0"))
-    max_substeps = parse(Int, arg_value(args, "max-substeps", "3"))
-    air_temperature_c = parse(Float64, arg_value(args, "air-temperature-c", "0.0"))
+    substep_counts = parse_list(arg_value(args, "substeps", "4,8,12,24"), Int)
+    isempty(substep_counts) && error("`--substeps` must contain at least one count.")
 
     summaries = NamedTuple[]
     for latitude in latitudes, solar_longitude in solar_longitudes
@@ -296,26 +258,31 @@ function main(args)
                 latitude_deg=latitude,
                 solar_longitude_deg=solar_longitude,
                 shortwave_mean=shortwave_mean,
-                eccentricity=eccentricity,
-                obliquity_deg=obliquity_deg,
-                lpx_deg=lpx_deg,
                 solar_constant=solar_constant,
                 samples=samples,
-                threshold=threshold,
-                max_substeps=max_substeps,
-                air_temperature_c=air_temperature_c,
+                substep_counts=substep_counts,
                 output_dir=output_dir,
             ),
         )
     end
 
+    pdf_paths = Dict{Float64,String}()
+    for solar_longitude in solar_longitudes
+        solar_cases = filter(case -> case.solar_longitude_deg == solar_longitude, summaries)
+        longitude_slug = replace(@sprintf("lon_%06.2f", solar_longitude), "+" => "p", "-" => "m", "." => "p")
+        pdf_path = joinpath(output_dir, "diurnal_shortwave_$(longitude_slug).pdf")
+        write_pdf(pdf_path, solar_cases, substep_counts, shortwave_mean; solar_longitude_deg=solar_longitude)
+        pdf_paths[solar_longitude] = pdf_path
+        println("Wrote plot: ", pdf_path)
+    end
+
     summary_path = joinpath(output_dir, "summary.csv")
     open(summary_path, "w") do io
-        println(io, "latitude_deg,solar_longitude_deg,substeps,mean_chion,mean_paleo,max_abs_diff,paleo_daily_w_m2,csv_path,svg_path")
+        println(io, "latitude_deg,solar_longitude_deg,substeps,mean_chion,mean_paleo,max_abs_diff,paleo_daily_w_m2,csv_path,pdf_path")
         for row in summaries
             @printf(
                 io,
-                "%.6f,%.6f,%d,%.10f,%.10f,%.10f,%.10f,%s,%s\n",
+                "%.6f,%.6f,%s,%.10f,%.10f,%.10f,%.10f,%s,%s\n",
                 row.latitude_deg,
                 row.solar_longitude_deg,
                 row.substeps,
@@ -324,15 +291,12 @@ function main(args)
                 row.max_abs_diff,
                 row.paleo_daily,
                 row.csv_path,
-                row.svg_path,
+                pdf_paths[row.solar_longitude_deg],
             )
         end
     end
 
     println("Wrote summary: ", summary_path)
-    for row in summaries
-        println("Wrote plot: ", row.svg_path)
-    end
 end
 
 if abspath(PROGRAM_FILE) == @__FILE__
