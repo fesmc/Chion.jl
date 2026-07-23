@@ -108,16 +108,14 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
         end
         return (snowpack_swe=snowpack_swe, smb_ice=smb_ice, runoff=runoff, pdd_sum=pdd_sum, step_fields=step_fields, is_gpu=true)
     end
-    ncol = ncols(model.grid)
-    scratch = (
-        snowfall=Vector{Float64}(undef, ncol),
-        rainfall=Vector{Float64}(undef, ncol),
-        pdd=Vector{Float64}(undef, ncol),
-        available_snow=Vector{Float64}(undef, ncol),
-        snow_melt=Vector{Float64}(undef, ncol),
-        remaining_pdd=Vector{Float64}(undef, ncol),
+    return (
+        snowpack_swe=state.snowpack_swe,
+        smb_ice=state.smb_ice,
+        runoff=state.runoff,
+        pdd_sum=state.pdd_sum,
+        step_fields=forcing,
+        is_gpu=false,
     )
-    return (snowpack_swe=state.snowpack_swe, smb_ice=state.smb_ice, runoff=state.runoff, pdd_sum=state.pdd_sum, step_fields=forcing, scratch=scratch, is_gpu=false)
 end
 
 _backend_active_indices(indices::Vector{Int}, data) =
@@ -278,60 +276,16 @@ end
 
 function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
     runtime = model_runtime.data
-    if !runtime.is_gpu
-        if _is_monthly_pdd_step(forcing, time_index)
-            pdd_monthly_step!(
-                runtime.snowpack_swe,
-                runtime.smb_ice,
-                runtime.runoff,
-                runtime.pdd_sum,
-                forcing,
-                time_index,
-                model,
-                runtime.scratch,
-            )
-        else
-            pdd_step!(
-                runtime.snowpack_swe,
-                runtime.smb_ice,
-                runtime.runoff,
-                runtime.pdd_sum,
-                forcing,
-                time_index,
-                model.ddf_snow,
-                model.ddf_ice,
-                model.refreezing_fraction,
-                runtime.scratch,
-            )
-        end
-    else
-        if _is_monthly_pdd_step(forcing, time_index)
-            pdd_monthly_step!(
-                runtime.snowpack_swe,
-                runtime.smb_ice,
-                runtime.runoff,
-                runtime.pdd_sum,
-                forcing,
-                time_index,
-                model,
-                model_runtime.active_indices,
-            )
-        else
-            pdd_step!(
-                runtime.snowpack_swe,
-                runtime.smb_ice,
-                runtime.runoff,
-                runtime.pdd_sum,
-                forcing,
-                time_index,
-                model.ddf_snow,
-                model.ddf_ice,
-                model.refreezing_fraction,
-                model_runtime.active_indices,
-            )
-        end
-    end
-    return nothing
+    return _pdd_step_arrays!(
+        runtime.snowpack_swe,
+        runtime.smb_ice,
+        runtime.runoff,
+        runtime.pdd_sum,
+        forcing,
+        time_index,
+        model,
+        model_runtime.active_indices,
+    )
 end
 
 function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats)

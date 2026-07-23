@@ -77,21 +77,34 @@ function BESSIModel(
     )
 end
 
+const PDD_METHOD_SIMPLE = UInt8(1)
+const PDD_METHOD_PISM = UInt8(2)
+
+@inline function _normalize_pdd_method(method::Symbol)
+    method == :simple && return PDD_METHOD_SIMPLE
+    method in (:pism, :calov_greve) && return PDD_METHOD_PISM
+    error("Unsupported PDD method '$method'. Use :simple or :pism.")
+end
+
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6,
-             temperature_sigma=5.0)
+             temperature_sigma=5.0, H_snow_max=5000.0, pdd_method=:simple)
 
-Bulk positive-degree-day surface mass-balance model configuration. Evolving
-state is stored in `PDDState` and owned by `Simulation.now`. Monthly forcing
-steps use a PISM-style expectation integral with normally-distributed
-unresolved temperature variability.
+Bulk positive-degree-day surface mass-balance model configuration. The model
+uses a capped one-layer snow reservoir: refrozen water and snow above
+`H_snow_max` become ice, while `smb_ice` records only ice-facing mass changes.
+Set `pdd_method=:pism` to use the Calov-Greve expectation integral for every
+timestep; `:simple` uses positive mean temperature directly.
 """
-struct PDDModel{G <: SnowpackGrid}
+struct PDDModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     grid::G
+    c::C
     ddf_snow::Float64
     ddf_ice::Float64
     refreezing_fraction::Float64
     temperature_sigma::Float64
+    H_snow_max::Float64
+    pdd_method::UInt8
 end
 
 function PDDModel(
@@ -100,17 +113,24 @@ function PDDModel(
     ddf_ice::Real=8.0,
     refreezing_fraction::Real=0.6,
     temperature_sigma::Real=5.0,
+    H_snow_max::Real=5000.0,
+    pdd_method::Symbol=:simple,
+    kwargs...,
 )
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
     ddf_ice >= 0 || error("`ddf_ice` must be non-negative.")
     0.0 <= refreezing_fraction <= 1.0 || error("`refreezing_fraction` must be between 0 and 1.")
     temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
+    H_snow_max > 0 || error("`H_snow_max` must be positive.")
 
     return PDDModel(
         grid,
+        SnowpackPhysicalConstants(Float64; kwargs...),
         Float64(ddf_snow),
         Float64(ddf_ice),
         Float64(refreezing_fraction),
         Float64(temperature_sigma),
+        Float64(H_snow_max),
+        _normalize_pdd_method(pdd_method),
     )
 end
