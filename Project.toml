@@ -1,36 +1,37 @@
 name = "Chion"
 uuid = "d76e9efd-0eaf-4f3e-a1bf-7ee81c31eef7"
 version = "0.2.0"
-authors = ["Nils Bochow <nils.bochow@awi.de>", 
-"Alexander Robinson <alexander.robinson@awi.de>"]
+authors = ["Nils Bochow <nils.bochow@awi.de>", "Alexander Robinson <alexander.robinson@awi.de>"]
 
 [deps]
 Adapt = "79e6a3ab-5dfb-504d-930d-738a2a938a0e"
 BenchmarkTools = "6e4b80f9-dd63-53aa-95a3-0cdb28fa8baf"
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 KernelAbstractions = "63c18a36-062a-441e-b654-da1e3ab1ce7c"
 NCDatasets = "85f8d34a-cbdd-5861-8df4-14fed0d494ab"
+Plots = "91a5bcdd-55d7-5caf-9e0b-520d859cae80"
 Printf = "de0858da-6303-5e67-8744-51eddeeeb8d7"
 ProgressMeter = "92933f4c-e287-5a05-a399-4b506db050ca"
 Statistics = "10745b16-79ce-11e8-11f9-7d13ad32a3b2"
 TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
-Documenter = "e30172f5-a6a5-5a46-863b-614d45cd2de4"
 
 [compat]
-julia = "1.7, 1.8, 1.9, 1.10, 1.11"
-
 Adapt = "3, 4"
 BenchmarkTools = "1"
 CUDA = "4, 5"
 Dates = "1"
+Documenter = "1.17"
 KernelAbstractions = "0.9"
 NCDatasets = "0.14"
+Plots = "1.41.6"
 Printf = "1"
 ProgressMeter = "1"
 Statistics = "1"
 TimerOutputs = "0.5"
-Documenter = "1.17"
+julia = "1.7, 1.8, 1.9, 1.10, 1.11"
+
 [extras]
 Test = "8dfed614-e22c-5e08-85e1-65c5234f0b40"
 
