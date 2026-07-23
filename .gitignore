@@ -9,6 +9,7 @@ Manifest.toml
 *.err
 *.csv
 *.svg
+!docs/src/assets/physics_flow.svg
 *.sh
 *.out
 examples/scripts/old
