@@ -29,11 +29,14 @@ For an existing snow surface, the code applies
 \alpha^\star =
 \min\left(
 \alpha^n,\;
-\alpha^n - \left(1.35\times 10^{-3}(T_s - T_0) + 0.0278\right)
+\alpha^n - \Delta t_{\mathrm{days}}
+\left(1.35\times 10^{-3}(T_s - T_0) + 0.0278\right)
 \right),
 ```
 
-followed by a clamp to `alpha_wet`.
+followed by a clamp to `alpha_wet`. Scaling by the elapsed time
+``\Delta t_{\mathrm{days}}`` keeps the aging rate consistent when a forcing
+step is divided into diurnal substeps.
 
 ### Wetness Adjustment
 
