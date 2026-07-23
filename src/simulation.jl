@@ -148,6 +148,34 @@ end
 @inline _uses_monthly_output(::PDDModel, options::RunOptions) =
     :monthly in options.netcdf_variables
 
+@inline function _is_month_boundary(time_values::Vector{DateTime}, k::Int)
+    k == length(time_values) && return true
+    return month(time_values[k + 1]) != month(time_values[k])
+end
+
+@inline _monthly_records_per_cycle(time_values::Vector{DateTime}) =
+    count(k -> _is_month_boundary(time_values, k), eachindex(time_values))
+
+function _output_record_time_values(
+    time_values::Vector{DateTime},
+    years::Int;
+    monthly::Bool=false,
+)
+    indices = monthly ?
+        [k for k in eachindex(time_values) if _is_month_boundary(time_values, k)] :
+        collect(eachindex(time_values))
+    output = Vector{DateTime}(undef, years * length(indices))
+    record = 0
+    for cycle in 0:years-1
+        offset = Year(cycle)
+        for k in indices
+            record += 1
+            output[record] = time_values[k] + offset
+        end
+    end
+    return output
+end
+
 function _state_output_from_options(sim::Simulation, options::RunOptions, state=sim.now)
     options.write_netcdf || return nothing
     monthly_mode = _uses_monthly_output(sim.model, options)
@@ -158,14 +186,18 @@ function _state_output_from_options(sim::Simulation, options::RunOptions, state=
         monthly_mode ? intersect(options.netcdf_variables, monthly_vars) :
         state_output_vars(sim.model, options.netcdf_variables)
     isempty(vars) && return nothing
+    record_time_values = _output_record_time_values(
+        sim.forcing.time_values,
+        options.years;
+        monthly=monthly_mode,
+    )
     return init_state_netcdf(
         resolve_netcdf_path(options),
         options,
-        sim.forcing.time_values,
+        record_time_values,
         sim.model.grid,
         state,
         vars,
-        ntime=monthly_mode ? options.years * 12 : options.years * length(sim.forcing.time_values),
         nlayer=hasproperty(state, :Ntot) ? getproperty(state, :Ntot) : 1,
     )
 end
@@ -189,11 +221,6 @@ function _sync_bessi_state!(sim::Simulation{<:BESSIModel}, backend_state, is_gpu
     end
     update_diagnostics!(sim.now)
     return nothing
-end
-
-@inline function _is_month_boundary(time_values::Vector{DateTime}, k::Int)
-    k == length(time_values) && return true
-    return month(time_values[k + 1]) != month(time_values[k])
 end
 
 function run!(
@@ -225,7 +252,10 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     nc = _state_output_from_options(sim, run_options)
     monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, run_options)
     monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
-    monthly_output = monthly_mode ? MonthlyOutputBuffer(backend_state; nmonth=run_options.years * 12) : nothing
+    monthly_output = monthly_mode ? MonthlyOutputBuffer(
+        backend_state;
+        nmonth=run_options.years * _monthly_records_per_cycle(sim.forcing.time_values),
+    ) : nothing
     record_index = 0
     nsteps = length(sim.forcing.time_values)
     year_summary = nothing
@@ -363,7 +393,10 @@ function _run_pdd_integrator!(integrator::SimulationIntegrator)
         nothing
     end
     monthly_output = monthly_mode ?
-        pdd_monthly_output_buffer(runtime; nmonth=options.years * 12) :
+        pdd_monthly_output_buffer(
+            runtime;
+            nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
+        ) :
         nothing
     record_index = 0
 

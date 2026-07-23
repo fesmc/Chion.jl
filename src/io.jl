@@ -77,14 +77,51 @@ function state_output_vars(model, selected)
     return unique(vars)
 end
 
-function init_state_netcdf(path::AbstractString, options, time_values::Vector{DateTime}, layout, state, vars::Vector{Symbol}; ntime::Integer=options.years * length(time_values), nlayer::Integer=1)
+const NETCDF_TIME_EPOCH = DateTime(1970, 1, 1)
+const NETCDF_TIME_UNITS = "days since 1970-01-01 00:00:00"
+
+function _netcdf_time_days(value::DateTime)
+    month(value) == 2 && day(value) == 29 &&
+        error("The NetCDF 365_day calendar cannot represent February 29.")
+    preceding_days = dayofyear(value) - 1
+    isleapyear(year(value)) && month(value) > 2 && (preceding_days -= 1)
+    midnight = DateTime(year(value), month(value), day(value))
+    day_fraction = Dates.value(value - midnight) / 86_400_000
+    return (year(value) - year(NETCDF_TIME_EPOCH)) * 365 +
+           preceding_days +
+           day_fraction
+end
+
+function init_state_netcdf(
+    path::AbstractString,
+    options,
+    record_time_values::Vector{DateTime},
+    layout,
+    state,
+    vars::Vector{Symbol};
+    nlayer::Integer=1,
+)
     mkpath(dirname(path))
     ds = NCDataset(path, "c")
     ny, nx = _grid_shape(layout)
-    defDim(ds, "t", Int(ntime))
+    ntime = length(record_time_values)
+    defDim(ds, "t", Inf)
     defDim(ds, "x", nx)
     defDim(ds, "y", ny)
     defDim(ds, "layer", Int(nlayer))
+    time_var = defVar(
+        ds,
+        "t",
+        Float64,
+        ("t",);
+        attrib=Dict(
+            "standard_name" => "time",
+            "long_name" => "Time",
+            "units" => NETCDF_TIME_UNITS,
+            "calendar" => "365_day",
+            "axis" => "T",
+        ),
+    )
     _write_nc_var!(ds, "x", ("x",), (key=:x, long_name="X coordinate", units="km", integer=false), layout.x)
     _write_nc_var!(ds, "y", ("y",), (key=:y, long_name="Y coordinate", units="km", integer=false), layout.y)
     _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(layout.mask, (2, 1))))
@@ -95,11 +132,15 @@ function init_state_netcdf(path::AbstractString, options, time_values::Vector{Da
             getfield(state, key)
         meta = get(NETCDF_METADATA, key, (name=String(key), long_name=String(key), units="", integer=eltype(values) <: Integer))
         if values isa AbstractVector
-            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("t", "x", "y"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
+            # NCDatasets uses Julia column-major dimension order, which is the
+            # reverse of the order shown in CDL. Defining (x, y, t) here emits
+            # field(t, y, x), with the record dimension first for ncview.
+            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("x", "y", "t"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
         elseif values isa AbstractMatrix
-            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("t", "layer", "x", "y"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
+            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("x", "y", "layer", "t"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
         end
     end
+    time_var[1:ntime] = _netcdf_time_days.(record_time_values)
     ds.attrib["title"] = options.name
     ds.attrib["source_model"] = "Chion"
     ds.attrib["created"] = string(now())
@@ -108,8 +149,8 @@ function init_state_netcdf(path::AbstractString, options, time_values::Vector{Da
         handles,
         fill(NaN32, nx, ny),
         zeros(Int32, nx, ny),
-        fill(NaN32, Int(nlayer), nx, ny),
-        fill(NaN32, min(Int(ntime), 240), nx, ny),
+        fill(NaN32, nx, ny, Int(nlayer)),
+        fill(NaN32, nx, ny, min(Int(ntime), 240)),
     )
 end
 
@@ -194,7 +235,7 @@ function _scatter_matrix_to_grid!(dest::Array{Float32, 3}, values, layout)
     fill!(dest, NaN32)
     host = Array(values)
     @inbounds for col in eachindex(layout.js), layer in axes(host, 1)
-        dest[layer, layout.is[col], layout.js[col]] = Float32(host[layer, col])
+        dest[layout.is[col], layout.js[col], layer] = Float32(host[layer, col])
     end
     return dest
 end
@@ -202,9 +243,9 @@ end
 function _scatter_monthly_matrix_to_grid!(dest::Array{Float32, 3}, host::AbstractMatrix, first_row::Int, nrecord::Int, layout)
     fill!(dest, NaN32)
     @inbounds for row in 1:nrecord, col in eachindex(layout.js)
-        dest[row, layout.is[col], layout.js[col]] = Float32(host[first_row + row - 1, col])
+        dest[layout.is[col], layout.js[col], row] = Float32(host[first_row + row - 1, col])
     end
-    return view(dest, 1:nrecord, :, :)
+    return view(dest, :, :, 1:nrecord)
 end
 
 function write_monthly_output_nc!(out::NetCDFOutput, state, first_record_index::Int, layout)
@@ -221,7 +262,7 @@ function write_monthly_output_nc!(out::NetCDFOutput, state, first_record_index::
             n = min(chunk_len, nrecord - offset)
             record_start = first_record_index + offset
             record_stop = record_start + n - 1
-            var[record_start:record_stop, :, :] =
+            var[:, :, record_start:record_stop] =
                 _scatter_monthly_matrix_to_grid!(out.buffer_time_point_float, host, offset + 1, n, layout)
             offset += n
         end
@@ -236,12 +277,12 @@ function write_nc!(out::NetCDFOutput, state, record_index::Int, layout)
         var = out.vars[key]
         if values isa AbstractVector
             if eltype(values) <: Integer
-                var[record_index, :, :] = _scatter_vector_to_grid!(out.buffer_point_int, values, layout)
+                var[:, :, record_index] = _scatter_vector_to_grid!(out.buffer_point_int, values, layout)
             else
-                var[record_index, :, :] = _scatter_vector_to_grid!(out.buffer_point_float, values, layout)
+                var[:, :, record_index] = _scatter_vector_to_grid!(out.buffer_point_float, values, layout)
             end
         elseif values isa AbstractMatrix
-            var[record_index, :, :, :] = _scatter_matrix_to_grid!(out.buffer_layer_float, values, layout)
+            var[:, :, :, record_index] = _scatter_matrix_to_grid!(out.buffer_layer_float, values, layout)
         end
     end
     return out

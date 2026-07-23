@@ -67,6 +67,12 @@ For `PDDModel`, `:all` writes `snowpack_swe`, `smb_ice`, `runoff`, and
 monthly changes in the three cumulative fields. Monthly output for both models
 is buffered and written to NetCDF in chunks after stepping.
 
+NetCDF outputs include an unlimited, CF-style `t` record coordinate in days
+since `2001-01-01 00:00:00`, using the `365_day` calendar. Full-state output
+uses the forcing timestamps, while monthly output uses the timestamp of the
+last forcing record in each month. For simulations that repeat the forcing for
+multiple years, timestamps are advanced by one 365-day calendar year for each
+cycle. 
 PDD `smb_ice` is ice-facing, consistent with BESSI: refrozen water and snow
 above `H_snow_max` are transferred to ice, while ice melt is negative SMB.
 Seasonal snow retained in `snowpack_swe` is not credited to the ice sheet.

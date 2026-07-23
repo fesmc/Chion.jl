@@ -35,7 +35,7 @@ function _read_time_values(ds::NCDataset, time_name::AbstractString, ntime::Int)
         length(yyyy) == ntime || error("Time metadata length does not match forcing fields.")
         return [DateTime(yyyy[i], mm[i], dd[i], hh[i]) for i in 1:ntime]
     end
-    base = DateTime(2000, 1, 1, 12)
+    base = DateTime(2001, 1, 1, 12)
     return [base + Dates.Day(idx - 1) for idx in 1:ntime]
 end
 
