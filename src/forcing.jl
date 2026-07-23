@@ -62,7 +62,7 @@ Adapt.@adapt_structure TimeForcingMatrix
 @inline _map_forcing_field(f, field) = f.(field)
 
 @inline function _synthesized_time_values(dt_days::Vector{Float64})
-    base = DateTime(2000, 1, 1, 12)
+    base = DateTime(2001, 1, 1, 12)
     out = Vector{DateTime}(undef, length(dt_days))
     elapsed_ms = 0
     for idx in eachindex(dt_days)
