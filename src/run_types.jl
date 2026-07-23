@@ -10,6 +10,7 @@ struct RunOptions
     years::Int
     backend::Symbol
     history_year_stride::Int
+    compute_year_metrics::Bool
 end
 
 @inline function normalize_backend(backend)
@@ -38,6 +39,7 @@ function RunOptions(;
     years::Integer=10,
     backend=:threads,
     history_year_stride::Integer=1,
+    compute_year_metrics::Bool=true,
 )
     resolved_name = String(name)
     resolved_output_dir = isempty(output_dir) ? _default_output_dir(resolved_name) : String(output_dir)
@@ -51,6 +53,7 @@ function RunOptions(;
         normalize_years(years),
         normalize_backend(backend),
         normalize_history_year_stride(history_year_stride),
+        compute_year_metrics,
     )
 end
 
@@ -63,18 +66,18 @@ struct SimulationResult
     netcdf_path::String
 end
 
-mutable struct ModelRuntime
-    data
+mutable struct ModelRuntime{D,A}
+    data::D
     active::Vector{Bool}
-    active_indices
+    active_indices::A
 end
 
-mutable struct SimulationIntegrator
-    sim
+mutable struct SimulationIntegrator{S,R<:ModelRuntime}
+    sim::S
     io::IO
     timings::StepTimingStats
     wall_t0::Int
-    model_runtime::ModelRuntime
+    model_runtime::R
     history::Vector{NamedTuple}
     netcdf_path::String
     time_index::Int

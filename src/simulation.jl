@@ -27,6 +27,7 @@ function Simulation(
     years::Union{Nothing, Integer}=nothing,
     backend=nothing,
     history_year_stride::Union{Nothing, Integer}=nothing,
+    compute_year_metrics::Union{Nothing, Bool}=nothing,
     netcdf_variables=nothing,
     output_dir::Union{Nothing, AbstractString}=nothing,
     netcdf_path::Union{Nothing, AbstractString}=nothing,
@@ -46,6 +47,7 @@ function Simulation(
         years=isnothing(years) ? options.years : years,
         backend=isnothing(backend) ? options.backend : backend,
         history_year_stride=isnothing(history_year_stride) ? options.history_year_stride : history_year_stride,
+        compute_year_metrics=isnothing(compute_year_metrics) ? options.compute_year_metrics : compute_year_metrics,
     )
     now_state = isnothing(state) ? initial_state(model) : state
     return Simulation(model, forcing, reference_state(now_state), now_state, run_options)
@@ -182,7 +184,7 @@ end
 function _sync_bessi_state!(sim::Simulation{<:BESSIModel}, backend_state, is_gpu::Bool, timings::StepTimingStats)
     if is_gpu
         time_block!(timings, :gpu_transfer) do
-            _copy_bessi_state!(sim.now, cpu_state(backend_state))
+            _copy_bessi_state!(sim.now, backend_state)
         end
     end
     update_diagnostics!(sim.now)
@@ -226,14 +228,21 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     monthly_output = monthly_mode ? MonthlyOutputBuffer(backend_state; nmonth=run_options.years * 12) : nothing
     record_index = 0
     nsteps = length(sim.forcing.time_values)
-    year_summary = _summary_buffers(backend_state, (:thickness, :wet_mass, :bulk_density, :base_mass))
-    time_block!(timings, :summarize_columns_initial) do
-        summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
+    year_summary = nothing
+    prev_year_summary = nothing
+    delta_thickness = nothing
+    delta_wet_mass = nothing
+    delta_base_mass = nothing
+    if run_options.compute_year_metrics
+        year_summary = _summary_buffers(backend_state, (:thickness, :wet_mass, :bulk_density, :base_mass))
+        time_block!(timings, :summarize_columns_initial) do
+            summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
+        end
+        prev_year_summary = map(copy, year_summary)
+        delta_thickness = similar(year_summary.thickness)
+        delta_wet_mass = similar(year_summary.wet_mass)
+        delta_base_mass = similar(year_summary.base_mass)
     end
-    prev_year_summary = map(copy, year_summary)
-    delta_thickness = similar(year_summary.thickness)
-    delta_wet_mass = similar(year_summary.wet_mass)
-    delta_base_mass = similar(year_summary.base_mass)
     history = NamedTuple[]
     progress = Progress(run_options.years; desc="Running years: ", output=integrator.io, showspeed=true)
     while !_finished(integrator)
@@ -269,34 +278,36 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
                 end
             end
         end
-        time_block!(timings, :summarize_columns_year) do
-            summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
-        end
-        record = time_block!(timings, :year_metrics) do
-            make_year_record_and_deltas!(
-                year,
-                delta_thickness,
-                delta_wet_mass,
-                delta_base_mass,
-                year_summary.thickness,
-                year_summary.wet_mass,
-                year_summary.bulk_density,
-                year_summary.base_mass,
-                prev_year_summary.thickness,
-                prev_year_summary.wet_mass,
-                prev_year_summary.base_mass,
-            )
-        end
-        if should_record_year_metrics(year, run_options.years, run_options.history_year_stride)
-            push!(history, record)
-            time_block!(timings, :year_logging) do
-                println(integrator.io, year_log_line(record))
-                flush(integrator.io)
+        if run_options.compute_year_metrics
+            time_block!(timings, :summarize_columns_year) do
+                summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
             end
+            record = time_block!(timings, :year_metrics) do
+                make_year_record_and_deltas!(
+                    year,
+                    delta_thickness,
+                    delta_wet_mass,
+                    delta_base_mass,
+                    year_summary.thickness,
+                    year_summary.wet_mass,
+                    year_summary.bulk_density,
+                    year_summary.base_mass,
+                    prev_year_summary.thickness,
+                    prev_year_summary.wet_mass,
+                    prev_year_summary.base_mass,
+                )
+            end
+            if should_record_year_metrics(year, run_options.years, run_options.history_year_stride)
+                push!(history, record)
+                time_block!(timings, :year_logging) do
+                    println(integrator.io, year_log_line(record))
+                    flush(integrator.io)
+                end
+            end
+            copyto!(prev_year_summary.thickness, year_summary.thickness)
+            copyto!(prev_year_summary.wet_mass, year_summary.wet_mass)
+            copyto!(prev_year_summary.base_mass, year_summary.base_mass)
         end
-        copyto!(prev_year_summary.thickness, year_summary.thickness)
-        copyto!(prev_year_summary.wet_mass, year_summary.wet_mass)
-        copyto!(prev_year_summary.base_mass, year_summary.base_mass)
         next!(progress)
     end
     if monthly_mode
@@ -305,7 +316,6 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
         end
         record_index = monthly_output.count
     end
-    _sync_bessi_state!(sim, backend_state, is_gpu, timings)
     status = :complete
     nc_path = nc === nothing ? "" : resolve_netcdf_path(run_options)
     nc !== nothing && close_output!(nc, status, record_index)

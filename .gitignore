@@ -9,10 +9,13 @@ Manifest.toml
 *.err
 *.csv
 *.svg
+!docs/src/assets/physics_flow.svg
 *.sh
 *.out
 examples/scripts/old
 examples/shared
 .codex
+.julia-depot/
 *.sh
+!run_snowpack_column_benchmark.sh
 docs/build/
