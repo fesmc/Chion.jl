@@ -1,39 +1,63 @@
 """
 Positive-degree-day mass-balance process.
 
-This is a bulk snow/ice SMB model: snowfall builds a snow reservoir, positive
-degree days melt snow first, and any remaining melt potential ablates ice.
+This is a bulk, capped one-layer snow model synchronized with the Fortran
+`fesmc/chion` implementation. Snow retained in the reservoir is distinct from
+the ice-facing SMB flux.
 """
 
-@inline _pdd_positive_degree_days(air_temperature, dt_days) =
-    max(air_temperature - 273.15, zero(air_temperature)) * dt_days
-
-@inline _pdd_step_mass(rate, dt_days) = max(rate, zero(rate)) * dt_days * 86_400.0
-@inline _normal_pdf(x) = 0.3989422804014327 * exp(-0.5 * x * x)
-@inline _is_monthly_pdd_step(forcing::SnowpackForcing, time_index::Int) =
-    27.0 <= _step_dt(forcing.dt_days, time_index) <= 32.0
-
-@inline function _normal_cdf(x)
-    t = inv(1.0 + 0.2316419 * abs(x))
-    poly = t * (0.319381530 + t * (-0.356563782 + t * (1.781477937 + t * (-1.821255978 + t * 1.330274429))))
-    cdf = 1.0 - _normal_pdf(x) * poly
-    return x < 0 ? 1.0 - cdf : cdf
+@inline function _pdd_normal_cdf(value)
+    half = oftype(value, 0.5)
+    sqrt_two = sqrt(oftype(value, 2))
+    return half * erfc(-value / sqrt_two)
 end
 
-@inline function _expected_positive_temperature(mean_temperature_c, sigma)
+@inline function _pdd_expected_positive_temperature(mean_temperature_c, sigma)
     z = mean_temperature_c / sigma
-    return sigma * _normal_pdf(z) + mean_temperature_c * _normal_cdf(z)
+    inv_sqrt_two_pi = oftype(z, 0.398942280401432678)
+    pdf = inv_sqrt_two_pi * exp(-oftype(z, 0.5) * z * z)
+    return sigma * pdf + mean_temperature_c * _pdd_normal_cdf(z)
 end
 
-@inline function _pism_expected_positive_degree_days(air_temperature, dt_days, temperature_sigma)
-    return dt_days * _expected_positive_temperature(air_temperature - 273.15, temperature_sigma)
+@inline function _pdd_degree_days(
+    air_temperature,
+    dt_days,
+    freezing_temperature,
+    temperature_sigma,
+    pdd_method::UInt8,
+)
+    mean_temperature_c = air_temperature - freezing_temperature
+    if pdd_method == PDD_METHOD_SIMPLE
+        return max(mean_temperature_c, zero(mean_temperature_c)) * dt_days
+    elseif pdd_method == PDD_METHOD_PISM
+        return dt_days * _pdd_expected_positive_temperature(mean_temperature_c, temperature_sigma)
+    end
+    return oftype(mean_temperature_c, NaN)
 end
 
-function _pdd_apply_column_pdd!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
+@inline function _pdd_step_mass(rate, dt_days, seconds_per_day)
+    return max(rate, zero(rate)) * dt_days * seconds_per_day
+end
+
+"""
+    _pdd_apply_column!(..., snowfall, rainfall, pdd, model parameters...)
+
+Apply one PDD step to one column. The budget follows the Fortran reference:
+
+  * snow melt is limited by the available snow;
+  * refreezing is limited by the snow remaining after melt;
+  * refrozen water becomes superimposed ice instead of re-entering the snow;
+  * snow above `H_snow_max` is converted to ice; and
+  * `smb_ice` records only snow-to-ice conversion minus ice melt.
+
+Consequently, every step closes as
+`snowfall + rainfall == Δsnowpack_swe + Δsmb_ice + Δrunoff`.
+"""
+@inline function _pdd_apply_column!(
+    snowpack_swe,
+    smb_ice,
+    runoff,
+    pdd_sum,
     idx::Int,
     snowfall,
     rainfall,
@@ -41,89 +65,25 @@ function _pdd_apply_column_pdd!(
     ddf_snow,
     ddf_ice,
     refreezing_fraction,
+    H_snow_max,
 )
     pdd_sum[idx] += pdd
 
     available_snow = snowpack_swe[idx] + snowfall
-    snow_melt_potential = ddf_snow * pdd
-    snow_melt = min(available_snow, snow_melt_potential)
-    remaining_pdd = ddf_snow > zero(ddf_snow) ? max(pdd - snow_melt / ddf_snow, zero(pdd)) : zero(pdd)
+    snow_melt = min(available_snow, ddf_snow * pdd)
+    remaining_pdd = ddf_snow > zero(ddf_snow) ?
+                    max(pdd - snow_melt / ddf_snow, zero(pdd)) :
+                    zero(pdd)
     ice_melt = ddf_ice * remaining_pdd
-    refrozen = refreezing_fraction * snow_melt
 
-    snowpack_swe[idx] = available_snow - snow_melt + refrozen
-    smb_ice[idx] += snowfall - snow_melt + refrozen - ice_melt
+    remaining_snow = available_snow - snow_melt
+    refrozen = min(refreezing_fraction * remaining_snow, snow_melt)
+    excess_snow = max(remaining_snow - H_snow_max, zero(remaining_snow))
+    snow_to_ice = refrozen + excess_snow
+
+    snowpack_swe[idx] = min(remaining_snow, H_snow_max)
+    smb_ice[idx] += snow_to_ice - ice_melt
     runoff[idx] += rainfall + snow_melt - refrozen + ice_melt
-    return nothing
-end
-
-function _pdd_step_column!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
-    idx::Int,
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    dt_days,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-)
-    snowfall = _pdd_step_mass(snowfall_rate, dt_days)
-    rainfall = _pdd_step_mass(rainfall_rate, dt_days)
-    pdd = _pdd_positive_degree_days(air_temperature, dt_days)
-    return _pdd_apply_column_pdd!(
-        snowpack_swe,
-        smb_ice,
-        runoff,
-        pdd_sum,
-        idx,
-        snowfall,
-        rainfall,
-        pdd,
-        ddf_snow,
-        ddf_ice,
-        refreezing_fraction,
-    )
-end
-
-function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, time_index::Int)
-    ncol = ncols(model.grid)
-    size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the PDD model column count.")
-    if _is_monthly_pdd_step(forcing, time_index)
-        scratch = (
-            snowfall=Vector{Float64}(undef, ncol),
-            rainfall=Vector{Float64}(undef, ncol),
-            pdd=Vector{Float64}(undef, ncol),
-            available_snow=Vector{Float64}(undef, ncol),
-            snow_melt=Vector{Float64}(undef, ncol),
-            remaining_pdd=Vector{Float64}(undef, ncol),
-        )
-        pdd_monthly_step!(
-            state.snowpack_swe,
-            state.smb_ice,
-            state.runoff,
-            state.pdd_sum,
-            forcing,
-            time_index,
-            model,
-            scratch,
-        )
-        return nothing
-    end
-    pdd_step!(
-        state.snowpack_swe,
-        state.smb_ice,
-        state.runoff,
-        state.pdd_sum,
-        forcing,
-        time_index,
-        model.ddf_snow,
-        model.ddf_ice,
-        model.refreezing_fraction,
-    )
     return nothing
 end
 
@@ -140,216 +100,71 @@ end
     ddf_snow,
     ddf_ice,
     refreezing_fraction,
+    temperature_sigma,
+    H_snow_max,
+    pdd_method::UInt8,
+    freezing_temperature,
+    seconds_per_day,
     active_indices,
 )
     active_idx = @index(Global)
     if active_idx <= length(active_indices)
         idx = active_indices[active_idx]
-        _pdd_step_column!(
-            snowpack_swe,
-            smb_ice,
-            runoff,
-            pdd_sum,
-            idx,
-            air_temperature[idx, time_index],
+        snowfall = _pdd_step_mass(
             snowfall_rate[idx, time_index],
+            dt_days,
+            seconds_per_day,
+        )
+        rainfall = _pdd_step_mass(
             rainfall_rate[idx, time_index],
             dt_days,
-            ddf_snow,
-            ddf_ice,
-            refreezing_fraction,
+            seconds_per_day,
         )
-    end
-end
-
-@kernel function _pdd_monthly_step_kernel!(
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
-    air_temperature,
-    snowfall_rate,
-    rainfall_rate,
-    time_index::Int,
-    dt_days,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-    temperature_sigma,
-    active_indices,
-)
-    active_idx = @index(Global)
-    if active_idx <= length(active_indices)
-        idx = active_indices[active_idx]
-        _pdd_apply_column_pdd!(
+        pdd = _pdd_degree_days(
+            air_temperature[idx, time_index],
+            dt_days,
+            freezing_temperature,
+            temperature_sigma,
+            pdd_method,
+        )
+        _pdd_apply_column!(
             snowpack_swe,
             smb_ice,
             runoff,
             pdd_sum,
             idx,
-            _pdd_step_mass(snowfall_rate[idx, time_index], dt_days),
-            _pdd_step_mass(rainfall_rate[idx, time_index], dt_days),
-            _pism_expected_positive_degree_days(air_temperature[idx, time_index], dt_days, temperature_sigma),
+            snowfall,
+            rainfall,
+            pdd,
             ddf_snow,
             ddf_ice,
             refreezing_fraction,
+            H_snow_max,
         )
     end
 end
 
-# CPU vectorised path — no per-column loop, operates on whole arrays at once.
-# scratch is a NamedTuple of 6 pre-allocated Vector{Float64} buffers of length ncol.
-function pdd_step!(
-    snowpack_swe::Vector{Float64},
-    smb_ice::Vector{Float64},
-    runoff::Vector{Float64},
-    pdd_sum::Vector{Float64},
-    forcing::SnowpackForcing,
-    time_index::Int,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-    scratch,
-)
-    dt = _step_dt(forcing.dt_days, time_index)
-    T  = @view forcing.air_temperature[:, time_index]
-    sf = @view forcing.snowfall_rate[:, time_index]
-    rf = @view forcing.rainfall_rate[:, time_index]
-
-    snowfall       = scratch.snowfall
-    rainfall       = scratch.rainfall
-    pdd            = scratch.pdd
-    available_snow = scratch.available_snow
-    snow_melt      = scratch.snow_melt
-    remaining_pdd  = scratch.remaining_pdd
-
-    scale = dt * 86_400.0
-    @. snowfall       = max(sf, 0.0) * scale
-    @. rainfall       = max(rf, 0.0) * scale
-    @. pdd            = max(T - 273.15, 0.0) * dt
-    @. pdd_sum       += pdd
-    @. available_snow = snowpack_swe + snowfall
-    @. snow_melt      = min(available_snow, ddf_snow * pdd)
-    @. remaining_pdd  = max(pdd - snow_melt / ddf_snow, 0.0)
-
-    @inbounds for i in eachindex(snowpack_swe)
-        refrozen        = refreezing_fraction * snow_melt[i]
-        ice_melt        = ddf_ice * remaining_pdd[i]
-        snowpack_swe[i] = available_snow[i] - snow_melt[i] + refrozen
-        smb_ice[i]     += snowfall[i] - snow_melt[i] + refrozen - ice_melt
-        runoff[i]      += rainfall[i] + snow_melt[i] - refrozen + ice_melt
-    end
-    return nothing
-end
-
-function pdd_monthly_step!(
-    snowpack_swe::Vector{Float64},
-    smb_ice::Vector{Float64},
-    runoff::Vector{Float64},
-    pdd_sum::Vector{Float64},
-    forcing::SnowpackForcing,
-    time_index::Int,
-    model::PDDModel,
-    scratch,
-)
-    dt = _step_dt(forcing.dt_days, time_index)
-    T  = @view forcing.air_temperature[:, time_index]
-    sf = @view forcing.snowfall_rate[:, time_index]
-    rf = @view forcing.rainfall_rate[:, time_index]
-
-    snowfall       = scratch.snowfall
-    rainfall       = scratch.rainfall
-    pdd            = scratch.pdd
-    available_snow = scratch.available_snow
-    snow_melt      = scratch.snow_melt
-    remaining_pdd  = scratch.remaining_pdd
-
-    scale = dt * 86_400.0
-    sigma = model.temperature_sigma
-    @. snowfall       = max(sf, 0.0) * scale
-    @. rainfall       = max(rf, 0.0) * scale
-    @. pdd            = _pism_expected_positive_degree_days(T, dt, sigma)
-    @. pdd_sum       += pdd
-    @. available_snow = snowpack_swe + snowfall
-    @. snow_melt      = min(available_snow, model.ddf_snow * pdd)
-    @. remaining_pdd  = max(pdd - snow_melt / model.ddf_snow, 0.0)
-
-    @inbounds for i in eachindex(snowpack_swe)
-        refrozen        = model.refreezing_fraction * snow_melt[i]
-        ice_melt        = model.ddf_ice * remaining_pdd[i]
-        snowpack_swe[i] = available_snow[i] - snow_melt[i] + refrozen
-        smb_ice[i]     += snowfall[i] - snow_melt[i] + refrozen - ice_melt
-        runoff[i]      += rainfall[i] + snow_melt[i] - refrozen + ice_melt
-    end
-    return nothing
-end
-
-function pdd_step!(
-    snowpack_swe::Vector{Float64},
-    smb_ice::Vector{Float64},
-    runoff::Vector{Float64},
-    pdd_sum::Vector{Float64},
-    forcing::SnowpackForcing,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-    scratch,
-)
-    for time_index in 1:_step_time_count(forcing)
-        pdd_step!(snowpack_swe, smb_ice, runoff, pdd_sum, forcing, time_index, ddf_snow, ddf_ice, refreezing_fraction, scratch)
-    end
-    return nothing
-end
-
-# GPU / fallback path — KernelAbstractions kernel, one launch per time step.
-function pdd_step!(
+function _pdd_step_arrays!(
     snowpack_swe::AbstractVector,
     smb_ice::AbstractVector,
     runoff::AbstractVector,
     pdd_sum::AbstractVector,
     forcing::SnowpackForcing,
     time_index::Int,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
+    model::PDDModel,
     active_indices,
 )
-    size(forcing.air_temperature, 1) == length(snowpack_swe) || error("Forcing column count must match the PDD state column count.")
-    length(pdd_sum) == length(snowpack_swe) || error("PDD diagnostic length must match the PDD state column count.")
+    ncol = length(snowpack_swe)
+    size(forcing.air_temperature, 1) == ncol ||
+        error("Forcing column count must match the PDD state column count.")
+    length(smb_ice) == ncol || error("PDD SMB length must match the state column count.")
+    length(runoff) == ncol || error("PDD runoff length must match the state column count.")
+    length(pdd_sum) == ncol || error("PDD diagnostic length must match the state column count.")
+    1 <= time_index <= size(forcing.air_temperature, 2) ||
+        error("PDD forcing time index is out of bounds.")
+    isempty(active_indices) && return nothing
+
     kernel! = _pdd_step_kernel!(_ka_backend(snowpack_swe))
-    event = kernel!(
-        snowpack_swe,
-        smb_ice,
-        runoff,
-        pdd_sum,
-        forcing.air_temperature,
-        forcing.snowfall_rate,
-        forcing.rainfall_rate,
-        time_index,
-        _step_dt(forcing.dt_days, time_index),
-        ddf_snow,
-        ddf_ice,
-        refreezing_fraction,
-        active_indices;
-        ndrange=length(active_indices),
-    )
-    _wait_kernel(event)
-    return nothing
-end
-
-function pdd_monthly_step!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
-    forcing::SnowpackForcing,
-    time_index::Int,
-    model::PDDModel,
-    active_indices,
-)
-    size(forcing.air_temperature, 1) == length(snowpack_swe) || error("Forcing column count must match the PDD state column count.")
-    length(pdd_sum) == length(snowpack_swe) || error("PDD diagnostic length must match the PDD state column count.")
-    kernel! = _pdd_monthly_step_kernel!(_ka_backend(snowpack_swe))
     event = kernel!(
         snowpack_swe,
         smb_ice,
@@ -364,6 +179,10 @@ function pdd_monthly_step!(
         model.ddf_ice,
         model.refreezing_fraction,
         model.temperature_sigma,
+        model.H_snow_max,
+        model.pdd_method,
+        model.c.T0,
+        model.c.seconds_per_day,
         active_indices;
         ndrange=length(active_indices),
     )
@@ -371,48 +190,24 @@ function pdd_monthly_step!(
     return nothing
 end
 
-
-pdd_step!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
-    forcing::SnowpackForcing,
-    time_index::Int,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-) = pdd_step!(
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
-    forcing,
-    time_index,
-    ddf_snow,
-    ddf_ice,
-    refreezing_fraction,
-    1:length(snowpack_swe),
-)
-
-pdd_monthly_step!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
-    forcing::SnowpackForcing,
-    time_index::Int,
+function pdd_step!(
     model::PDDModel,
-) = pdd_monthly_step!(
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
-    forcing,
-    time_index,
-    model,
-    1:length(snowpack_swe),
+    state::PDDState,
+    forcing::SnowpackForcing,
+    time_index::Int,
 )
+    active_indices = collect(1:length(state.snowpack_swe))
+    return _pdd_step_arrays!(
+        state.snowpack_swe,
+        state.smb_ice,
+        state.runoff,
+        state.pdd_sum,
+        forcing,
+        time_index,
+        model,
+        active_indices,
+    )
+end
 
 function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing)
     for time_index in 1:_step_time_count(forcing)

@@ -33,7 +33,10 @@ result = finalize!(integrator)
 
 `BESSIModel` resolves the layered mass and energy balance. `PDDModel` uses a
 bulk snow reservoir with configurable `ddf_snow`, `ddf_ice`,
-`refreezing_fraction`, and `temperature_sigma`.
+`refreezing_fraction`, `temperature_sigma`, `H_snow_max`, and
+`pdd_method`. The default `pdd_method=:simple` uses positive mean
+temperature; `pdd_method=:pism` applies the Calov-Greve expectation integral
+at every timestep.
 
 ## Input Units
 
@@ -63,6 +66,10 @@ For `PDDModel`, `:all` writes `snowpack_swe`, `smb_ice`, `runoff`, and
 `pdd_sum` every forcing step. `:monthly` writes month-end snowpack SWE and
 monthly changes in the three cumulative fields. Monthly output for both models
 is buffered and written to NetCDF in chunks after stepping.
+
+PDD `smb_ice` is ice-facing, consistent with BESSI: refrozen water and snow
+above `H_snow_max` are transferred to ice, while ice melt is negative SMB.
+Seasonal snow retained in `snowpack_swe` is not credited to the ice sheet.
 
 NetCDF output requires a `SnowpackGrid` with spatial coordinates.
 

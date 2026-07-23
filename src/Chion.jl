@@ -7,6 +7,7 @@ using Adapt: Adapt, adapt, @adapt_structure
 using CUDA
 using KernelAbstractions
 using ProgressMeter: Progress, next!, update!
+using SpecialFunctions: erfc
 
 # ---------------------------------------------------------------------------
 # Core domain, forcing, and physics

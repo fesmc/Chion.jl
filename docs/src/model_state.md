@@ -38,7 +38,11 @@ with layer-wise arrays for:
 | `albedo` | surface albedo used by the energy solver | `1` |
 
 `PDDState` stores `snowpack_swe`, `smb_ice`, `runoff`, and `pdd_sum` as
-column vectors.
+column vectors. Its snow reservoir is capped by `PDDModel.H_snow_max`.
+Refrozen water leaves that reservoir as superimposed ice, and `smb_ice`
+therefore contains only snow-to-ice conversion minus ice melt. For every PDD
+step, precipitation is partitioned according to
+`snowfall + rainfall = Δsnowpack_swe + Δsmb_ice + Δrunoff`.
 
 `SnowpackForcing` stores one forcing matrix per field in model-native units
 (`K`, `kg m^-2 s^-1`, `W m^-2`). Its constructor also accepts user-facing
