@@ -68,15 +68,15 @@ function main()
 
     common = [
         "--worker",
-        "--columns=$(arg("columns", "128,1024,10000"))",
-        "--ntots=$(arg("ntots", "4,8,12"))",
-        "--years=$(arg("years", "1"))",
+        "--columns=$(arg("columns", "128,1024,16384,65536,524288,1048576"))",
+        "--ntots=$(arg("ntots", "2,4,8,12,20"))",
+        "--years=$(arg("years", "100"))",
         "--steps=$(arg("steps", "365"))",
         "--repetitions=$(arg("repetitions", "3"))",
         "--output=$output",
     ]
-    for backend in split(arg("backends", "threads,gpu"), ",")
-        thread_counts = backend == "threads" ? list("threads", "1,2,4") : [1]
+    for backend in split(arg("backends", "threads"), ",")
+        thread_counts = backend == "threads" ? list("threads", "32") : [1]
         for threads in thread_counts
             run(`$(Base.julia_cmd()) --threads=$threads --project=$ROOT $SCRIPT --backend=$backend $(common)`)
         end
