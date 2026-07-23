@@ -218,9 +218,10 @@ function column_step_core!(
     if !has_surface_snow
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
+        rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
         _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
-        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_ice_fluxes.melt_mass)
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + rainfall_mass + bare_ice_fluxes.melt_mass)
         _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_ice_fluxes.vapor_mass)
         _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_ice_fluxes.sublimation_mass)
         _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + bare_ice_fluxes.latent_heat_flux * forcing.dt_days)
