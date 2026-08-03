@@ -2,27 +2,11 @@
 
 function _single_step_forcing_view(forcing::SnowpackForcing, dt_days::Real)
     return SnowpackForcing(
+        ;
         dt_days=[Float64(dt_days)],
         ncol=size(forcing.air_temperature, 1),
-        air_temperature=forcing.air_temperature[:, 1:1],
-        snowfall_rate=forcing.snowfall_rate[:, 1:1],
-        rainfall_rate=forcing.rainfall_rate[:, 1:1],
-        shortwave_down=forcing.shortwave_down[:, 1:1],
-        latitude_deg=forcing.latitude_deg[:, 1:1],
-        wind_speed=forcing.wind_speed[:, 1:1],
-        q_lw_down=forcing.q_lw_down[:, 1:1],
-        has_q_lw_down=forcing.has_q_lw_down[:, 1:1],
-        q_sh=forcing.q_sh[:, 1:1],
-        has_q_sh=forcing.has_q_sh[:, 1:1],
-        q_lh=forcing.q_lh[:, 1:1],
-        has_q_lh=forcing.has_q_lh[:, 1:1],
-        relative_humidity=forcing.relative_humidity[:, 1:1],
-        has_relative_humidity=forcing.has_relative_humidity[:, 1:1],
-        surface_height=forcing.surface_height[:, 1:1],
-        air_pressure=forcing.air_pressure[:, 1:1],
-        prescribed_albedo=forcing.prescribed_albedo[:, 1:1],
-        has_prescribed_albedo=forcing.has_prescribed_albedo[:, 1:1],
         time_values=[first(forcing.time_values)],
+        (name => getfield(forcing, name)[:, 1:1] for name in _FORCING_MATRIX_FIELD_NAMES)...,
     )
 end
 
@@ -62,27 +46,9 @@ _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
     integrator.model_runtime.data.step_fields
 
 function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
-    copyto!(dest.dt_days, src.dt_days)
-    copyto!(dest.day_of_year, src.day_of_year)
-    copyto!(dest.solar_longitude_deg, src.solar_longitude_deg)
-    _copy_forcing_field!(dest.air_temperature, src.air_temperature)
-    _copy_forcing_field!(dest.snowfall_rate, src.snowfall_rate)
-    _copy_forcing_field!(dest.rainfall_rate, src.rainfall_rate)
-    _copy_forcing_field!(dest.shortwave_down, src.shortwave_down)
-    _copy_forcing_field!(dest.latitude_deg, src.latitude_deg)
-    _copy_forcing_field!(dest.wind_speed, src.wind_speed)
-    _copy_forcing_field!(dest.q_lw_down, src.q_lw_down)
-    _copy_forcing_field!(dest.has_q_lw_down, src.has_q_lw_down)
-    _copy_forcing_field!(dest.q_sh, src.q_sh)
-    _copy_forcing_field!(dest.has_q_sh, src.has_q_sh)
-    _copy_forcing_field!(dest.q_lh, src.q_lh)
-    _copy_forcing_field!(dest.has_q_lh, src.has_q_lh)
-    _copy_forcing_field!(dest.relative_humidity, src.relative_humidity)
-    _copy_forcing_field!(dest.has_relative_humidity, src.has_relative_humidity)
-    _copy_forcing_field!(dest.surface_height, src.surface_height)
-    _copy_forcing_field!(dest.air_pressure, src.air_pressure)
-    _copy_forcing_field!(dest.prescribed_albedo, src.prescribed_albedo)
-    _copy_forcing_field!(dest.has_prescribed_albedo, src.has_prescribed_albedo)
+    for name in _FORCING_COPY_FIELD_NAMES
+        _copy_forcing_field!(getfield(dest, name), getfield(src, name))
+    end
     return dest
 end
 
@@ -96,34 +62,28 @@ function sync_forcing!(integrator::SimulationIntegrator)
 end
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_index::Int)
-    integrator.result !== nothing && error("Cannot step a finalized integrator.")
-    _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
-
-    model = integrator.sim.model
-    state = integrator.sim.now
-    model_runtime = integrator.model_runtime
-
-    time_counted_block!(integrator.timings, :model_step_wall, ncols(model.grid)) do
-        step_model!(model, state, model_runtime, forcing, time_index)
-    end
-
-    if integrator.time_index == length(integrator.sim.forcing.time_values)
-        integrator.completed_years += 1
-        integrator.time_index = 1
-    else
-        integrator.time_index += 1
-    end
-    return nothing
+    return _advance_with_forcing_range!(
+        integrator, forcing, time_index, time_index, integrator.time_index,
+    )
 end
 
 function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_range)
-    integrator.result !== nothing && error("Cannot step a finalized integrator.")
-    _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
-
     first_time = Int(first(time_range))
     last_time = Int(last(time_range))
     first_time <= last_time || return nothing
     first_time == integrator.time_index || error("Scheduled forcing range must start at the integrator time index.")
+    return _advance_with_forcing_range!(integrator, forcing, first_time, last_time, last_time)
+end
+
+function _advance_with_forcing_range!(
+    integrator::SimulationIntegrator,
+    forcing::SnowpackForcing,
+    first_time::Int,
+    last_time::Int,
+    schedule_stop::Int,
+)
+    integrator.result !== nothing && error("Cannot step a finalized integrator.")
+    _finished(integrator) && error("Cannot step an integrator that has already completed all years.")
     nsteps = length(integrator.sim.forcing.time_values)
     last_time <= nsteps || error("Scheduled forcing range cannot cross a forcing year boundary.")
 
@@ -133,14 +93,15 @@ function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::Snowp
     step_count = last_time - first_time + 1
 
     time_counted_block!(integrator.timings, :model_step_wall, step_count) do
-        step_model!(model, state, model_runtime, forcing, first_time:last_time)
+        step_input = first_time == last_time ? first_time : first_time:last_time
+        step_model!(model, state, model_runtime, forcing, step_input)
     end
 
-    if last_time == nsteps
+    if schedule_stop == nsteps
         integrator.completed_years += 1
         integrator.time_index = 1
     else
-        integrator.time_index = last_time + 1
+        integrator.time_index = schedule_stop + 1
     end
     return nothing
 end
@@ -176,11 +137,6 @@ function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force
 end
 
 function _run_integrator!(integrator::SimulationIntegrator)
-    if integrator.sim.model isa BESSIModel
-        return _run_bessi_integrator!(integrator)
-    elseif integrator.sim.model isa PDDModel
-        return _run_pdd_integrator!(integrator)
-    end
     while !_finished(integrator)
         _step_scheduled!(integrator)
     end

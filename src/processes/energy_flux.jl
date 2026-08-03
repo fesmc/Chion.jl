@@ -216,7 +216,17 @@ tuple.
         latent_heat_constant_term=latent_heat_constant_term,
     )
 end
-@inline function _energy_flux_result(
+@inline _energy_flux_result(
+    needs_melt,
+    energy_to_melting,
+    melt_energy_available,
+    heating,
+    surface_flux_constant,
+    surface_flux_linear,
+    latent_heat_linear_coefficient,
+    latent_heat_constant_term,
+) = _energy_flux_result(
+    ;
     needs_melt,
     energy_to_melting,
     melt_energy_available,
@@ -226,17 +236,6 @@ end
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
 )
-    return (
-        needs_melt=needs_melt,
-        energy_to_melting=energy_to_melting,
-        melt_energy_available=melt_energy_available,
-        heating=heating,
-        surface_flux_constant=surface_flux_constant,
-        surface_flux_linear=surface_flux_linear,
-        latent_heat_linear_coefficient=latent_heat_linear_coefficient,
-        latent_heat_constant_term=latent_heat_constant_term,
-    )
-end
 
 """
     _residual_melt_energy(surface_flux_constant, surface_flux_linear, surface_temperature, energy_to_melting, dt_seconds; needs_melt)
@@ -252,10 +251,13 @@ point.
     dt_seconds;
     needs_melt,
 )
-    needs_melt || return zero(dt_seconds)
-    return max(
-        (surface_flux_constant - surface_flux_linear * surface_temperature) * dt_seconds - energy_to_melting,
-        zero(dt_seconds),
+    return _residual_melt_energy(
+        surface_flux_constant,
+        surface_flux_linear,
+        surface_temperature,
+        energy_to_melting,
+        dt_seconds,
+        needs_melt,
     )
 end
 @inline function _residual_melt_energy(

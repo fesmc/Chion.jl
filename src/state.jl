@@ -70,6 +70,26 @@ struct BESSIState{
     liquid_water::VT
 end
 
+const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature)
+const _BESSI_ARRAY_FIELD_NAMES = (
+    :N,
+    _BESSI_LAYER_FIELD_NAMES...,
+    :mass_base,
+    :smb_ice,
+    :runoff,
+    :melt,
+    :refreezing,
+    :vapor_mass,
+    :sublimation,
+    :latent_heat_flux_sum,
+    :Tsrf,
+    :albedo,
+    :thickness,
+    :wet_mass,
+    :bulk_density,
+    :liquid_water,
+)
+
 @kernel function _initialize_bessi_state_kernel!(
     N,
     mass,
@@ -198,6 +218,10 @@ end
 
 @inline _cpu_layer_matrix(matrix::TransposedLayerMatrix) = Array(matrix)
 @inline _cpu_layer_matrix(matrix) = Array(matrix)
+@inline _cpu_state_array(state::BESSIState, name::Symbol) =
+    name in _BESSI_LAYER_FIELD_NAMES ?
+    _cpu_layer_matrix(getfield(state, name)) :
+    Array(getfield(state, name))
 
 function cpu_state(state::BESSIState)
     return BESSIState(
@@ -207,30 +231,16 @@ function cpu_state(state::BESSIState)
         state.mass_max,
         state.mass_split,
         state.mass_min,
-        Array(state.N),
-        _cpu_layer_matrix(state.mass),
-        _cpu_layer_matrix(state.mass_w),
-        _cpu_layer_matrix(state.density),
-        _cpu_layer_matrix(state.temperature),
-        Array(state.mass_base),
-        Array(state.smb_ice),
-        Array(state.runoff),
-        Array(state.melt),
-        Array(state.refreezing),
-        Array(state.vapor_mass),
-        Array(state.sublimation),
-        Array(state.latent_heat_flux_sum),
-        Array(state.Tsrf),
-        Array(state.albedo),
-        Array(state.thickness),
-        Array(state.wet_mass),
-        Array(state.bulk_density),
-        Array(state.liquid_water),
+        (_cpu_state_array(state, name) for name in _BESSI_ARRAY_FIELD_NAMES)...,
     )
 end
 
 @inline _gpu_layer_matrix(matrix, storage_type) =
     TransposedLayerMatrix(adapt(storage_type, permutedims(Array(matrix), (2, 1))))
+@inline _gpu_state_array(state::BESSIState, name::Symbol, storage_type) =
+    name in _BESSI_LAYER_FIELD_NAMES ?
+    _gpu_layer_matrix(getfield(state, name), storage_type) :
+    adapt(storage_type, getfield(state, name))
 
 function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
     cuda_available() || error("CUDA is not functional in the current environment.")
@@ -241,25 +251,7 @@ function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
         state.mass_max,
         state.mass_split,
         state.mass_min,
-        adapt(storage_type, state.N),
-        _gpu_layer_matrix(state.mass, storage_type),
-        _gpu_layer_matrix(state.mass_w, storage_type),
-        _gpu_layer_matrix(state.density, storage_type),
-        _gpu_layer_matrix(state.temperature, storage_type),
-        adapt(storage_type, state.mass_base),
-        adapt(storage_type, state.smb_ice),
-        adapt(storage_type, state.runoff),
-        adapt(storage_type, state.melt),
-        adapt(storage_type, state.refreezing),
-        adapt(storage_type, state.vapor_mass),
-        adapt(storage_type, state.sublimation),
-        adapt(storage_type, state.latent_heat_flux_sum),
-        adapt(storage_type, state.Tsrf),
-        adapt(storage_type, state.albedo),
-        adapt(storage_type, state.thickness),
-        adapt(storage_type, state.wet_mass),
-        adapt(storage_type, state.bulk_density),
-        adapt(storage_type, state.liquid_water),
+        (_gpu_state_array(state, name, storage_type) for name in _BESSI_ARRAY_FIELD_NAMES)...,
     )
 end
 
@@ -286,9 +278,43 @@ end
 
 initial_state(model::PDDModel) = PDDState(model)
 
+"""Mutable state for the bulk Fortran-compatible `ITMModel`.
+
+Instantaneous budget fields use ITM's native mm w.e. day⁻¹ units; cumulative
+fields use mm w.e. and are the quantities exposed in regular output.
+"""
+struct ITMState{ST <: AbstractVector{Float64}}
+    H_snow::ST
+    alb_s::ST
+    smb::ST
+    smbi::ST
+    melt::ST
+    runoff::ST
+    refreezing::ST
+    Tsrf::ST
+    melt_net::ST
+    smb_cum::ST
+    smb_ice::ST
+    melt_cum::ST
+    runoff_cum::ST
+    refreezing_cum::ST
+end
+
+function ITMState(model::ITMModel)
+    ncol = ncols(model.grid)
+    return ITMState(
+        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(ncol), zeros(ncol),
+        zeros(ncol), zeros(ncol), zeros(ncol), fill(model.c.T0, ncol), zeros(ncol),
+        zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol),
+    )
+end
+
+initial_state(model::ITMModel) = ITMState(model)
+
 initial_state(model::BESSIModel) = BESSIState(model)
 reference_state(state::BESSIState) = deepcopy(state)
 reference_state(state::PDDState) = deepcopy(state)
+reference_state(state::ITMState) = deepcopy(state)
 
 @inline _copy_state_array!(dest, src) = copyto!(dest, src)
 function _copy_state_array!(dest::AbstractMatrix, src::TransposedLayerMatrix)
@@ -299,25 +325,9 @@ end
 function _copy_bessi_state!(dest::BESSIState, src::BESSIState)
     dest.Ntot == src.Ntot || error("Cannot copy state with different `Ntot`.")
     dest.ncol == src.ncol || error("Cannot copy state with different column count.")
-    _copy_state_array!(dest.N, src.N)
-    _copy_state_array!(dest.mass, src.mass)
-    _copy_state_array!(dest.mass_w, src.mass_w)
-    _copy_state_array!(dest.density, src.density)
-    _copy_state_array!(dest.temperature, src.temperature)
-    _copy_state_array!(dest.mass_base, src.mass_base)
-    _copy_state_array!(dest.smb_ice, src.smb_ice)
-    _copy_state_array!(dest.runoff, src.runoff)
-    _copy_state_array!(dest.melt, src.melt)
-    _copy_state_array!(dest.refreezing, src.refreezing)
-    _copy_state_array!(dest.vapor_mass, src.vapor_mass)
-    _copy_state_array!(dest.sublimation, src.sublimation)
-    _copy_state_array!(dest.latent_heat_flux_sum, src.latent_heat_flux_sum)
-    _copy_state_array!(dest.Tsrf, src.Tsrf)
-    _copy_state_array!(dest.albedo, src.albedo)
-    _copy_state_array!(dest.thickness, src.thickness)
-    _copy_state_array!(dest.wet_mass, src.wet_mass)
-    _copy_state_array!(dest.bulk_density, src.bulk_density)
-    _copy_state_array!(dest.liquid_water, src.liquid_water)
+    for name in _BESSI_ARRAY_FIELD_NAMES
+        _copy_state_array!(getfield(dest, name), getfield(src, name))
+    end
     return dest
 end
 

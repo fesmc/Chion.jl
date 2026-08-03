@@ -253,6 +253,8 @@ struct SnowpackForcing{
         SF,
         RF,
         SW,
+        QSW,
+        HQSW,
         LAT,
         WS,
         QLW,
@@ -264,6 +266,8 @@ struct SnowpackForcing{
         RH,
         HRH,
         SH,
+        HI,
+        PDD,
         AP,
         PA,
         HPA,
@@ -276,6 +280,8 @@ struct SnowpackForcing{
     snowfall_rate::SF
     rainfall_rate::RF
     shortwave_down::SW
+    q_sw_net::QSW
+    has_q_sw_net::HQSW
     latitude_deg::LAT
     wind_speed::WS
     q_lw_down::QLW
@@ -287,12 +293,46 @@ struct SnowpackForcing{
     relative_humidity::RH
     has_relative_humidity::HRH
     surface_height::SH
+    ice_thickness::HI
+    annual_pdd::PDD
     air_pressure::AP
     prescribed_albedo::PA
     has_prescribed_albedo::HPA
 end
 
 @adapt_structure SnowpackForcing
+
+const _FORCING_MATRIX_FIELD_NAMES = (
+    :air_temperature,
+    :snowfall_rate,
+    :rainfall_rate,
+    :shortwave_down,
+    :q_sw_net,
+    :has_q_sw_net,
+    :latitude_deg,
+    :wind_speed,
+    :q_lw_down,
+    :has_q_lw_down,
+    :q_sh,
+    :has_q_sh,
+    :q_lh,
+    :has_q_lh,
+    :relative_humidity,
+    :has_relative_humidity,
+    :surface_height,
+    :ice_thickness,
+    :annual_pdd,
+    :air_pressure,
+    :prescribed_albedo,
+    :has_prescribed_albedo,
+)
+
+const _FORCING_COPY_FIELD_NAMES = (
+    :dt_days,
+    :day_of_year,
+    :solar_longitude_deg,
+    _FORCING_MATRIX_FIELD_NAMES...,
+)
 
 struct SnowpackStepForcing{NF <: AbstractFloat}
     air_temperature::NF
@@ -385,6 +425,8 @@ end
             forcing.rainfall_rate[idx, time_index],
             forcing.shortwave_down[idx, time_index],
             forcing.wind_speed[idx, time_index];
+            q_sw_net=forcing.q_sw_net[idx, time_index],
+            has_q_sw_net=forcing.has_q_sw_net[idx, time_index],
             q_lw_down=forcing.q_lw_down[idx, time_index],
             has_q_lw_down=forcing.has_q_lw_down[idx, time_index],
             q_sh=forcing.q_sh[idx, time_index],
@@ -403,6 +445,18 @@ end
     end
 end
 
+function _optional_forcing_field(value, has_value, default, dims, column_count, ntime, name)
+    values = isnothing(value) ?
+             _constant_forcing_matrix(default, dims) :
+             _forcing_numeric_matrix(value, column_count, ntime, name)
+    available = isnothing(value) ?
+                _constant_forcing_matrix(false, dims) :
+                isnothing(has_value) ?
+                _constant_forcing_matrix(true, dims) :
+                _forcing_bool_matrix(has_value, column_count, ntime, "has_$(name)")
+    return values, available
+end
+
 function SnowpackForcing(;
     dt_days,
     air_temperature=nothing,
@@ -412,6 +466,8 @@ function SnowpackForcing(;
     snowfall_mm_day=nothing,
     rainfall_mm_day=nothing,
     shortwave_down,
+    q_sw_net=nothing,
+    has_q_sw_net=nothing,
     ncol::Union{Nothing, Integer}=nothing,
     wind_speed=nothing,
     q_lw_down=nothing,
@@ -424,6 +480,8 @@ function SnowpackForcing(;
     has_relative_humidity=nothing,
     air_pressure=nothing,
     surface_height=nothing,
+    ice_thickness=nothing,
+    annual_pdd=nothing,
     air_pressure_temperature_mode=:instantaneous,
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
@@ -449,7 +507,7 @@ function SnowpackForcing(;
         if isnothing(latitude_deg) || latitude_deg isa Number
             for field in (air_temperature, snowfall_rate, rainfall_rate, air_temperature_c,
                 snowfall_mm_day, rainfall_mm_day, shortwave_down, wind_speed, q_lw_down, q_sh, q_lh,
-                relative_humidity, air_pressure, surface_height, prescribed_albedo)
+                relative_humidity, air_pressure, surface_height, ice_thickness, annual_pdd, prescribed_albedo)
                 isnothing(field) || ((column_count = _forcing_column_count(field, ntime)); break)
             end
         end
@@ -483,14 +541,20 @@ function SnowpackForcing(;
 
     dims = size(air_temperature)
     shortwave_down_m = _forcing_numeric_matrix(shortwave_down, column_count, ntime, "shortwave_down")
+    q_sw_net_m, has_q_sw_net_m = _optional_forcing_field(
+        q_sw_net, has_q_sw_net, 0.0, dims, column_count, ntime, "q_sw_net",
+    )
     wind_speed_m = isnothing(wind_speed) ? _constant_forcing_matrix(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
     latitude_deg_m = isnothing(latitude_deg) ? fill(NaN, dims) : _forcing_column_metadata_matrix(latitude_deg, column_count, ntime, "latitude_deg")
-    q_lw_down_m = isnothing(q_lw_down) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_lw_down, column_count, ntime, "q_lw_down")
-    has_q_lw_down_m = isnothing(q_lw_down) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_lw_down) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_lw_down, column_count, ntime, "has_q_lw_down")
-    q_sh_m = isnothing(q_sh) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_sh, column_count, ntime, "q_sh")
-    has_q_sh_m = isnothing(q_sh) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_sh) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_sh, column_count, ntime, "has_q_sh")
-    q_lh_m = isnothing(q_lh) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(q_lh, column_count, ntime, "q_lh")
-    has_q_lh_m = isnothing(q_lh) ? _constant_forcing_matrix(false, dims) : isnothing(has_q_lh) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_q_lh, column_count, ntime, "has_q_lh")
+    q_lw_down_m, has_q_lw_down_m = _optional_forcing_field(
+        q_lw_down, has_q_lw_down, 0.0, dims, column_count, ntime, "q_lw_down",
+    )
+    q_sh_m, has_q_sh_m = _optional_forcing_field(
+        q_sh, has_q_sh, 0.0, dims, column_count, ntime, "q_sh",
+    )
+    q_lh_m, has_q_lh_m = _optional_forcing_field(
+        q_lh, has_q_lh, 0.0, dims, column_count, ntime, "q_lh",
+    )
     relative_humidity_m = if !isnothing(relative_humidity)
         _forcing_numeric_matrix(relative_humidity, column_count, ntime, "relative_humidity")
     else
@@ -517,6 +581,8 @@ function SnowpackForcing(;
     time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
     surface_height_m = isnothing(surface_height) ? fill(NaN, dims) : _forcing_column_metadata_matrix(surface_height, column_count, ntime, "surface_height")
+    ice_thickness_m = isnothing(ice_thickness) ? fill(NaN, dims) : _forcing_column_metadata_matrix(ice_thickness, column_count, ntime, "ice_thickness")
+    annual_pdd_m = isnothing(annual_pdd) ? fill(NaN, dims) : _forcing_column_metadata_matrix(annual_pdd, column_count, ntime, "annual_pdd")
     air_pressure_m = if !isnothing(air_pressure)
         _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
     elseif !isnothing(surface_height)
@@ -530,13 +596,16 @@ function SnowpackForcing(;
     else
         fill(DEFAULT_SEA_LEVEL_AIR_PRESSURE, dims)
     end
-    prescribed_albedo_m = isnothing(prescribed_albedo) ? _constant_forcing_matrix(0.0, dims) : _forcing_numeric_matrix(prescribed_albedo, column_count, ntime, "prescribed_albedo")
-    has_prescribed_albedo_m = isnothing(prescribed_albedo) ? _constant_forcing_matrix(false, dims) : isnothing(has_prescribed_albedo) ? _constant_forcing_matrix(true, dims) : _forcing_bool_matrix(has_prescribed_albedo, column_count, ntime, "has_prescribed_albedo")
+    prescribed_albedo_m, has_prescribed_albedo_m = _optional_forcing_field(
+        prescribed_albedo, has_prescribed_albedo, 0.0, dims, column_count, ntime, "prescribed_albedo",
+    )
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
         ("rainfall_rate", rainfall_rate),
         ("shortwave_down", shortwave_down_m),
+        ("q_sw_net", q_sw_net_m),
+        ("has_q_sw_net", has_q_sw_net_m),
         ("latitude_deg", latitude_deg_m),
         ("wind_speed", wind_speed_m),
         ("q_lw_down", q_lw_down_m),
@@ -548,6 +617,8 @@ function SnowpackForcing(;
         ("relative_humidity", relative_humidity_m),
         ("has_relative_humidity", has_relative_humidity_m),
         ("surface_height", surface_height_m),
+        ("ice_thickness", ice_thickness_m),
+        ("annual_pdd", annual_pdd_m),
         ("air_pressure", air_pressure_m),
         ("prescribed_albedo", prescribed_albedo_m),
         ("has_prescribed_albedo", has_prescribed_albedo_m),
@@ -567,6 +638,8 @@ function SnowpackForcing(;
         snowfall_rate,
         rainfall_rate,
         shortwave_down_m,
+        q_sw_net_m,
+        has_q_sw_net_m,
         latitude_deg_m,
         wind_speed_m,
         q_lw_down_m,
@@ -578,6 +651,8 @@ function SnowpackForcing(;
         relative_humidity_m,
         has_relative_humidity_m,
         surface_height_m,
+        ice_thickness_m,
+        annual_pdd_m,
         air_pressure_m,
         prescribed_albedo_m,
         has_prescribed_albedo_m,

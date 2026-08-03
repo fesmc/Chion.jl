@@ -107,6 +107,76 @@ struct PDDModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     pdd_method::UInt8
 end
 
+"""
+    ITMModel(grid; kwargs...)
+
+Insolation-temperature-melt bulk surface-mass-balance model, ported from the
+Fortran `fesmc/chion`/smbpal implementation. ITM requires explicit
+`surface_height`, `ice_thickness`, `annual_pdd`, and `latitude_deg` fields in
+`SnowpackForcing`; `q_sw_net` is used as its insolation driver when supplied,
+otherwise `shortwave_down` is used.
+"""
+struct ITMModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
+    grid::G
+    c::C
+    trans_a::Float64
+    trans_b::Float64
+    trans_c::Float64
+    itm_c::Float64
+    itm_t::Float64
+    itm_b::Float64
+    itm_lat0::Float64
+    H_snow_max::Float64
+    Pmaxfrac::Float64
+    H_snow_crit_desert::Float64
+    H_snow_crit_forest::Float64
+    melt_crit::Float64
+    alb_ocean::Float64
+    alb_land::Float64
+    alb_forest::Float64
+    alb_ice::Float64
+    alb_snow_dry::Float64
+    alb_snow_wet::Float64
+    firn_fac::Float64
+end
+
+function ITMModel(
+    grid::SnowpackGrid;
+    trans_a::Real=0.46,
+    trans_b::Real=6e-5,
+    trans_c::Real=0.01,
+    itm_c::Real=-45.0,
+    itm_t::Real=10.0,
+    itm_b::Real=-2.0,
+    itm_lat0::Real=65.0,
+    H_snow_max::Real=5000.0,
+    Pmaxfrac::Real=0.6,
+    H_snow_crit_desert::Real=10.0,
+    H_snow_crit_forest::Real=100.0,
+    melt_crit::Real=0.5,
+    alb_ocean::Real=0.1,
+    alb_land::Real=0.2,
+    alb_forest::Real=0.1,
+    alb_ice::Real=0.4,
+    alb_snow_dry::Real=0.8,
+    alb_snow_wet::Real=0.65,
+    firn_fac::Real=0.0266,
+    kwargs...,
+)
+    H_snow_max > 0 || error("`H_snow_max` must be positive.")
+    H_snow_crit_desert > 0 || error("`H_snow_crit_desert` must be positive.")
+    H_snow_crit_forest > 0 || error("`H_snow_crit_forest` must be positive.")
+    0 <= Pmaxfrac <= 1 || error("`Pmaxfrac` must be between 0 and 1.")
+    all(value -> 0 <= value <= 1, (alb_ocean, alb_land, alb_forest, alb_ice, alb_snow_dry, alb_snow_wet)) ||
+        error("ITM albedos must be between 0 and 1.")
+    return ITMModel(grid, SnowpackPhysicalConstants(Float64; kwargs...), Float64(trans_a),
+        Float64(trans_b), Float64(trans_c), Float64(itm_c), Float64(itm_t), Float64(itm_b),
+        Float64(itm_lat0), Float64(H_snow_max), Float64(Pmaxfrac),
+        Float64(H_snow_crit_desert), Float64(H_snow_crit_forest), Float64(melt_crit),
+        Float64(alb_ocean), Float64(alb_land), Float64(alb_forest), Float64(alb_ice),
+        Float64(alb_snow_dry), Float64(alb_snow_wet), Float64(firn_fac))
+end
+
 function PDDModel(
     grid::SnowpackGrid;
     ddf_snow::Real=3.0,

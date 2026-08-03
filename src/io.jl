@@ -22,6 +22,15 @@ const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
     :temperature => (name="temperature", long_name="Layer temperature", units="K"),
     :snowpack_swe => (name="snowpack_swe", long_name="Snowpack water equivalent", units="mmWE"),
     :pdd_sum => (name="pdd_sum", long_name="Cumulative positive degree days", units="degC day"),
+    :H_snow => (name="H_snow", long_name="ITM snowpack water equivalent", units="mmWE"),
+    :smb => (name="smb", long_name="ITM total surface mass balance rate", units="mmWE day-1"),
+    :smbi => (name="smbi", long_name="ITM ice-facing mass balance rate", units="mmWE day-1"),
+    :melt_net => (name="melt_net", long_name="ITM net melt rate", units="mmWE day-1"),
+    :smb_cum => (name="smb_cum", long_name="ITM cumulative surface mass balance", units="mmWE"),
+    :melt_cum => (name="melt_cum", long_name="ITM cumulative melt", units="mmWE"),
+    :runoff_cum => (name="runoff_cum", long_name="ITM cumulative runoff", units="mmWE"),
+    :refreezing_cum => (name="refreezing_cum", long_name="ITM cumulative refreezing", units="mmWE"),
+    :alb_s => (name="alb_s", long_name="ITM surface albedo", units="1"),
 )
 
 const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
@@ -29,13 +38,17 @@ const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :li
 const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
 const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
 const PDD_OUTPUT_VARS = [:snowpack_swe, :smb_ice, :runoff, :pdd_sum]
-const ALL_OUTPUT_VARS = unique(vcat(NETCDF_VARIABLES, MONTHLY_OUTPUT_VARS, PDD_OUTPUT_VARS))
+const ITM_OUTPUT_VARS = [:H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf, :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum]
+const ALL_OUTPUT_VARS = unique(vcat(NETCDF_VARIABLES, MONTHLY_OUTPUT_VARS, PDD_OUTPUT_VARS, ITM_OUTPUT_VARS))
 
 output_variables(::BESSIModel) = NETCDF_VARIABLES
 output_variables(::PDDModel) = PDD_OUTPUT_VARS
+output_variables(::ITMModel) = ITM_OUTPUT_VARS
 monthly_output_variables(::BESSIModel) = MONTHLY_OUTPUT_VARS
 monthly_output_variables(::PDDModel) = PDD_OUTPUT_VARS
+monthly_output_variables(::ITMModel) = ITM_OUTPUT_VARS
 supports_monthly_output(::Union{BESSIModel, PDDModel}) = true
+supports_monthly_output(::ITMModel) = true
 
 @inline _grid_shape(layout) = size(layout.mask)
 
