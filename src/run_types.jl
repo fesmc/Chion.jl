@@ -1,5 +1,24 @@
 """Run configuration, result, and initialized runtime containers."""
 
+const YearMetrics = @NamedTuple begin
+    year::Int
+    mean_thickness::Float64
+    mean_wet_mass::Float64
+    mean_bulk_density::Float64
+    mean_base_mass::Float64
+    mean_signed_delta_thickness::Float64
+    mean_abs_delta_thickness::Float64
+    max_abs_delta_thickness::Float64
+    mean_signed_delta_wet_mass::Float64
+    mean_abs_delta_wet_mass::Float64
+    max_abs_delta_wet_mass::Float64
+    mean_signed_delta_base_mass::Float64
+    mean_abs_delta_base_mass::Float64
+    max_abs_delta_base_mass::Float64
+end
+
+const YearHistory = Vector{YearMetrics}
+
 struct RunOptions
     name::String
     input_label::String
@@ -58,7 +77,7 @@ function RunOptions(;
 end
 
 struct SimulationResult
-    history::Vector{NamedTuple}
+    history::YearHistory
     status::Symbol
     years_completed::Int
     timings::StepTimingStats
@@ -72,13 +91,20 @@ mutable struct ModelRuntime{D,A}
     active_indices::A
 end
 
-mutable struct SimulationIntegrator{S,R<:ModelRuntime}
+struct ModelRuntimeData{S,F,W}
+    state::S
+    step_fields::F
+    workspace::W
+    is_gpu::Bool
+end
+
+mutable struct SimulationIntegrator{S,R<:ModelRuntime,I<:IO}
     sim::S
-    io::IO
+    io::I
     timings::StepTimingStats
     wall_t0::Int
     model_runtime::R
-    history::Vector{NamedTuple}
+    history::YearHistory
     netcdf_path::String
     time_index::Int
     completed_years::Int

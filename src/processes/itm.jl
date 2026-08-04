@@ -92,15 +92,16 @@ end
 
 @kernel function _itm_step_kernel!(
     H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
-    smb_cum, smbi_cum, melt_cum, runoff_cum, refreezing_cum,
+    smb_cum, smb_ice, melt_cum, runoff_cum, refreezing_cum,
     air_temperature, snowfall_rate, rainfall_rate, shortwave_down, q_sw_net, has_q_sw_net,
     latitude_deg, surface_height, ice_thickness, annual_pdd, time_index, dt, parameters, active_indices,
 )
     active_idx = @index(Global)
     if active_idx <= length(active_indices)
         idx = active_indices[active_idx]
-        _itm_apply_column!(H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
-            smb_cum, smbi_cum, melt_cum, runoff_cum, refreezing_cum, idx, parameters, dt,
+        _itm_apply_column!(H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf,
+            melt_net, smb_cum, smb_ice, melt_cum, runoff_cum, refreezing_cum,
+            idx, parameters, dt,
             latitude_deg[idx, time_index], air_temperature[idx, time_index], snowfall_rate[idx, time_index],
             rainfall_rate[idx, time_index], shortwave_down[idx, time_index], q_sw_net[idx, time_index],
             has_q_sw_net[idx, time_index], surface_height[idx, time_index], ice_thickness[idx, time_index],
@@ -108,12 +109,12 @@ end
     end
 end
 
-function _itm_step_arrays!(runtime, forcing::SnowpackForcing, time_index::Int, model::ITMModel, active_indices)
+function _itm_step_arrays!(state::ITMState, forcing, time_index::Int, model::ITMModel, active_indices)
     isempty(active_indices) && return nothing
-    kernel! = _itm_step_kernel!(_ka_backend(runtime.H_snow))
-    event = kernel!(runtime.H_snow, runtime.alb_s, runtime.smb, runtime.smbi, runtime.melt,
-        runtime.runoff, runtime.refreezing, runtime.Tsrf, runtime.melt_net, runtime.smb_cum,
-        runtime.smb_ice, runtime.melt_cum, runtime.runoff_cum, runtime.refreezing_cum,
+    kernel! = _itm_step_kernel!(_ka_backend(state.H_snow))
+    event = kernel!(state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
+        state.runoff, state.refreezing, state.Tsrf, state.melt_net, state.smb_cum,
+        state.smb_ice, state.melt_cum, state.runoff_cum, state.refreezing_cum,
         forcing.air_temperature, forcing.snowfall_rate, forcing.rainfall_rate, forcing.shortwave_down,
         forcing.q_sw_net, forcing.has_q_sw_net, forcing.latitude_deg, forcing.surface_height,
         forcing.ice_thickness, forcing.annual_pdd, time_index, _step_dt(forcing.dt_days, time_index),

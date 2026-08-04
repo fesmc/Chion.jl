@@ -243,39 +243,40 @@ end
     return mod(true_longitude, 360.0)
 end
 
-"""Time-varying atmospheric boundary conditions for a snowpack model."""
-struct SnowpackForcing{
-        TV <: AbstractVector{DateTime},
-        DV <: AbstractVector{Float64},
-        YV <: AbstractVector{Float64},
-        SV <: AbstractVector{Float64},
-        AT,
-        SF,
-        RF,
-        SW,
-        QSW,
-        HQSW,
-        LAT,
-        WS,
-        QLW,
-        HLW,
-        QSH,
-        HSH,
-        QLH,
-        HLH,
-        RH,
-        HRH,
-        SH,
-        HI,
-        PDD,
-        AP,
-        PA,
-        HPA,
-    }
+struct ForcingCalendar{TV,DV,YV,SV}
     time_values::TV
     dt_days::DV
     day_of_year::YV
     solar_longitude_deg::SV
+end
+
+struct OptionalForcingField{V,M}
+    values::V
+    available::M
+end
+
+"""Time-varying atmospheric boundary conditions for a snowpack model."""
+struct SnowpackForcing{C<:ForcingCalendar,F<:NamedTuple}
+    calendar::C
+    fields::F
+end
+
+struct PDDForcing{D,AT,SF,RF}
+    dt_days::D
+    air_temperature::AT
+    snowfall_rate::SF
+    rainfall_rate::RF
+end
+
+PDDForcing(forcing::SnowpackForcing) = PDDForcing(
+    forcing.dt_days,
+    forcing.air_temperature,
+    forcing.snowfall_rate,
+    forcing.rainfall_rate,
+)
+
+struct ITMForcing{D,AT,SF,RF,SW,QSW,HQSW,LAT,SH,HI,PDD}
+    dt_days::D
     air_temperature::AT
     snowfall_rate::SF
     rainfall_rate::RF
@@ -283,24 +284,72 @@ struct SnowpackForcing{
     q_sw_net::QSW
     has_q_sw_net::HQSW
     latitude_deg::LAT
-    wind_speed::WS
-    q_lw_down::QLW
-    has_q_lw_down::HLW
-    q_sh::QSH
-    has_q_sh::HSH
-    q_lh::QLH
-    has_q_lh::HLH
-    relative_humidity::RH
-    has_relative_humidity::HRH
     surface_height::SH
     ice_thickness::HI
     annual_pdd::PDD
-    air_pressure::AP
-    prescribed_albedo::PA
-    has_prescribed_albedo::HPA
 end
 
+ITMForcing(forcing::SnowpackForcing) = ITMForcing(
+    forcing.dt_days,
+    forcing.air_temperature,
+    forcing.snowfall_rate,
+    forcing.rainfall_rate,
+    forcing.shortwave_down,
+    forcing.q_sw_net,
+    forcing.has_q_sw_net,
+    forcing.latitude_deg,
+    forcing.surface_height,
+    forcing.ice_thickness,
+    forcing.annual_pdd,
+)
+
+Adapt.@adapt_structure ForcingCalendar
+Adapt.@adapt_structure OptionalForcingField
 @adapt_structure SnowpackForcing
+Adapt.@adapt_structure PDDForcing
+Adapt.@adapt_structure ITMForcing
+
+const _FORCING_CALENDAR_FIELD_NAMES = (:time_values, :dt_days, :day_of_year, :solar_longitude_deg)
+const _FORCING_OPTIONAL_FIELD_NAMES = (
+    :q_sw_net,
+    :q_lw_down,
+    :q_sh,
+    :q_lh,
+    :relative_humidity,
+    :prescribed_albedo,
+)
+const _FORCING_AVAILABILITY_TO_FIELD = (
+    has_q_sw_net=:q_sw_net,
+    has_q_lw_down=:q_lw_down,
+    has_q_sh=:q_sh,
+    has_q_lh=:q_lh,
+    has_relative_humidity=:relative_humidity,
+    has_prescribed_albedo=:prescribed_albedo,
+)
+
+@generated function _forcing_field_property(fields::NamedTuple, ::Val{Name}) where {Name}
+    availability_names = keys(_FORCING_AVAILABILITY_TO_FIELD)
+    if Name in availability_names
+        field_name = getfield(_FORCING_AVAILABILITY_TO_FIELD, Name)
+        return :(getfield(getfield(fields, $(QuoteNode(field_name))), :available))
+    elseif Name in _FORCING_OPTIONAL_FIELD_NAMES
+        return :(getfield(getfield(fields, $(QuoteNode(Name))), :values))
+    end
+    return :(getfield(fields, $(QuoteNode(Name))))
+end
+
+@inline function Base.getproperty(forcing::SnowpackForcing, name::Symbol)
+    name === :calendar && return getfield(forcing, :calendar)
+    name === :fields && return getfield(forcing, :fields)
+    if name in _FORCING_CALENDAR_FIELD_NAMES
+        return getfield(getfield(forcing, :calendar), name)
+    end
+    return _forcing_field_property(getfield(forcing, :fields), Val(name))
+end
+
+Base.propertynames(::SnowpackForcing, private::Bool=false) = private ?
+    (:calendar, :fields, _FORCING_CALENDAR_FIELD_NAMES..., _FORCING_MATRIX_FIELD_NAMES...) :
+    (_FORCING_CALENDAR_FIELD_NAMES..., _FORCING_MATRIX_FIELD_NAMES...)
 
 const _FORCING_MATRIX_FIELD_NAMES = (
     :air_temperature,
@@ -629,34 +678,31 @@ function SnowpackForcing(;
     day_of_year_v = _calendar_day_of_year.(time_values_v)
     solar_longitude_deg_v = _solar_longitude_deg_from_calendar_day.(day_of_year_v)
 
-    return SnowpackForcing(
+    calendar = ForcingCalendar(
         time_values_v,
         dt_days_v,
         day_of_year_v,
         solar_longitude_deg_v,
-        air_temperature,
-        snowfall_rate,
-        rainfall_rate,
-        shortwave_down_m,
-        q_sw_net_m,
-        has_q_sw_net_m,
-        latitude_deg_m,
-        wind_speed_m,
-        q_lw_down_m,
-        has_q_lw_down_m,
-        q_sh_m,
-        has_q_sh_m,
-        q_lh_m,
-        has_q_lh_m,
-        relative_humidity_m,
-        has_relative_humidity_m,
-        surface_height_m,
-        ice_thickness_m,
-        annual_pdd_m,
-        air_pressure_m,
-        prescribed_albedo_m,
-        has_prescribed_albedo_m,
     )
+    fields = (
+        air_temperature=air_temperature,
+        snowfall_rate=snowfall_rate,
+        rainfall_rate=rainfall_rate,
+        shortwave_down=shortwave_down_m,
+        q_sw_net=OptionalForcingField(q_sw_net_m, has_q_sw_net_m),
+        latitude_deg=latitude_deg_m,
+        wind_speed=wind_speed_m,
+        q_lw_down=OptionalForcingField(q_lw_down_m, has_q_lw_down_m),
+        q_sh=OptionalForcingField(q_sh_m, has_q_sh_m),
+        q_lh=OptionalForcingField(q_lh_m, has_q_lh_m),
+        relative_humidity=OptionalForcingField(relative_humidity_m, has_relative_humidity_m),
+        surface_height=surface_height_m,
+        ice_thickness=ice_thickness_m,
+        annual_pdd=annual_pdd_m,
+        air_pressure=air_pressure_m,
+        prescribed_albedo=OptionalForcingField(prescribed_albedo_m, has_prescribed_albedo_m),
+    )
+    return SnowpackForcing(calendar, fields)
 end
 
 function update_air_pressure!(

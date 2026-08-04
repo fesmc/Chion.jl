@@ -2,12 +2,9 @@
 
 function _validate_model_outputs!(model, options::RunOptions)
     options.write_netcdf || return nothing
-    allowed = copy(output_variables(model))
-    append!(allowed, (:all, :none))
-    if supports_monthly_output(model)
-        append!(allowed, monthly_output_variables(model))
-        push!(allowed, :monthly)
-    end
+    allowed = supports_monthly_output(model) ?
+        (output_variables(model)..., monthly_output_variables(model)..., :all, :none, :monthly) :
+        (output_variables(model)..., :all, :none)
     unsupported = setdiff(options.netcdf_variables, allowed)
     isempty(unsupported) || error(
         "Unsupported NetCDF variables for $(nameof(typeof(model))): $(join(string.(unsupported), ", ")).",
@@ -15,26 +12,34 @@ function _validate_model_outputs!(model, options::RunOptions)
     return nothing
 end
 
+function _validate_model_forcing!(model::BESSIModel, forcing::SnowpackForcing)
+    if model.diurnal_shortwave_substeps
+        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
+    end
+    if _uses_prescribed_albedo(model.c)
+        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
+    end
+    return nothing
+end
+
+_validate_model_forcing!(::PDDModel, ::SnowpackForcing) = nothing
+
+function _validate_model_forcing!(::ITMModel, forcing::SnowpackForcing)
+    all(isfinite, forcing.surface_height) || error("`surface_height` is required for ITMModel.")
+    all(isfinite, forcing.ice_thickness) || error("`ice_thickness` is required for ITMModel.")
+    all(isfinite, forcing.annual_pdd) || error("`annual_pdd` is required for ITMModel.")
+    all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required for ITMModel.")
+    all(>=(0.0), forcing.ice_thickness) || error("`ice_thickness` must be non-negative for ITMModel.")
+    all(>=(0.0), forcing.annual_pdd) || error("`annual_pdd` must be non-negative for ITMModel.")
+    return nothing
+end
 function validate_integrator_setup!(sim, options::RunOptions)
     model = sim.model
     forcing = sim.forcing
     grid = model.grid
     ncol = ncols(grid)
     size(forcing.air_temperature, 1) == ncol || error("Forcing column count must match the model column count.")
-    if model isa BESSIModel && model.diurnal_shortwave_substeps
-        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
-    end
-    if model isa BESSIModel && _uses_prescribed_albedo(model.c)
-        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
-    end
-    if model isa ITMModel
-        all(isfinite, forcing.surface_height) || error("`surface_height` is required for ITMModel.")
-        all(isfinite, forcing.ice_thickness) || error("`ice_thickness` is required for ITMModel.")
-        all(isfinite, forcing.annual_pdd) || error("`annual_pdd` is required for ITMModel.")
-        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required for ITMModel.")
-        all(>=(0.0), forcing.ice_thickness) || error("`ice_thickness` must be non-negative for ITMModel.")
-        all(>=(0.0), forcing.annual_pdd) || error("`annual_pdd` must be non-negative for ITMModel.")
-    end
+    _validate_model_forcing!(model, forcing)
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
@@ -55,121 +60,81 @@ function _prepare_backend!(timings::StepTimingStats, state::BESSIState, forcing:
         workspace = time_block!(timings, :gpu_transfer) do
             ColumnarStepWorkspace(state)
         end
-        return (state=state, step_fields=step_fields, workspace=workspace, is_gpu=true)
+        return ModelRuntimeData(state, step_fields, workspace, true)
     end
     workspace = time_block!(timings, :create_workspaces) do
         ColumnarStepWorkspace(state)
     end
-    return (state=state, step_fields=step_fields, workspace=workspace, is_gpu=false)
+    return ModelRuntimeData(state, step_fields, workspace, false)
 end
 
 function prepare_runtime!(model::BESSIModel, state::BESSIState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
     return _prepare_backend!(timings, state, forcing; is_gpu=options.backend == :gpu)
 end
 
-function _gpu_pdd_forcing(forcing::SnowpackForcing)
+function _gpu_forcing_view(forcing::PDDForcing)
     to_gpu(field) = adapt(gpu_storage_type(), field)
-    return SnowpackForcing(
-        forcing.time_values,
+    return PDDForcing(
         forcing.dt_days,
-        forcing.day_of_year,
-        forcing.solar_longitude_deg,
         to_gpu(forcing.air_temperature),
         to_gpu(forcing.snowfall_rate),
         to_gpu(forcing.rainfall_rate),
-        forcing.shortwave_down,
-        forcing.q_sw_net,
-        forcing.has_q_sw_net,
-        forcing.latitude_deg,
-        forcing.wind_speed,
-        forcing.q_lw_down,
-        forcing.has_q_lw_down,
-        forcing.q_sh,
-        forcing.has_q_sh,
-        forcing.q_lh,
-        forcing.has_q_lh,
-        forcing.relative_humidity,
-        forcing.has_relative_humidity,
-        forcing.surface_height,
-        forcing.ice_thickness,
-        forcing.annual_pdd,
-        forcing.air_pressure,
-        forcing.prescribed_albedo,
-        forcing.has_prescribed_albedo,
+    )
+end
+
+function _gpu_forcing_view(forcing::ITMForcing)
+    to_gpu(field) = adapt(gpu_storage_type(), field)
+    return ITMForcing(
+        forcing.dt_days,
+        to_gpu(forcing.air_temperature),
+        to_gpu(forcing.snowfall_rate),
+        to_gpu(forcing.rainfall_rate),
+        to_gpu(forcing.shortwave_down),
+        to_gpu(forcing.q_sw_net),
+        to_gpu(forcing.has_q_sw_net),
+        to_gpu(forcing.latitude_deg),
+        to_gpu(forcing.surface_height),
+        to_gpu(forcing.ice_thickness),
+        to_gpu(forcing.annual_pdd),
     )
 end
 
 function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
     is_gpu = options.backend == :gpu
+    step_fields = PDDForcing(forcing)
     if is_gpu
         cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-        snowpack_swe = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), state.snowpack_swe)
-        end
-        smb_ice = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), state.smb_ice)
-        end
-        runoff = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), state.runoff)
-        end
-        pdd_sum = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), state.pdd_sum)
+        backend_state = time_block!(timings, :gpu_transfer) do
+            adapt(gpu_storage_type(), state)
         end
         step_fields = time_block!(timings, :gpu_transfer) do
-            _gpu_pdd_forcing(forcing)
+            _gpu_forcing_view(step_fields)
         end
-        return (snowpack_swe=snowpack_swe, smb_ice=smb_ice, runoff=runoff, pdd_sum=pdd_sum, step_fields=step_fields, is_gpu=true)
+        return ModelRuntimeData(backend_state, step_fields, nothing, true)
     end
-    return (
-        snowpack_swe=state.snowpack_swe,
-        smb_ice=state.smb_ice,
-        runoff=state.runoff,
-        pdd_sum=state.pdd_sum,
-        step_fields=forcing,
-        is_gpu=false,
-    )
+    return ModelRuntimeData(state, step_fields, nothing, false)
 end
 
 function prepare_runtime!(model::ITMModel, state::ITMState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
     is_gpu = options.backend == :gpu
     is_gpu && !cuda_available() && error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-    transfer(field) = is_gpu ? time_block!(timings, :gpu_transfer) do
-        adapt(gpu_storage_type(), field)
-    end : field
+    backend_state = is_gpu ? time_block!(timings, :gpu_transfer) do
+        adapt(gpu_storage_type(), state)
+    end : state
+    step_fields = ITMForcing(forcing)
     step_fields = is_gpu ? time_block!(timings, :gpu_transfer) do
-        adapt(gpu_storage_type(), forcing)
-    end : forcing
-    return (
-        H_snow=transfer(state.H_snow), alb_s=transfer(state.alb_s), smb=transfer(state.smb), smbi=transfer(state.smbi),
-        melt=transfer(state.melt), runoff=transfer(state.runoff), refreezing=transfer(state.refreezing), Tsrf=transfer(state.Tsrf),
-        melt_net=transfer(state.melt_net), smb_cum=transfer(state.smb_cum), smb_ice=transfer(state.smb_ice),
-        melt_cum=transfer(state.melt_cum), runoff_cum=transfer(state.runoff_cum), refreezing_cum=transfer(state.refreezing_cum),
-        step_fields=step_fields, is_gpu=is_gpu,
-    )
+        _gpu_forcing_view(step_fields)
+    end : step_fields
+    return ModelRuntimeData(backend_state, step_fields, nothing, is_gpu)
 end
 
 _backend_active_indices(indices::Vector{Int}, data) =
-    getproperty(data, :is_gpu) ? adapt(gpu_storage_type(), indices) : indices
+    data.is_gpu ? adapt(gpu_storage_type(), indices) : indices
 
 @kernel function _reset_bessi_columns_kernel!(
-    N,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    mass_base,
-    smb_ice,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    Tsrf,
-    albedo_dynamic,
-    snow_age_days,
-    inactive_indices,
+    fields,
     Ntot::Int,
+    inactive_indices,
     density_init,
     temperature_init,
     surface_temperature_init,
@@ -178,24 +143,26 @@ _backend_active_indices(indices::Vector{Int}, data) =
     active_idx = @index(Global)
     if active_idx <= length(inactive_indices)
         idx = inactive_indices[active_idx]
-        N[idx] = 0
-        for layer_index in 1:Ntot
-            mass[layer_index, idx] = zero(density_init)
-            mass_w[layer_index, idx] = zero(density_init)
-            density[layer_index, idx] = density_init
-            temperature[layer_index, idx] = temperature_init
+        @inbounds begin
+            fields.N[idx] = 0
+            for layer_index in 1:Ntot
+                fields.mass[layer_index, idx] = zero(density_init)
+                fields.mass_w[layer_index, idx] = zero(density_init)
+                fields.density[layer_index, idx] = density_init
+                fields.temperature[layer_index, idx] = temperature_init
+            end
+            fields.mass_base[idx] = zero(density_init)
+            fields.smb_ice[idx] = zero(density_init)
+            fields.runoff[idx] = zero(density_init)
+            fields.melt[idx] = zero(density_init)
+            fields.refreezing[idx] = zero(density_init)
+            fields.vapor_mass[idx] = zero(density_init)
+            fields.sublimation[idx] = zero(density_init)
+            fields.latent_heat_flux_sum[idx] = zero(density_init)
+            fields.Tsrf[idx] = surface_temperature_init
+            fields.albedo[idx] = albedo_init
+            fields.snow_age_days[idx] = zero(density_init)
         end
-        mass_base[idx] = zero(density_init)
-        smb_ice[idx] = zero(density_init)
-        runoff[idx] = zero(density_init)
-        melt[idx] = zero(density_init)
-        refreezing[idx] = zero(density_init)
-        vapor_mass[idx] = zero(density_init)
-        sublimation[idx] = zero(density_init)
-        latent_heat_flux_sum[idx] = zero(density_init)
-        Tsrf[idx] = surface_temperature_init
-        albedo_dynamic[idx] = albedo_init
-        snow_age_days[idx] = zero(density_init)
     end
 end
 
@@ -204,24 +171,9 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
     backend_indices = _backend_active_indices(inactive_indices, runtime)
     kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.state.mass))
     event = kernel!(
-        runtime.state.N,
-        runtime.state.mass,
-        runtime.state.mass_w,
-        runtime.state.density,
-        runtime.state.temperature,
-        runtime.state.mass_base,
-        runtime.state.smb_ice,
-        runtime.state.runoff,
-        runtime.state.melt,
-        runtime.state.refreezing,
-        runtime.state.vapor_mass,
-        runtime.state.sublimation,
-        runtime.state.latent_heat_flux_sum,
-        runtime.state.Tsrf,
-        runtime.state.albedo,
-        runtime.state.snow_age_days,
-        backend_indices,
+        get_fields(runtime.state),
         runtime.state.Ntot,
+        backend_indices,
         convert(eltype(runtime.state.mass), model.density_init),
         convert(eltype(runtime.state.mass), model.temperature_init),
         runtime.state.c.T0,
@@ -233,31 +185,25 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
 end
 
 @kernel function _reset_pdd_columns_kernel!(
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
+    state::PDDState,
     inactive_indices,
 )
     active_idx = @index(Global)
     if active_idx <= length(inactive_indices)
         idx = inactive_indices[active_idx]
-        snowpack_swe[idx] = zero(eltype(snowpack_swe))
-        smb_ice[idx] = zero(eltype(smb_ice))
-        runoff[idx] = zero(eltype(runoff))
-        pdd_sum[idx] = zero(eltype(pdd_sum))
+        state.snowpack_swe[idx] = zero(eltype(state.snowpack_swe))
+        state.smb_ice[idx] = zero(eltype(state.smb_ice))
+        state.runoff[idx] = zero(eltype(state.runoff))
+        state.pdd_sum[idx] = zero(eltype(state.pdd_sum))
     end
 end
 
 function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
     backend_indices = _backend_active_indices(inactive_indices, runtime)
-    kernel! = _reset_pdd_columns_kernel!(_ka_backend(runtime.snowpack_swe))
+    kernel! = _reset_pdd_columns_kernel!(_ka_backend(runtime.state.snowpack_swe))
     event = kernel!(
-        runtime.snowpack_swe,
-        runtime.smb_ice,
-        runtime.runoff,
-        runtime.pdd_sum,
+        runtime.state,
         backend_indices;
         ndrange=length(inactive_indices),
     )
@@ -265,23 +211,22 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     return nothing
 end
 
-@kernel function _reset_itm_columns_kernel!(H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
-    smb_cum, smbi_cum, melt_cum, runoff_cum, refreezing_cum, inactive_indices, H_snow_init, albedo_init, T0)
+@kernel function _reset_itm_columns_kernel!(state::ITMState, inactive_indices, H_snow_init, albedo_init, T0)
     active_idx = @index(Global)
     if active_idx <= length(inactive_indices)
         idx = inactive_indices[active_idx]
-        H_snow[idx] = H_snow_init; alb_s[idx] = albedo_init; smb[idx] = 0.0; smbi[idx] = 0.0
-        melt[idx] = 0.0; runoff[idx] = 0.0; refreezing[idx] = 0.0; Tsrf[idx] = T0; melt_net[idx] = 0.0
-        smb_cum[idx] = 0.0; smbi_cum[idx] = 0.0; melt_cum[idx] = 0.0; runoff_cum[idx] = 0.0; refreezing_cum[idx] = 0.0
+        state.H_snow[idx] = H_snow_init; state.alb_s[idx] = albedo_init
+        state.smb[idx] = 0.0; state.smbi[idx] = 0.0; state.melt[idx] = 0.0
+        state.runoff[idx] = 0.0; state.refreezing[idx] = 0.0; state.Tsrf[idx] = T0
+        state.melt_net[idx] = 0.0; state.smb_cum[idx] = 0.0; state.smb_ice[idx] = 0.0
+        state.melt_cum[idx] = 0.0; state.runoff_cum[idx] = 0.0; state.refreezing_cum[idx] = 0.0
     end
 end
 
 function _reset_model_columns!(model::ITMModel, ::ITMState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
     indices = _backend_active_indices(inactive_indices, runtime)
-    event = _reset_itm_columns_kernel!(_ka_backend(runtime.H_snow))(runtime.H_snow, runtime.alb_s, runtime.smb,
-        runtime.smbi, runtime.melt, runtime.runoff, runtime.refreezing, runtime.Tsrf, runtime.melt_net,
-        runtime.smb_cum, runtime.smb_ice, runtime.melt_cum, runtime.runoff_cum, runtime.refreezing_cum, indices,
+    event = _reset_itm_columns_kernel!(_ka_backend(runtime.state.H_snow))(runtime.state, indices,
         model.H_snow_max, model.alb_snow_dry, model.c.T0; ndrange=length(inactive_indices))
     _wait_kernel(event)
     return nothing
@@ -321,13 +266,10 @@ function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntim
     )
 end
 
-function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, forcing, time_index::Int)
     runtime = model_runtime.data
     return _pdd_step_arrays!(
-        runtime.snowpack_swe,
-        runtime.smb_ice,
-        runtime.runoff,
-        runtime.pdd_sum,
+        runtime.state,
         forcing,
         time_index,
         model,
@@ -335,8 +277,8 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
     )
 end
 
-function step_model!(model::ITMModel, ::ITMState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
-    _itm_step_arrays!(model_runtime.data, forcing, time_index, model, model_runtime.active_indices)
+function step_model!(model::ITMModel, ::ITMState, model_runtime::ModelRuntime, forcing, time_index::Int)
+    _itm_step_arrays!(model_runtime.data.state, forcing, time_index, model, model_runtime.active_indices)
     return nothing
 end
 
@@ -352,7 +294,7 @@ end
 
 function _copy_vector_state_from_runtime!(state, runtime)
     for name in fieldnames(typeof(state))
-        copyto!(getfield(state, name), Array(getfield(runtime, name)))
+        copyto!(getfield(state, name), Array(getfield(runtime.state, name)))
     end
     return state
 end

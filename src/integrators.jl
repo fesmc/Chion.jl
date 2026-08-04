@@ -6,7 +6,7 @@ function _single_step_forcing_view(forcing::SnowpackForcing, dt_days::Real)
         dt_days=[Float64(dt_days)],
         ncol=size(forcing.air_temperature, 1),
         time_values=[first(forcing.time_values)],
-        (name => getfield(forcing, name)[:, 1:1] for name in _FORCING_MATRIX_FIELD_NAMES)...,
+        (name => getproperty(forcing, name)[:, 1:1] for name in _FORCING_MATRIX_FIELD_NAMES)...,
     )
 end
 
@@ -31,7 +31,7 @@ function _new_integrator(
         timings,
         Int(time_ns()),
         model_runtime,
-        NamedTuple[],
+        YearMetrics[],
         "",
         Int(time_index),
         Int(completed_years),
@@ -47,7 +47,24 @@ _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
 
 function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
     for name in _FORCING_COPY_FIELD_NAMES
-        _copy_forcing_field!(getfield(dest, name), getfield(src, name))
+        _copy_forcing_field!(getproperty(dest, name), getproperty(src, name))
+    end
+    return dest
+end
+function _copy_forcing!(dest::PDDForcing, src::SnowpackForcing)
+    copyto!(dest.dt_days, src.dt_days)
+    _copy_forcing_field!(dest.air_temperature, src.air_temperature)
+    _copy_forcing_field!(dest.snowfall_rate, src.snowfall_rate)
+    _copy_forcing_field!(dest.rainfall_rate, src.rainfall_rate)
+    return dest
+end
+
+function _copy_forcing!(dest::ITMForcing, src::SnowpackForcing)
+    copyto!(dest.dt_days, src.dt_days)
+    for name in (:air_temperature, :snowfall_rate, :rainfall_rate, :shortwave_down,
+                 :q_sw_net, :has_q_sw_net, :latitude_deg, :surface_height,
+                 :ice_thickness, :annual_pdd)
+        _copy_forcing_field!(getproperty(dest, name), getproperty(src, name))
     end
     return dest
 end
@@ -61,13 +78,13 @@ function sync_forcing!(integrator::SimulationIntegrator)
     return integrator
 end
 
-function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_index::Int)
+function _advance_with_forcing!(integrator::SimulationIntegrator, forcing, time_index::Int)
     return _advance_with_forcing_range!(
         integrator, forcing, time_index, time_index, integrator.time_index,
     )
 end
 
-function _advance_with_forcing!(integrator::SimulationIntegrator, forcing::SnowpackForcing, time_range)
+function _advance_with_forcing!(integrator::SimulationIntegrator, forcing, time_range)
     first_time = Int(first(time_range))
     last_time = Int(last(time_range))
     first_time <= last_time || return nothing
@@ -77,7 +94,7 @@ end
 
 function _advance_with_forcing_range!(
     integrator::SimulationIntegrator,
-    forcing::SnowpackForcing,
+    forcing,
     first_time::Int,
     last_time::Int,
     schedule_stop::Int,
@@ -124,13 +141,20 @@ function _step_n!(integrator::SimulationIntegrator, n::Integer)
     return nothing
 end
 
+@inline _external_gpu_forcing(::BESSIModel, forcing::SnowpackForcing) =
+    adapt(gpu_storage_type(), forcing)
+@inline _external_gpu_forcing(::PDDModel, forcing::SnowpackForcing) =
+    _gpu_forcing_view(PDDForcing(forcing))
+@inline _external_gpu_forcing(::ITMModel, forcing::SnowpackForcing) =
+    _gpu_forcing_view(ITMForcing(forcing))
+
 function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true)
     force_dt || error("Chion's initialized stepper requires `force_dt=true`, matching the FastIsostasy coupling pattern.")
     Δt_days > 0 || error("`Δt_days` must be positive.")
     forcing = _single_step_forcing_view(integrator.sim.forcing, Δt_days)
     if integrator.sim.options.backend == :gpu
         forcing = time_block!(integrator.timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), forcing)
+            _external_gpu_forcing(integrator.sim.model, forcing)
         end
     end
     return _advance_with_forcing!(integrator, forcing, 1)

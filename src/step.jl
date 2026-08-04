@@ -3,13 +3,13 @@
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
-struct EnergyWorkspace{LT,DT,UT,RT,IT,PT}
-    lower::LT
-    diag::DT
-    upper::UT
-    rhs::RT
-    interface_conductance::IT
-    previous_temperature::PT
+struct EnergyWorkspace{A}
+    lower::A
+    diag::A
+    upper::A
+    rhs::A
+    interface_conductance::A
+    previous_temperature::A
 end
 
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
@@ -41,17 +41,20 @@ Adapt.@adapt_structure EnergyWorkspace
 Adapt.@adapt_structure ColumnarStepWorkspace
 
 const DEFAULT_BESSI_STEP_OPTIONS = (
-    diurnal_shortwave_substeps=false,
+    diurnal_shortwave_substeps=Val(false),
     diurnal_shortwave_threshold=0.0,
     diurnal_shortwave_max_substeps=3,
     diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle=false,
+    diurnal_temperature_cycle=Val(false),
     diurnal_temperature_amplitude=0.0,
 )
 
 @inline _step_config_from_keywords(; kwargs...) = merge(DEFAULT_BESSI_STEP_OPTIONS, (; kwargs...))
 
 @inline _step_config_from_keywords(kwargs::NamedTuple) = _step_config_from_keywords(; kwargs...)
+
+@inline _config_enabled(::Val{Enabled}) where {Enabled} = Enabled
+@inline _config_enabled(enabled::Bool) = enabled
 
 """
 Core stepping flow shared by batch stepping kernels.
@@ -84,7 +87,7 @@ function _step_diurnal_shortwave_interval!(
         hour_angle_start,
         hour_angle_end,
     )
-    air_temperature = config.diurnal_temperature_cycle ?
+    air_temperature = _config_enabled(config.diurnal_temperature_cycle) ?
         _diurnal_temperature_interval_average(
             forcing.air_temperature,
             config.diurnal_temperature_amplitude,
@@ -119,7 +122,7 @@ function column_step!(
     config,
     workspace,
 )
-    if config.diurnal_shortwave_substeps
+    if _config_enabled(config.diurnal_shortwave_substeps)
         shortwave_for_criterion = forcing.has_q_sw_net ? forcing.q_sw_net : forcing.shortwave_down
         n_substeps = _diurnal_shortwave_substep_count(
             forcing.dt_days,

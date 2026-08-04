@@ -2,15 +2,12 @@
 Model definitions exposed by Chion's simulation-first API.
 """
 
-"""
-    BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
+abstract type AbstractSnowModel end
 
-Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`BESSIState` and owned by `Simulation.now`. Available albedo schemes are
-`:constant`, `:dynamic`, `:prescribed`, and the snowfall-age scheme `:aging`.
+"""Immutable BESSI configuration shared by the model and its state containers.
+Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, and `:aging`.
 """
-struct BESSIModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
-    grid::G
+struct BESSIParameters{C <: SnowpackPhysicalConstants}
     c::C
     Ntot::Int
     mass_max::Float64
@@ -18,12 +15,44 @@ struct BESSIModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     mass_min::Float64
     density_init::Float64
     temperature_init::Float64
-    diurnal_shortwave_substeps::Bool
     diurnal_shortwave_threshold::Float64
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::Float64
-    diurnal_temperature_cycle::Bool
     diurnal_temperature_amplitude::Float64
+end
+
+const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_temperature_cycle)
+
+"""
+    BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
+
+Configuration for the layered BESSI snowpack model. Evolving state is stored in
+`BESSIState` and owned by `Simulation.now`.
+"""
+struct BESSIModel{
+        DiurnalShortwave,
+        DiurnalTemperature,
+        G <: SnowpackGrid,
+        P <: BESSIParameters,
+    } <: AbstractSnowModel
+    grid::G
+    parameters::P
+end
+
+@inline _diurnal_shortwave_enabled(::BESSIModel{Enabled}) where {Enabled} = Enabled
+@inline _diurnal_temperature_enabled(::BESSIModel{Shortwave, Enabled}) where {Shortwave, Enabled} = Enabled
+
+@inline function Base.getproperty(model::BESSIModel, name::Symbol)
+    name === :grid && return getfield(model, :grid)
+    name === :parameters && return getfield(model, :parameters)
+    name === :diurnal_shortwave_substeps && return _diurnal_shortwave_enabled(model)
+    name === :diurnal_temperature_cycle && return _diurnal_temperature_enabled(model)
+    return getproperty(getfield(model, :parameters), name)
+end
+
+function Base.propertynames(model::BESSIModel, private::Bool=false)
+    public = (:grid, fieldnames(typeof(getfield(model, :parameters)))..., _BESSI_MODEL_TAG_PROPERTIES...)
+    return private ? (public..., :parameters) : public
 end
 
 function BESSIModel(
@@ -60,8 +89,7 @@ function BESSIModel(
     )
     mass_max, mass_split, mass_min =
         _domain_thresholds(Float64, mass_max, mass_split, mass_min)
-    return BESSIModel(
-        grid,
+    parameters = BESSIParameters(
         c,
         Ntot,
         mass_max,
@@ -69,12 +97,19 @@ function BESSIModel(
         mass_min,
         Float64(density_init),
         Float64(temperature_init),
-        resolved_diurnal_shortwave_substeps,
         Float64(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),
         Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
-        diurnal_temperature_cycle,
         Float64(diurnal_temperature_amplitude_c),
+    )
+    return BESSIModel{
+        resolved_diurnal_shortwave_substeps,
+        diurnal_temperature_cycle,
+        typeof(grid),
+        typeof(parameters),
+    }(
+        grid,
+        parameters,
     )
 end
 
@@ -97,7 +132,7 @@ uses a capped one-layer snow reservoir: refrozen water and snow above
 Set `pdd_method=:pism` to use the Calov-Greve expectation integral for every
 timestep; `:simple` uses positive mean temperature directly.
 """
-struct PDDModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
+struct PDDModel{Method, G <: SnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel
     grid::G
     c::C
     ddf_snow::Float64
@@ -105,8 +140,17 @@ struct PDDModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     refreezing_fraction::Float64
     temperature_sigma::Float64
     H_snow_max::Float64
-    pdd_method::UInt8
 end
+@inline _pdd_method_flag(::PDDModel{:simple}) = PDD_METHOD_SIMPLE
+@inline _pdd_method_flag(::PDDModel{:pism}) = PDD_METHOD_PISM
+
+@inline function Base.getproperty(model::PDDModel, name::Symbol)
+    name === :pdd_method && return _pdd_method_flag(model)
+    return getfield(model, name)
+end
+
+Base.propertynames(model::PDDModel, private::Bool=false) =
+    (fieldnames(typeof(model))..., :pdd_method)
 
 """
     ITMModel(grid; kwargs...)
@@ -117,7 +161,7 @@ Fortran `fesmc/chion`/smbpal implementation. ITM requires explicit
 `SnowpackForcing`; `q_sw_net` is used as its insolation driver when supplied,
 otherwise `shortwave_down` is used.
 """
-struct ITMModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
+struct ITMModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel
     grid::G
     c::C
     trans_a::Float64
@@ -194,14 +238,16 @@ function PDDModel(
     temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
     H_snow_max > 0 || error("`H_snow_max` must be positive.")
 
-    return PDDModel(
+    method_flag = _normalize_pdd_method(pdd_method)
+    method_tag = method_flag == PDD_METHOD_SIMPLE ? :simple : :pism
+    c = SnowpackPhysicalConstants(Float64; kwargs...)
+    return PDDModel{method_tag, typeof(grid), typeof(c)}(
         grid,
-        SnowpackPhysicalConstants(Float64; kwargs...),
+        c,
         Float64(ddf_snow),
         Float64(ddf_ice),
         Float64(refreezing_fraction),
         Float64(temperature_sigma),
         Float64(H_snow_max),
-        _normalize_pdd_method(pdd_method),
     )
 end

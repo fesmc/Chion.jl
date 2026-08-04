@@ -163,50 +163,26 @@ mass, bulk density, basal mass, ice SMB, liquid water, and runoff arrays. All
 output arrays are mutated in-place.
 """
 @kernel function _summarize_domain_state_kernel!(
-    thickness,
-    wet_mass,
-    bulk_density,
-    base_mass,
-    smb_ice,
-    liquid_water,
-    runoff,
-    melt,
-    refreezing,
-    vapor_mass,
-    sublimation,
-    latent_heat_flux_sum,
-    albedo,
-    N,
-    mass,
-    mass_w,
-    density,
-    mass_base_state,
-    smb_ice_state,
-    runoff_state,
-    melt_state,
-    refreezing_state,
-    vapor_mass_state,
-    sublimation_state,
-    latent_heat_flux_sum_state,
-    albedo_state,
+    output,
+    state::BESSIState,
 )
     idx = @index(Global)
-    if idx <= length(N)
+    if idx <= length(state.N)
         thickness_local, wet_mass_local, bulk_density_local, liquid_water_local =
-            _column_summary(N, mass, mass_w, density, idx, thickness)
-        thickness[idx] = thickness_local
-        wet_mass[idx] = wet_mass_local
-        bulk_density[idx] = bulk_density_local
-        base_mass[idx] = mass_base_state[idx]
-        smb_ice[idx] = smb_ice_state[idx]
-        liquid_water[idx] = liquid_water_local
-        runoff[idx] = runoff_state[idx]
-        melt[idx] = melt_state[idx]
-        refreezing[idx] = refreezing_state[idx]
-        vapor_mass[idx] = vapor_mass_state[idx]
-        sublimation[idx] = sublimation_state[idx]
-        latent_heat_flux_sum[idx] = latent_heat_flux_sum_state[idx]
-        albedo[idx] = albedo_state[idx]
+            _column_summary(state.N, state.mass, state.mass_w, state.density, idx, output.thickness)
+        output.thickness[idx] = thickness_local
+        output.wet_mass[idx] = wet_mass_local
+        output.bulk_density[idx] = bulk_density_local
+        output.base_mass[idx] = state.mass_base[idx]
+        output.smb_ice[idx] = state.smb_ice[idx]
+        output.liquid_water[idx] = liquid_water_local
+        output.runoff[idx] = state.runoff[idx]
+        output.melt[idx] = state.melt[idx]
+        output.refreezing[idx] = state.refreezing[idx]
+        output.vapor_mass[idx] = state.vapor_mass[idx]
+        output.sublimation[idx] = state.sublimation[idx]
+        output.latent_heat_flux_sum[idx] = state.latent_heat_flux_sum[idx]
+        output.albedo[idx] = state.albedo[idx]
     end
 end
 
@@ -218,24 +194,17 @@ needed for equilibrium-year tracking. Mutates the supplied output arrays
 in-place.
 """
 @kernel function _summarize_year_state_kernel!(
-    thickness,
-    wet_mass,
-    bulk_density,
-    base_mass,
-    N,
-    mass,
-    mass_w,
-    density,
-    mass_base_state,
+    output,
+    state::BESSIState,
 )
     idx = @index(Global)
-    if idx <= length(N)
+    if idx <= length(state.N)
         thickness_local, wet_mass_local, bulk_density_local, _ =
-            _column_summary(N, mass, mass_w, density, idx, thickness)
-        thickness[idx] = thickness_local
-        wet_mass[idx] = wet_mass_local
-        bulk_density[idx] = bulk_density_local
-        base_mass[idx] = mass_base_state[idx]
+            _column_summary(state.N, state.mass, state.mass_w, state.density, idx, output.thickness)
+        output.thickness[idx] = thickness_local
+        output.wet_mass[idx] = wet_mass_local
+        output.bulk_density[idx] = bulk_density_local
+        output.base_mass[idx] = state.mass_base[idx]
     end
 end
 
@@ -261,35 +230,14 @@ function summarize_domain_state!(
     albedo::AbstractVector,
     state,
 )
+    output = (; thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water,
+              runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum,
+              albedo)
     return _launch_summary_kernel!(
         _summarize_domain_state_kernel!,
         state,
-        thickness,
-        wet_mass,
-        bulk_density,
-        base_mass,
-        smb_ice,
-        liquid_water,
-        runoff,
-        melt,
-        refreezing,
-        vapor_mass,
-        sublimation,
-        latent_heat_flux_sum,
-        albedo,
-        state.N,
-        state.mass,
-        state.mass_w,
-        state.density,
-        state.mass_base,
-        state.smb_ice,
-        state.runoff,
-        state.melt,
-        state.refreezing,
-        state.vapor_mass,
-        state.sublimation,
-        state.latent_heat_flux_sum,
-        state.albedo,
+        output,
+        state,
     )
 end
 
@@ -318,17 +266,11 @@ function summarize_year_state!(
         base_mass::AbstractVector,
         state,
 )
+    output = (; thickness, wet_mass, bulk_density, base_mass)
     return _launch_summary_kernel!(
         _summarize_year_state_kernel!,
         state,
-        thickness,
-        wet_mass,
-        bulk_density,
-        base_mass,
-        state.N,
-        state.mass,
-        state.mass_w,
-        state.density,
-        state.mass_base,
+        output,
+        state,
     )
 end
