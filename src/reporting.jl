@@ -1,27 +1,44 @@
 # Year history, run reports, and timing wrappers for Simulation runs.
 
 using TimerOutputs: TimerOutputs
-using Statistics: mean
 
-@inline completed_year_count(history::Vector{NamedTuple}, status::Symbol, years::Int) =
+@inline completed_year_count(history::YearHistory, status::Symbol, years::Int) =
     status === :complete ? years : isempty(history) ? 0 : min(history[end].year, years)
 
 @inline year_metrics_schedule_label(stride::Int, enabled::Bool=true) =
     !enabled ? "disabled" : stride == 0 ? "final year only" : stride == 1 ? "every year" : "every $(stride) years + final"
 
 @inline function _finite_mean(data)
-    finite = filter(isfinite, data)
-    return isempty(finite) ? NaN : mean(finite)
+    total = 0.0
+    count = 0
+    for value in data
+        if isfinite(value)
+            total += value
+            count += 1
+        end
+    end
+    return count == 0 ? NaN : total / count
 end
 
 function _delta_stats(data)
-    finite = filter(isfinite, data)
-    isempty(finite) && return (mean_signed=NaN, mean_abs=NaN, max_abs=NaN)
-    abs_vals = abs.(finite)
+    signed_total = 0.0
+    abs_total = 0.0
+    max_abs = 0.0
+    count = 0
+    for value in data
+        if isfinite(value)
+            abs_value = abs(value)
+            signed_total += value
+            abs_total += abs_value
+            max_abs = max(max_abs, abs_value)
+            count += 1
+        end
+    end
+    count == 0 && return (mean_signed=NaN, mean_abs=NaN, max_abs=NaN)
     return (
-        mean_signed=mean(finite),
-        mean_abs=mean(abs_vals),
-        max_abs=maximum(abs_vals),
+        mean_signed=signed_total / count,
+        mean_abs=abs_total / count,
+        max_abs=max_abs,
     )
 end
 
@@ -79,7 +96,7 @@ function print_run_report(
     io::IO,
     options::RunOptions,
     time_values::Vector{DateTime},
-    history::Vector{NamedTuple},
+    history::YearHistory,
     status::Symbol,
     run_wall_sec::Float64,
     timings::StepTimingStats;

@@ -11,10 +11,10 @@ Simulation orchestration for Chion.
 Couple a model configuration with forcing, reference state, current state, and
 execution/output options.
 """
-mutable struct Simulation{M, R, S}
+mutable struct Simulation{M<:AbstractSnowModel, F<:SnowpackForcing, S}
     model::M
-    forcing::SnowpackForcing
-    ref::R
+    forcing::F
+    ref::S
     now::S
     options::RunOptions
 end
@@ -63,11 +63,13 @@ end
 
 function build_model(model, grid::SnowpackGrid; kwargs...)
     name = _normalize_model_name(model)
-    name == :bessi && return BESSIModel(grid; kwargs...)
-    name == :pdd && return PDDModel(grid; kwargs...)
-    name == :itm && return ITMModel(grid; kwargs...)
-    error("Unsupported model '$model'.")
+    return build_model(Val(name), grid; kwargs...)
 end
+
+build_model(::Val{:bessi}, grid::SnowpackGrid; kwargs...) = BESSIModel(grid; kwargs...)
+build_model(::Val{:pdd}, grid::SnowpackGrid; kwargs...) = PDDModel(grid; kwargs...)
+build_model(::Val{:itm}, grid::SnowpackGrid; kwargs...) = ITMModel(grid; kwargs...)
+build_model(::Type{M}, grid::SnowpackGrid; kwargs...) where {M<:AbstractSnowModel} = M(grid; kwargs...)
 
 function Simulation(
     model,
@@ -120,10 +122,10 @@ _model_smb_ice_vector(::BESSIModel, ::BESSIState, runtime) =
     _host_vector(runtime.state.smb_ice; copy_array=true)
 
 _model_smb_ice_vector(::PDDModel, ::PDDState, runtime) =
-    _host_vector(runtime.smb_ice; copy_array=true)
+    _host_vector(runtime.state.smb_ice; copy_array=true)
 
 _model_smb_ice_vector(::ITMModel, ::ITMState, runtime) =
-    _host_vector(runtime.smb_ice; copy_array=true)
+    _host_vector(runtime.state.smb_ice; copy_array=true)
 
 function _yearly_grid(values::Vector{Float64}, grid)
     any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
@@ -210,13 +212,15 @@ function _state_output_from_options(sim::Simulation, options::RunOptions, state=
     )
 end
 
-function _bessi_step_kwargs(model::BESSIModel)
+function _bessi_step_kwargs(
+    model::BESSIModel{DiurnalShortwave, DiurnalTemperature},
+) where {DiurnalShortwave, DiurnalTemperature}
     return (
-        diurnal_shortwave_substeps=model.diurnal_shortwave_substeps,
+        diurnal_shortwave_substeps=Val(DiurnalShortwave),
         diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
         diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
         diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle=model.diurnal_temperature_cycle,
+        diurnal_temperature_cycle=Val(DiurnalTemperature),
         diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
     )
 end
@@ -290,7 +294,7 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
         delta_wet_mass = similar(year_summary.wet_mass)
         delta_base_mass = similar(year_summary.base_mass)
     end
-    history = NamedTuple[]
+    history = YearMetrics[]
     progress = Progress(run_options.years; desc="Running years: ", output=integrator.io, showspeed=true)
     while !_finished(integrator)
         year = integrator.completed_years + 1
@@ -386,6 +390,7 @@ end
 
 function _run_vector_model_integrator!(integrator::SimulationIntegrator, runtime, nc, monthly_output, store_monthly!)
     sim = integrator.sim
+    state = runtime.state
     options = sim.options
     monthly_mode = monthly_output !== nothing
     record_index = 0
@@ -400,7 +405,7 @@ function _run_vector_model_integrator!(integrator::SimulationIntegrator, runtime
         elseif nc !== nothing && !monthly_mode
             record_index += 1
             time_block!(integrator.timings, :write_netcdf) do
-                write_nc!(nc, runtime, record_index, sim.model.grid)
+                write_nc!(nc, state, record_index, sim.model.grid)
             end
         end
     end
@@ -425,30 +430,31 @@ function _run_pdd_integrator!(integrator::SimulationIntegrator)
     sim = integrator.sim
     options = sim.options
     runtime = integrator.model_runtime.data
-    nc = _state_output_from_options(sim, options, runtime)
+    state = runtime.state
+    nc = _state_output_from_options(sim, options, state)
     monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, options)
     monthly = monthly_mode ? (
-        snowpack_swe=runtime.snowpack_swe,
-        smb_ice=similar(runtime.smb_ice),
-        runoff=similar(runtime.runoff),
-        pdd_sum=similar(runtime.pdd_sum),
+        snowpack_swe=state.snowpack_swe,
+        smb_ice=similar(state.smb_ice),
+        runoff=similar(state.runoff),
+        pdd_sum=similar(state.pdd_sum),
     ) : nothing
     previous = monthly_mode ? (
-        smb_ice=copy(runtime.smb_ice),
-        runoff=copy(runtime.runoff),
-        pdd_sum=copy(runtime.pdd_sum),
+        smb_ice=copy(state.smb_ice),
+        runoff=copy(state.runoff),
+        pdd_sum=copy(state.pdd_sum),
     ) : nothing
     monthly_output = monthly_mode ? pdd_monthly_output_buffer(
-        runtime; nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
+        state; nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
     ) : nothing
     store_monthly! = function (record_index)
-        @. monthly.smb_ice = runtime.smb_ice - previous.smb_ice
-        @. monthly.runoff = runtime.runoff - previous.runoff
-        @. monthly.pdd_sum = runtime.pdd_sum - previous.pdd_sum
+        @. monthly.smb_ice = state.smb_ice - previous.smb_ice
+        @. monthly.runoff = state.runoff - previous.runoff
+        @. monthly.pdd_sum = state.pdd_sum - previous.pdd_sum
         store_pdd_monthly!(monthly_output, monthly, record_index)
-        copyto!(previous.smb_ice, runtime.smb_ice)
-        copyto!(previous.runoff, runtime.runoff)
-        copyto!(previous.pdd_sum, runtime.pdd_sum)
+        copyto!(previous.smb_ice, state.smb_ice)
+        copyto!(previous.runoff, state.runoff)
+        copyto!(previous.pdd_sum, state.pdd_sum)
         return nothing
     end
     return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
@@ -457,14 +463,15 @@ end
 function _run_itm_integrator!(integrator::SimulationIntegrator)
     sim = integrator.sim
     runtime = integrator.model_runtime.data
-    nc = _state_output_from_options(sim, sim.options, runtime)
+    state = runtime.state
+    nc = _state_output_from_options(sim, sim.options, state)
     monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, sim.options)
     monthly_output = monthly_mode ? itm_monthly_output_buffer(
         # Allow one terminal record beyond the precomputed calendar count.
         # This also handles synthesized forcing timestamps at a month boundary.
-        runtime; nmonth=sim.options.years * (_monthly_records_per_cycle(sim.forcing.time_values) + 1),
+        state; nmonth=sim.options.years * (_monthly_records_per_cycle(sim.forcing.time_values) + 1),
     ) : nothing
-    store_monthly! = record_index -> store_itm_monthly!(monthly_output, runtime, record_index)
+    store_monthly! = record_index -> store_itm_monthly!(monthly_output, state, record_index)
     return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
 end
 
@@ -475,9 +482,10 @@ Advance a scheduled BESSI simulation by one full forcing year and return annual
 coupling fields. `ice_sheet_net_forcing_yearly` is the yearly `smb_ice` delta in
 native Chion mass units, and `mean_T_srf_K` is the mean surface temperature.
 """
-function yearly_step!(integrator::SimulationIntegrator)
-    integrator.sim.model isa BESSIModel ||
-        error("yearly_step! currently supports BESSIModel simulations.")
+yearly_step!(::SimulationIntegrator) =
+    error("yearly_step! currently supports BESSIModel simulations.")
+
+function yearly_step!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel}})
     integrator.time_index == 1 ||
         error("yearly_step! must be called at the start of a forcing year.")
 

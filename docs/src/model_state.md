@@ -48,6 +48,18 @@ step, precipitation is partitioned according to
 (`K`, `kg m^-2 s^-1`, `W m^-2`). Its constructor also accepts user-facing
 temperature and precipitation fields in Celsius and `mmWE day^-1`.
 
+### Host/device boundary
+
+Public APIs accept `BESSIState`, `PDDState`, `ITMState`, and
+`SnowpackForcing`. Before a KernelAbstractions launch, Chion extracts concrete
+named tuples containing only the arrays required by that kernel. Complete
+state, forcing, model, simulation, and runtime objects are not kernel
+arguments.
+
+Every launch uses an `ndrange` equal to the active-index or output length.
+Kernel entry points index that range directly under `@inbounds`; empty work
+sets are handled and validated on the host before launch.
+
 ## Step Ordering
 
 For a snow-covered column, `step!` currently executes the processes in this

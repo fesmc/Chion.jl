@@ -24,16 +24,24 @@ end
     dt_days,
     freezing_temperature,
     temperature_sigma,
-    pdd_method::UInt8,
+    ::Val{:simple},
 )
     mean_temperature_c = air_temperature - freezing_temperature
-    if pdd_method == PDD_METHOD_SIMPLE
-        return max(mean_temperature_c, zero(mean_temperature_c)) * dt_days
-    elseif pdd_method == PDD_METHOD_PISM
-        return dt_days * _pdd_expected_positive_temperature(mean_temperature_c, temperature_sigma)
-    end
-    return oftype(mean_temperature_c, NaN)
+    return max(mean_temperature_c, zero(mean_temperature_c)) * dt_days
 end
+
+@inline function _pdd_degree_days(
+    air_temperature,
+    dt_days,
+    freezing_temperature,
+    temperature_sigma,
+    ::Val{:pism},
+)
+    mean_temperature_c = air_temperature - freezing_temperature
+    return dt_days * _pdd_expected_positive_temperature(mean_temperature_c, temperature_sigma)
+end
+
+@inline _pdd_method_tag(::PDDModel{Method}) where {Method} = Val(Method)
 
 @inline function _pdd_step_mass(rate, dt_days, seconds_per_day)
     return max(rate, zero(rate)) * dt_days * seconds_per_day
@@ -53,7 +61,7 @@ Apply one PDD step to one column. The budget follows the Fortran reference:
 Consequently, every step closes as
 `snowfall + rainfall == Δsnowpack_swe + Δsmb_ice + Δrunoff`.
 """
-@inline function _pdd_apply_column!(
+Base.@propagate_inbounds function _pdd_apply_column!(
     snowpack_swe,
     smb_ice,
     runoff,
@@ -71,9 +79,13 @@ Consequently, every step closes as
 
     available_snow = snowpack_swe[idx] + snowfall
     snow_melt = min(available_snow, ddf_snow * pdd)
-    remaining_pdd = ddf_snow > zero(ddf_snow) ?
-                    max(pdd - snow_melt / ddf_snow, zero(pdd)) :
-                    zero(pdd)
+    positive_degree_factor = ddf_snow > zero(ddf_snow)
+    safe_degree_factor = ifelse(positive_degree_factor, ddf_snow, one(ddf_snow))
+    remaining_pdd = ifelse(
+        positive_degree_factor,
+        max(pdd - snow_melt / safe_degree_factor, zero(pdd)),
+        zero(pdd),
+    )
     ice_melt = ddf_ice * remaining_pdd
 
     remaining_snow = available_snow - snow_melt
@@ -88,10 +100,7 @@ Consequently, every step closes as
 end
 
 @kernel function _pdd_step_kernel!(
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
+    fields,
     air_temperature,
     snowfall_rate,
     rainfall_rate,
@@ -102,13 +111,13 @@ end
     refreezing_fraction,
     temperature_sigma,
     H_snow_max,
-    pdd_method::UInt8,
+    pdd_method,
     freezing_temperature,
     seconds_per_day,
     active_indices,
 )
     active_idx = @index(Global)
-    if active_idx <= length(active_indices)
+    @inbounds begin
         idx = active_indices[active_idx]
         snowfall = _pdd_step_mass(
             snowfall_rate[idx, time_index],
@@ -128,10 +137,10 @@ end
             pdd_method,
         )
         _pdd_apply_column!(
-            snowpack_swe,
-            smb_ice,
-            runoff,
-            pdd_sum,
+            fields.snowpack_swe,
+            fields.smb_ice,
+            fields.runoff,
+            fields.pdd_sum,
             idx,
             snowfall,
             rainfall,
@@ -145,31 +154,25 @@ end
 end
 
 function _pdd_step_arrays!(
-    snowpack_swe::AbstractVector,
-    smb_ice::AbstractVector,
-    runoff::AbstractVector,
-    pdd_sum::AbstractVector,
-    forcing::SnowpackForcing,
+    state::PDDState,
+    forcing,
     time_index::Int,
     model::PDDModel,
     active_indices,
 )
-    ncol = length(snowpack_swe)
+    ncol = length(state.snowpack_swe)
     size(forcing.air_temperature, 1) == ncol ||
         error("Forcing column count must match the PDD state column count.")
-    length(smb_ice) == ncol || error("PDD SMB length must match the state column count.")
-    length(runoff) == ncol || error("PDD runoff length must match the state column count.")
-    length(pdd_sum) == ncol || error("PDD diagnostic length must match the state column count.")
+    length(state.smb_ice) == ncol || error("PDD SMB length must match the state column count.")
+    length(state.runoff) == ncol || error("PDD runoff length must match the state column count.")
+    length(state.pdd_sum) == ncol || error("PDD diagnostic length must match the state column count.")
     1 <= time_index <= size(forcing.air_temperature, 2) ||
         error("PDD forcing time index is out of bounds.")
     isempty(active_indices) && return nothing
 
-    kernel! = _pdd_step_kernel!(_ka_backend(snowpack_swe))
+    kernel! = _pdd_step_kernel!(_ka_backend(state.snowpack_swe))
     event = kernel!(
-        snowpack_swe,
-        smb_ice,
-        runoff,
-        pdd_sum,
+        get_fields(state),
         forcing.air_temperature,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
@@ -180,7 +183,7 @@ function _pdd_step_arrays!(
         model.refreezing_fraction,
         model.temperature_sigma,
         model.H_snow_max,
-        model.pdd_method,
+        _pdd_method_tag(model),
         model.c.T0,
         model.c.seconds_per_day,
         active_indices;
@@ -198,10 +201,7 @@ function pdd_step!(
 )
     active_indices = collect(1:length(state.snowpack_swe))
     return _pdd_step_arrays!(
-        state.snowpack_swe,
-        state.smb_ice,
-        state.runoff,
-        state.pdd_sum,
+        state,
         forcing,
         time_index,
         model,

@@ -64,8 +64,6 @@ function MonthlyOutputBuffer(state::BESSIState; nmonth::Integer=12)
     )
 end
 
-@inline _wait_monthly_event(event, array) = array isa Array ? _wait_kernel(event) : nothing
-
 function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, dt_days::Real=1.0)
     monthly.albedo .+= state.albedo
     monthly.count += 1
@@ -109,142 +107,73 @@ function reset_monthly!(monthly::MonthlyState)
     return monthly
 end
 
-@kernel function _store_monthly_fields_kernel!(
-    output_smb_ice,
-    output_runoff,
-    output_melt,
-    output_refreezing,
-    output_sublimation,
-    output_latent_heat_flux,
-    output_albedo,
-    monthly_smb_ice,
-    monthly_runoff,
-    monthly_melt,
-    monthly_refreezing,
-    monthly_sublimation,
-    monthly_latent_heat_flux,
-    monthly_albedo,
+@inline function _named_fields(source, names::NTuple{N,Symbol}) where {N}
+    return NamedTuple{names}(ntuple(index -> getfield(source, names[index]), Val(N)))
+end
+
+@generated function _store_named_fields_at!(
+    output::NamedTuple{Names},
+    source::NamedTuple{Names},
     row::Int,
-)
+    idx::Int,
+) where {Names}
+    assignments = [
+        :(getfield(output, $(QuoteNode(name)))[row, idx] =
+          getfield(source, $(QuoteNode(name)))[idx])
+        for name in Names
+    ]
+    return :(Base.@inbounds begin
+        $(assignments...)
+        nothing
+    end)
+end
+
+@kernel function _store_named_monthly_fields_kernel!(output, source, row::Int)
     idx = @index(Global)
-    if idx <= length(monthly_runoff)
-        output_smb_ice[row, idx] = monthly_smb_ice[idx]
-        output_runoff[row, idx] = monthly_runoff[idx]
-        output_melt[row, idx] = monthly_melt[idx]
-        output_refreezing[row, idx] = monthly_refreezing[idx]
-        output_sublimation[row, idx] = monthly_sublimation[idx]
-        output_latent_heat_flux[row, idx] = monthly_latent_heat_flux[idx]
-        output_albedo[row, idx] = monthly_albedo[idx]
+    @inbounds begin
+        _store_named_fields_at!(output, source, row, idx)
     end
+end
+function _store_named_monthly_fields!(output, source, names, row::Int, reference)
+    output_fields = _named_fields(output, names)
+    source_fields = _named_fields(source, names)
+    kernel! = _store_named_monthly_fields_kernel!(_ka_backend(reference))
+    event = kernel!(output_fields, source_fields, row; ndrange=length(reference))
+    _wait_kernel(event)
+    return output
 end
 
 function store_monthly!(output::MonthlyOutputBuffer, monthly::MonthlyState)
     row = output.count + 1
     row <= size(output.runoff, 1) || error("Monthly output buffer is full.")
-    kernel! = _store_monthly_fields_kernel!(_ka_backend(monthly.runoff))
-    event = kernel!(
-        output.smb_ice,
-        output.runoff,
-        output.melt,
-        output.refreezing,
-        output.sublimation,
-        output.latent_heat_flux,
-        output.albedo,
-        monthly.smb_ice,
-        monthly.runoff,
-        monthly.melt,
-        monthly.refreezing,
-        monthly.sublimation,
-        monthly.latent_heat_flux,
-        monthly.albedo,
-        row;
-        ndrange=length(monthly.runoff),
-    )
-    _wait_monthly_event(event, monthly.runoff)
+    _store_named_monthly_fields!(output, monthly, MONTHLY_OUTPUT_VARS, row, monthly.runoff)
     output.count = row
     return output
 end
 
-function pdd_monthly_output_buffer(runtime; nmonth::Integer)
-    dims = (Int(nmonth), length(runtime.snowpack_swe))
+function pdd_monthly_output_buffer(state::PDDState; nmonth::Integer)
+    dims = (Int(nmonth), length(state.snowpack_swe))
     allocate(field) = similar(field, Float32, dims)
     return (
-        snowpack_swe=allocate(runtime.snowpack_swe),
-        smb_ice=allocate(runtime.smb_ice),
-        runoff=allocate(runtime.runoff),
-        pdd_sum=allocate(runtime.pdd_sum),
+        snowpack_swe=allocate(state.snowpack_swe),
+        smb_ice=allocate(state.smb_ice),
+        runoff=allocate(state.runoff),
+        pdd_sum=allocate(state.pdd_sum),
     )
-end
-
-@kernel function _store_pdd_monthly_fields_kernel!(
-    output_snowpack_swe,
-    output_smb_ice,
-    output_runoff,
-    output_pdd_sum,
-    snowpack_swe,
-    smb_ice,
-    runoff,
-    pdd_sum,
-    row::Int,
-)
-    idx = @index(Global)
-    if idx <= length(snowpack_swe)
-        output_snowpack_swe[row, idx] = snowpack_swe[idx]
-        output_smb_ice[row, idx] = smb_ice[idx]
-        output_runoff[row, idx] = runoff[idx]
-        output_pdd_sum[row, idx] = pdd_sum[idx]
-    end
 end
 
 function store_pdd_monthly!(output, monthly, row::Int)
     row <= size(output.runoff, 1) || error("PDD monthly output buffer is full.")
-    kernel! = _store_pdd_monthly_fields_kernel!(_ka_backend(monthly.runoff))
-    event = kernel!(
-        output.snowpack_swe,
-        output.smb_ice,
-        output.runoff,
-        output.pdd_sum,
-        monthly.snowpack_swe,
-        monthly.smb_ice,
-        monthly.runoff,
-        monthly.pdd_sum,
-        row;
-        ndrange=length(monthly.runoff),
-    )
-    _wait_monthly_event(event, monthly.runoff)
-    return output
+    return _store_named_monthly_fields!(output, monthly, PDD_OUTPUT_VARS, row, monthly.runoff)
 end
 
-function itm_monthly_output_buffer(runtime; nmonth::Integer)
-    dims = (Int(nmonth), length(runtime.H_snow))
+function itm_monthly_output_buffer(state::ITMState; nmonth::Integer)
+    dims = (Int(nmonth), length(state.H_snow))
     allocate(field) = similar(field, Float32, dims)
-    return (; (name => allocate(getfield(runtime, name)) for name in ITM_OUTPUT_VARS)...)
+    return (; (name => allocate(getfield(state, name)) for name in ITM_OUTPUT_VARS)...)
 end
 
-@kernel function _store_itm_monthly_fields_kernel!(
-    H_snow_o, alb_s_o, smb_o, smbi_o, melt_o, runoff_o, refreezing_o, Tsrf_o, melt_net_o,
-    smb_cum_o, smb_ice_o, melt_cum_o, runoff_cum_o, refreezing_cum_o,
-    H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
-    smb_cum, smb_ice, melt_cum, runoff_cum, refreezing_cum, row::Int,
-)
-    idx = @index(Global)
-    if idx <= length(H_snow)
-        H_snow_o[row, idx] = H_snow[idx]; alb_s_o[row, idx] = alb_s[idx]; smb_o[row, idx] = smb[idx]
-        smbi_o[row, idx] = smbi[idx]; melt_o[row, idx] = melt[idx]; runoff_o[row, idx] = runoff[idx]
-        refreezing_o[row, idx] = refreezing[idx]; Tsrf_o[row, idx] = Tsrf[idx]; melt_net_o[row, idx] = melt_net[idx]
-        smb_cum_o[row, idx] = smb_cum[idx]; smb_ice_o[row, idx] = smb_ice[idx]; melt_cum_o[row, idx] = melt_cum[idx]
-        runoff_cum_o[row, idx] = runoff_cum[idx]; refreezing_cum_o[row, idx] = refreezing_cum[idx]
-    end
-end
-
-function store_itm_monthly!(output, runtime, row::Int)
+function store_itm_monthly!(output, state::ITMState, row::Int)
     row <= size(output.H_snow, 1) || error("ITM monthly output buffer is full.")
-    event = _store_itm_monthly_fields_kernel!(_ka_backend(runtime.H_snow))(
-        output.H_snow, output.alb_s, output.smb, output.smbi, output.melt, output.runoff, output.refreezing,
-        output.Tsrf, output.melt_net, output.smb_cum, output.smb_ice, output.melt_cum, output.runoff_cum,
-        output.refreezing_cum, runtime.H_snow, runtime.alb_s, runtime.smb, runtime.smbi, runtime.melt,
-        runtime.runoff, runtime.refreezing, runtime.Tsrf, runtime.melt_net, runtime.smb_cum, runtime.smb_ice,
-        runtime.melt_cum, runtime.runoff_cum, runtime.refreezing_cum, row; ndrange=length(runtime.H_snow))
-    _wait_monthly_event(event, runtime.H_snow)
-    return output
+    return _store_named_monthly_fields!(output, state, ITM_OUTPUT_VARS, row, state.H_snow)
 end

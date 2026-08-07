@@ -23,6 +23,14 @@ Create an empty timing accumulator.
 """
 StepTimingStats() = StepTimingStats(TimerOutput(), Dict{Symbol, Int}())
 
+const TimingRow = @NamedTuple begin
+    key::Symbol
+    total_sec::Float64
+    count::Int
+    mean_sec::Float64
+    share_pct::Float64
+end
+
 """
     add_timing!(stats, key, dt_sec, count=1)
 
@@ -54,7 +62,7 @@ Return `(rows, total)`, where `rows` is a vector of per-stage `NamedTuple`s and
 `total` is the sum of all recorded times in seconds.
 """
 function timing_rows(stats::StepTimingStats)
-    rows = NamedTuple[]
+    rows = TimingRow[]
     total = sum(TimerOutputs.time(t) for t in values(stats.to.inner_timers); init=Int64(0)) * 1e-9
     for (name, timer) in stats.to.inner_timers
         dt = TimerOutputs.time(timer) * 1e-9
@@ -79,7 +87,7 @@ end
 
 Execute `f()` and record elapsed wall time under `key`.
 """
-function time_block!(stats, key::Symbol, f; synchronize=nothing)
+function time_block!(stats::StepTimingStats, key::Symbol, f::F; synchronize=nothing) where {F <: Function}
     synchronize === nothing || synchronize()
     t0 = time_ns()
     value = f()
@@ -88,7 +96,8 @@ function time_block!(stats, key::Symbol, f; synchronize=nothing)
     return value
 end
 
-time_block!(f, stats, key::Symbol; kwargs...) = time_block!(stats, key, f; kwargs...)
+time_block!(f::F, stats::StepTimingStats, key::Symbol; kwargs...) where {F <: Function} =
+    time_block!(stats, key, f; kwargs...)
 
 """
     time_counted_block!(stats, key, count, f; synchronize=nothing)
@@ -96,7 +105,13 @@ time_block!(f, stats, key::Symbol; kwargs...) = time_block!(stats, key, f; kwarg
 Execute `f()` and record elapsed wall time under `key`, adding `count` to the
 item count for that key.
 """
-function time_counted_block!(stats, key::Symbol, count::Int, f; synchronize=nothing)
+function time_counted_block!(
+    stats::StepTimingStats,
+    key::Symbol,
+    count::Int,
+    f::F;
+    synchronize=nothing,
+) where {F <: Function}
     synchronize === nothing || synchronize()
     t0 = time_ns()
     value = f()
@@ -105,7 +120,7 @@ function time_counted_block!(stats, key::Symbol, count::Int, f; synchronize=noth
     return value
 end
 
-time_counted_block!(f, stats, key::Symbol, count::Int; kwargs...) =
+time_counted_block!(f::F, stats::StepTimingStats, key::Symbol, count::Int; kwargs...) where {F <: Function} =
     time_counted_block!(stats, key, count, f; kwargs...)
 
 """

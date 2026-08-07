@@ -7,7 +7,7 @@ single-GPU execution through `CUDA.jl`, and optional NetCDF output.
 The current public workflow is:
 
 1. Build a `SnowpackGrid`.
-2. Build a `BESSIModel` or `PDDModel`.
+2. Build a `BESSIModel`, `PDDModel`, or `ITMModel`.
 3. Build a `SnowpackForcing`, or load one with `load_forcing_file`.
 4. Build a `Simulation`.
 5. Execute it with `run!`.
@@ -159,3 +159,11 @@ Useful return values:
 - `history_year_stride` controls how often BESSI year metrics are recorded.
 - `netcdf_variables=:all` selects the fields exposed by the chosen model.
 - `netcdf_variables=:monthly` writes monthly BESSI or PDD diagnostics.
+
+## ITM
+
+`ITMModel` is the Fortran-compatible insolation-temperature-melt bulk model.
+It requires explicit `latitude_deg`, `surface_height`, `ice_thickness` (m),
+and `annual_pdd` (K day) forcing. ITM uses `q_sw_net` as its insolation input
+when supplied; otherwise it uses `shortwave_down`. Its internal budgets retain
+the Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics.

@@ -59,14 +59,18 @@ const LOW_DENSIFICATION_HTESSEL = UInt8(2)
 Container for physical constants, empirical coefficients, and scheme flags
 used by the snowpack model.
 """
-struct SnowpackPhysicalConstants{NF <: AbstractFloat}
+struct SnowpackPhysicalConstants{
+        NF <: AbstractFloat,
+        FreshSnowDensity,
+        Albedo,
+        Densification,
+    }
     rho_s::NF
     rho_i::NF
     rho_w::NF
     rho_s_a::NF
     rho_s_b::NF
     rho_s_c::NF
-    fresh_snow_density_scheme::UInt8
     Ki::NF
     ci::NF
     cw::NF
@@ -81,14 +85,36 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     max_lwc_albedo::NF
     aging_cold_timescale_days::NF
     aging_melting_timescale_days::NF
-    albedo_scheme::UInt8
     ϵ_air::NF
     ϵ_snow::NF
     σ::NF
     T0::NF
     seconds_per_day::NF
-    low_density_densification::UInt8
 end
+
+@inline _fresh_snow_density_flag(
+    ::SnowpackPhysicalConstants{NF, Scheme, Albedo, Densification},
+) where {NF, Scheme, Albedo, Densification} = Scheme === :constant ? FRESH_SNOW_DENSITY_CONSTANT : FRESH_SNOW_DENSITY_PARAMETERIZED
+
+@inline _albedo_flag(
+    ::SnowpackPhysicalConstants{NF, Fresh, Scheme, Densification},
+) where {NF, Fresh, Scheme, Densification} = Scheme === :constant ? ALBEDO_CONSTANT :
+    Scheme === :prescribed ? ALBEDO_PRESCRIBED :
+    Scheme === :aging ? ALBEDO_AGING : ALBEDO_DYNAMIC
+
+@inline _densification_flag(
+    ::SnowpackPhysicalConstants{NF, Fresh, Albedo, Scheme},
+) where {NF, Fresh, Albedo, Scheme} = Scheme === :htessel ? LOW_DENSIFICATION_HTESSEL : LOW_DENSIFICATION_BESSI
+
+@inline function Base.getproperty(c::SnowpackPhysicalConstants, name::Symbol)
+    name === :fresh_snow_density_scheme && return _fresh_snow_density_flag(c)
+    name === :albedo_scheme && return _albedo_flag(c)
+    name === :low_density_densification && return _densification_flag(c)
+    return getfield(c, name)
+end
+
+Base.propertynames(c::SnowpackPhysicalConstants, private::Bool=false) =
+    (fieldnames(typeof(c))..., :fresh_snow_density_scheme, :albedo_scheme, :low_density_densification)
 
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 
@@ -99,23 +125,32 @@ Return the floating-point element type used by the physical constants set `c`.
 """
 @inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 
-@inline _uses_constant_fresh_snow_density(c::SnowpackPhysicalConstants) =
-    c.fresh_snow_density_scheme == FRESH_SNOW_DENSITY_CONSTANT
+@inline _uses_constant_fresh_snow_density(
+    ::SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification},
+) where {NF, FreshSnowDensity, Albedo, Densification} = FreshSnowDensity === :constant
 
-@inline _uses_constant_albedo(c::SnowpackPhysicalConstants) =
-    c.albedo_scheme == ALBEDO_CONSTANT
+@inline _uses_constant_albedo(
+    ::SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification},
+) where {NF, FreshSnowDensity, Albedo, Densification} = Albedo === :constant
 
-@inline _uses_prescribed_albedo(c::SnowpackPhysicalConstants) =
-    c.albedo_scheme == ALBEDO_PRESCRIBED
+@inline _uses_prescribed_albedo(
+    ::SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification},
+) where {NF, FreshSnowDensity, Albedo, Densification} = Albedo === :prescribed
 
-@inline _uses_aging_albedo(c::SnowpackPhysicalConstants) =
-    c.albedo_scheme == ALBEDO_AGING
+@inline _uses_aging_albedo(
+    ::SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification},
+) where {NF, FreshSnowDensity, Albedo, Densification} = Albedo === :aging
 
 @inline _initial_snow_albedo(c::SnowpackPhysicalConstants) =
     c.alpha_dry
 
-@inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
-    c.low_density_densification == LOW_DENSIFICATION_HTESSEL
+@inline _uses_htessel_densification(
+    ::SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification},
+) where {NF, FreshSnowDensity, Albedo, Densification} = Densification === :htessel
+
+@inline _fresh_snow_density_tag(::SnowpackPhysicalConstants{NF, Scheme, Albedo, Densification}) where {NF, Scheme, Albedo, Densification} = Val(Scheme)
+@inline _albedo_tag(::SnowpackPhysicalConstants{NF, Fresh, Scheme, Densification}) where {NF, Fresh, Scheme, Densification} = Val(Scheme)
+@inline _densification_tag(::SnowpackPhysicalConstants{NF, Fresh, Albedo, Scheme}) where {NF, Fresh, Albedo, Scheme} = Val(Scheme)
 
 """
     _normalize_low_density_densification(scheme)
@@ -218,14 +253,21 @@ function SnowpackPhysicalConstants(::Type{NF};
     end
     aging_cold_timescale_days > 0 || error("`aging_cold_timescale_days` must be positive.")
     aging_melting_timescale_days > 0 || error("`aging_melting_timescale_days` must be positive.")
-    return SnowpackPhysicalConstants(
+    fresh_snow_density_flag = _normalize_fresh_snow_density_scheme(fresh_snow_density_scheme)
+    albedo_flag = _normalize_albedo_scheme(albedo_scheme)
+    densification_flag = _normalize_low_density_densification(low_density_densification)
+    fresh_snow_density_tag = fresh_snow_density_flag == FRESH_SNOW_DENSITY_CONSTANT ? :constant : :parameterized
+    albedo_tag = albedo_flag == ALBEDO_CONSTANT ? :constant :
+                 albedo_flag == ALBEDO_PRESCRIBED ? :prescribed :
+                 albedo_flag == ALBEDO_AGING ? :aging : :dynamic
+    densification_tag = densification_flag == LOW_DENSIFICATION_HTESSEL ? :htessel : :bessi
+    return SnowpackPhysicalConstants{NF, fresh_snow_density_tag, albedo_tag, densification_tag}(
         convert(NF, rho_s),
         convert(NF, rho_i),
         convert(NF, rho_w),
         convert(NF, rho_s_a),
         convert(NF, rho_s_b),
         convert(NF, rho_s_c),
-        _normalize_fresh_snow_density_scheme(fresh_snow_density_scheme),
         convert(NF, Ki),
         convert(NF, ci),
         convert(NF, cw),
@@ -240,13 +282,11 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, max_lwc_albedo),
         convert(NF, aging_cold_timescale_days),
         convert(NF, aging_melting_timescale_days),
-        resolved_albedo_scheme,
         convert(NF, ϵ_air),
         convert(NF, ϵ_snow),
         convert(NF, σ),
         convert(NF, T0),
         convert(NF, seconds_per_day),
-        _normalize_low_density_densification(low_density_densification),
     )
 end
 

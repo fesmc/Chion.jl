@@ -49,7 +49,7 @@ function audited_step!(s, forcing, step, workspace, records)
     end
 
     Chion._update_surface_albedo_arrays!(s.N, s.mass, s.mass_w, s.density,
-        s.temperature, s.albedo, i, c)
+        s.temperature, s.albedo, i, c, f.dt_days)
     audit!(records, step, :densification, s) do
         accumulation = max(f.snowfall_rate, 0.0) + f.rainfall_rate
         Chion._go_densification!(s.N, s.mass, s.density, s.temperature,
