@@ -167,6 +167,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
     latent_heat_flux_sum,
     Tsrf,
     albedo_dynamic,
+    snow_age_days,
     inactive_indices,
     Ntot::Int,
     density_init,
@@ -194,6 +195,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
         latent_heat_flux_sum[idx] = zero(density_init)
         Tsrf[idx] = surface_temperature_init
         albedo_dynamic[idx] = albedo_init
+        snow_age_days[idx] = zero(density_init)
     end
 end
 
@@ -217,12 +219,13 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
         runtime.state.latent_heat_flux_sum,
         runtime.state.Tsrf,
         runtime.state.albedo,
+        runtime.state.snow_age_days,
         backend_indices,
         runtime.state.Ntot,
         convert(eltype(runtime.state.mass), model.density_init),
         convert(eltype(runtime.state.mass), model.temperature_init),
         runtime.state.c.T0,
-        runtime.state.c.alpha_dry;
+        _initial_snow_albedo(runtime.state.c);
         ndrange=length(inactive_indices),
     )
     _wait_kernel(event)

@@ -15,6 +15,7 @@ const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
     :latent_heat_flux_sum => (name="latent_heat_flux_sum", long_name="Integrated turbulent latent heat flux", units="W m-2"),
     :Tsrf => (name="Tsrf", long_name="Surface temperature", units="K"),
     :albedo => (name="albedo", long_name="Surface albedo", units="1"),
+    :snow_age_days => (name="snow_age_days", long_name="Time since the latest snowfall event", units="day"),
     :N => (name="N", long_name="Number of active snow layers", units="1"),
     :mass => (name="mass", long_name="Layer snow mass", units="kg m-2"),
     :mass_w => (name="mass_w", long_name="Layer liquid-water mass", units="kg m-2"),
@@ -34,7 +35,7 @@ const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
 )
 
 const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
-const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf]
+const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_age_days]
 const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
 const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
 const PDD_OUTPUT_VARS = [:snowpack_swe, :smb_ice, :runoff, :pdd_sum]
@@ -94,15 +95,7 @@ const NETCDF_TIME_EPOCH = DateTime(1970, 1, 1)
 const NETCDF_TIME_UNITS = "days since 1970-01-01 00:00:00"
 
 function _netcdf_time_days(value::DateTime)
-    month(value) == 2 && day(value) == 29 &&
-        error("The NetCDF 365_day calendar cannot represent February 29.")
-    preceding_days = dayofyear(value) - 1
-    isleapyear(year(value)) && month(value) > 2 && (preceding_days -= 1)
-    midnight = DateTime(year(value), month(value), day(value))
-    day_fraction = Dates.value(value - midnight) / 86_400_000
-    return (year(value) - year(NETCDF_TIME_EPOCH)) * 365 +
-           preceding_days +
-           day_fraction
+    return Dates.value(value - NETCDF_TIME_EPOCH) / 86_400_000
 end
 
 function init_state_netcdf(
@@ -131,7 +124,7 @@ function init_state_netcdf(
             "standard_name" => "time",
             "long_name" => "Time",
             "units" => NETCDF_TIME_UNITS,
-            "calendar" => "365_day",
+            "calendar" => "proleptic_gregorian",
             "axis" => "T",
         ),
     )

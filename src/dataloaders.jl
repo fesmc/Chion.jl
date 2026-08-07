@@ -16,15 +16,15 @@ end
 
 function _read_time_values(ds::NCDataset, time_name::AbstractString, ntime::Int)
     if haskey(ds, time_name)
-        raw = ds[time_name].var[:]
-        if eltype(raw) <: DateTime
-            return DateTime.(raw)
+        decoded = ds[time_name][:]
+        if eltype(decoded) <: DateTime
+            return DateTime.(decoded)
         end
     end
     if haskey(ds, "TIME")
-        raw = ds["TIME"].var[:]
-        if eltype(raw) <: DateTime
-            return DateTime.(raw)
+        decoded = ds["TIME"][:]
+        if eltype(decoded) <: DateTime
+            return DateTime.(decoded)
         end
     end
     if all(name -> haskey(ds, name), ("YYYY", "MM", "DD", "HH"))

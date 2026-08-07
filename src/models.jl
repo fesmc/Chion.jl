@@ -6,7 +6,8 @@ Model definitions exposed by Chion's simulation-first API.
     BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`BESSIState` and owned by `Simulation.now`.
+`BESSIState` and owned by `Simulation.now`. Available albedo schemes are
+`:constant`, `:dynamic`, `:prescribed`, and the snowfall-age scheme `:aging`.
 """
 struct BESSIModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants}
     grid::G

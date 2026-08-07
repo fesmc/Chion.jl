@@ -64,6 +64,7 @@ struct BESSIState{
     latent_heat_flux_sum::VT
     Tsrf::VT
     albedo::VT
+    snow_age_days::VT
     thickness::VT
     wet_mass::VT
     bulk_density::VT
@@ -84,6 +85,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     :latent_heat_flux_sum,
     :Tsrf,
     :albedo,
+    :snow_age_days,
     :thickness,
     :wet_mass,
     :bulk_density,
@@ -106,6 +108,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     latent_heat_flux_sum,
     Tsrf,
     albedo,
+    snow_age_days,
     thickness,
     wet_mass,
     bulk_density,
@@ -129,6 +132,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
         latent_heat_flux_sum[idx] = zero(density_init)
         Tsrf[idx] = surface_temperature_init
         albedo[idx] = albedo_init
+        snow_age_days[idx] = zero(density_init)
         thickness[idx] = zero(density_init)
         wet_mass[idx] = zero(density_init)
         bulk_density[idx] = zero(density_init)
@@ -168,6 +172,7 @@ function _initialize_bessi_state_arrays!(
         state.latent_heat_flux_sum,
         state.Tsrf,
         state.albedo,
+        state.snow_age_days,
         state.thickness,
         state.wet_mass,
         state.bulk_density,
@@ -176,7 +181,7 @@ function _initialize_bessi_state_arrays!(
         convert(eltype(state.mass), density_init),
         convert(eltype(state.mass), temperature_init),
         state.c.T0,
-        state.c.alpha_dry;
+        _initial_snow_albedo(state.c);
         ndrange=state.ncol,
     )
     _wait_kernel(event)
@@ -198,6 +203,7 @@ function BESSIState(model::BESSIModel)
         Matrix{NF}(undef, model.Ntot, ncol),
         Matrix{NF}(undef, model.Ntot, ncol),
         Matrix{NF}(undef, model.Ntot, ncol),
+        Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
