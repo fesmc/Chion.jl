@@ -176,6 +176,7 @@ function column_step_core!(
     latent_heat_flux_sum = state.latent_heat_flux_sum
     Tsrf = state.Tsrf
     albedo_dynamic = state.albedo
+    snow_age_days = state.snow_age_days
     c = state.c
 
     dt_seconds = forcing.dt_days * c.seconds_per_day
@@ -216,6 +217,7 @@ function column_step_core!(
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
+        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
@@ -230,6 +232,18 @@ function column_step_core!(
 
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    elseif _uses_aging_albedo(c)
+        _update_aging_surface_albedo_arrays!(
+            N_storage,
+            mass,
+            temperature,
+            albedo_dynamic,
+            snow_age_days,
+            idx,
+            c,
+            forcing.snowfall_rate,
+            forcing.dt_days,
+        )
     else
         _update_surface_albedo_arrays!(
             N_storage,
@@ -400,6 +414,7 @@ function column_step_core!(
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     elseif !_surface_has_snow(N_storage, mass, idx)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
     end
 
     return nothing

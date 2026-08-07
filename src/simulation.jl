@@ -57,13 +57,15 @@ function _normalize_model_name(model)
     name = lowercase(strip(String(model)))
     name in ("bessi", "bessimodel") && return :bessi
     name in ("pdd", "pddmodel") && return :pdd
-    error("Unsupported model '$model'. Use `:bessi` or `:pdd`.")
+    name in ("itm", "itmmodel") && return :itm
+    error("Unsupported model '$model'. Use `:bessi`, `:pdd`, or `:itm`.")
 end
 
 function build_model(model, grid::SnowpackGrid; kwargs...)
     name = _normalize_model_name(model)
     name == :bessi && return BESSIModel(grid; kwargs...)
     name == :pdd && return PDDModel(grid; kwargs...)
+    name == :itm && return ITMModel(grid; kwargs...)
     error("Unsupported model '$model'.")
 end
 
@@ -120,6 +122,9 @@ _model_smb_ice_vector(::BESSIModel, ::BESSIState, runtime) =
 _model_smb_ice_vector(::PDDModel, ::PDDState, runtime) =
     _host_vector(runtime.smb_ice; copy_array=true)
 
+_model_smb_ice_vector(::ITMModel, ::ITMState, runtime) =
+    _host_vector(runtime.smb_ice; copy_array=true)
+
 function _yearly_grid(values::Vector{Float64}, grid)
     any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
         return Matrix{Float64}(undef, 0, 0)
@@ -146,6 +151,9 @@ end
     any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
 
 @inline _uses_monthly_output(::PDDModel, options::RunOptions) =
+    :monthly in options.netcdf_variables
+
+@inline _uses_monthly_output(::ITMModel, options::RunOptions) =
     :monthly in options.netcdf_variables
 
 @inline function _is_month_boundary(time_values::Vector{DateTime}, k::Int)
@@ -231,6 +239,15 @@ function run!(
     run!(integrator)
     return finalize!(integrator)
 end
+
+_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel}}) =
+    _run_bessi_integrator!(integrator)
+
+_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:PDDModel}}) =
+    _run_pdd_integrator!(integrator)
+
+_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:ITMModel}}) =
+    _run_itm_integrator!(integrator)
 
 @inline _can_block_bessi_scheduled_steps(monthly_mode::Bool, nc) =
     !monthly_mode && nc === nothing
@@ -367,53 +384,19 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     return nothing
 end
 
-function _run_pdd_integrator!(integrator::SimulationIntegrator)
+function _run_vector_model_integrator!(integrator::SimulationIntegrator, runtime, nc, monthly_output, store_monthly!)
     sim = integrator.sim
     options = sim.options
-    runtime = integrator.model_runtime.data
-    nc = _state_output_from_options(sim, options, runtime)
-    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, options)
-    monthly = if monthly_mode
-        (
-            snowpack_swe=runtime.snowpack_swe,
-            smb_ice=similar(runtime.smb_ice),
-            runoff=similar(runtime.runoff),
-            pdd_sum=similar(runtime.pdd_sum),
-        )
-    else
-        nothing
-    end
-    previous = if monthly_mode
-        (
-            smb_ice=copy(runtime.smb_ice),
-            runoff=copy(runtime.runoff),
-            pdd_sum=copy(runtime.pdd_sum),
-        )
-    else
-        nothing
-    end
-    monthly_output = monthly_mode ?
-        pdd_monthly_output_buffer(
-            runtime;
-            nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
-        ) :
-        nothing
+    monthly_mode = monthly_output !== nothing
     record_index = 0
-
     while !_finished(integrator)
         k = integrator.time_index
         _step_scheduled!(integrator)
         if monthly_mode && _is_month_boundary(sim.forcing.time_values, k)
-            @. monthly.smb_ice = runtime.smb_ice - previous.smb_ice
-            @. monthly.runoff = runtime.runoff - previous.runoff
-            @. monthly.pdd_sum = runtime.pdd_sum - previous.pdd_sum
             record_index += 1
             time_block!(integrator.timings, :write_netcdf) do
-                store_pdd_monthly!(monthly_output, monthly, record_index)
+                store_monthly!(record_index)
             end
-            copyto!(previous.smb_ice, runtime.smb_ice)
-            copyto!(previous.runoff, runtime.runoff)
-            copyto!(previous.pdd_sum, runtime.pdd_sum)
         elseif nc !== nothing && !monthly_mode
             record_index += 1
             time_block!(integrator.timings, :write_netcdf) do
@@ -433,10 +416,56 @@ function _run_pdd_integrator!(integrator::SimulationIntegrator)
         end
     end
 
-    status = :complete
     integrator.netcdf_path = nc === nothing ? "" : resolve_netcdf_path(options)
-    nc !== nothing && close_output!(nc, status, record_index)
+    nc !== nothing && close_output!(nc, :complete, record_index)
     return nothing
+end
+
+function _run_pdd_integrator!(integrator::SimulationIntegrator)
+    sim = integrator.sim
+    options = sim.options
+    runtime = integrator.model_runtime.data
+    nc = _state_output_from_options(sim, options, runtime)
+    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, options)
+    monthly = monthly_mode ? (
+        snowpack_swe=runtime.snowpack_swe,
+        smb_ice=similar(runtime.smb_ice),
+        runoff=similar(runtime.runoff),
+        pdd_sum=similar(runtime.pdd_sum),
+    ) : nothing
+    previous = monthly_mode ? (
+        smb_ice=copy(runtime.smb_ice),
+        runoff=copy(runtime.runoff),
+        pdd_sum=copy(runtime.pdd_sum),
+    ) : nothing
+    monthly_output = monthly_mode ? pdd_monthly_output_buffer(
+        runtime; nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
+    ) : nothing
+    store_monthly! = function (record_index)
+        @. monthly.smb_ice = runtime.smb_ice - previous.smb_ice
+        @. monthly.runoff = runtime.runoff - previous.runoff
+        @. monthly.pdd_sum = runtime.pdd_sum - previous.pdd_sum
+        store_pdd_monthly!(monthly_output, monthly, record_index)
+        copyto!(previous.smb_ice, runtime.smb_ice)
+        copyto!(previous.runoff, runtime.runoff)
+        copyto!(previous.pdd_sum, runtime.pdd_sum)
+        return nothing
+    end
+    return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
+end
+
+function _run_itm_integrator!(integrator::SimulationIntegrator)
+    sim = integrator.sim
+    runtime = integrator.model_runtime.data
+    nc = _state_output_from_options(sim, sim.options, runtime)
+    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, sim.options)
+    monthly_output = monthly_mode ? itm_monthly_output_buffer(
+        # Allow one terminal record beyond the precomputed calendar count.
+        # This also handles synthesized forcing timestamps at a month boundary.
+        runtime; nmonth=sim.options.years * (_monthly_records_per_cycle(sim.forcing.time_values) + 1),
+    ) : nothing
+    store_monthly! = record_index -> store_itm_monthly!(monthly_output, runtime, record_index)
+    return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
 end
 
 """

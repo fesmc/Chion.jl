@@ -45,6 +45,7 @@ const FRESH_SNOW_DENSITY_PARAMETERIZED = UInt8(2)
 const ALBEDO_CONSTANT = UInt8(1)
 const ALBEDO_DYNAMIC = UInt8(2)
 const ALBEDO_PRESCRIBED = UInt8(3)
+const ALBEDO_AGING = UInt8(4)
 const LOW_DENSIFICATION_BESSI = UInt8(1)
 const LOW_DENSIFICATION_HTESSEL = UInt8(2)
 
@@ -78,6 +79,8 @@ struct SnowpackPhysicalConstants{NF <: AbstractFloat}
     alpha_wet::NF
     alpha_ice::NF
     max_lwc_albedo::NF
+    aging_cold_timescale_days::NF
+    aging_melting_timescale_days::NF
     albedo_scheme::UInt8
     ϵ_air::NF
     ϵ_snow::NF
@@ -104,6 +107,12 @@ Return the floating-point element type used by the physical constants set `c`.
 
 @inline _uses_prescribed_albedo(c::SnowpackPhysicalConstants) =
     c.albedo_scheme == ALBEDO_PRESCRIBED
+
+@inline _uses_aging_albedo(c::SnowpackPhysicalConstants) =
+    c.albedo_scheme == ALBEDO_AGING
+
+@inline _initial_snow_albedo(c::SnowpackPhysicalConstants) =
+    c.alpha_dry
 
 @inline _uses_htessel_densification(c::SnowpackPhysicalConstants) =
     c.low_density_densification == LOW_DENSIFICATION_HTESSEL
@@ -154,13 +163,14 @@ legacy aliases.
     else
         scheme
     end
-    normalized_scheme in (:constant, :dynamic, :prescribed) ||
+    normalized_scheme in (:constant, :dynamic, :prescribed, :aging) ||
         error(
             "Unsupported albedo scheme '$scheme'. " *
-            "Use :constant, :dynamic, :prescribed, or the aliases :legacy / :bessi.",
+            "Use :constant, :dynamic, :prescribed, :aging, or the aliases :legacy / :bessi.",
         )
     return normalized_scheme == :constant ? ALBEDO_CONSTANT :
         normalized_scheme == :prescribed ? ALBEDO_PRESCRIBED :
+        normalized_scheme == :aging ? ALBEDO_AGING :
         ALBEDO_DYNAMIC
 end
 
@@ -188,8 +198,10 @@ function SnowpackPhysicalConstants(::Type{NF};
     D_sh::Real=10.0,
     alpha_dry::Real=0.81,
     alpha_wet::Real=0.70,
-    alpha_ice::Real=0.3,
+    alpha_ice::Real=0.4,
     max_lwc_albedo::Real=0.1,
+    aging_cold_timescale_days::Real=20.0,
+    aging_melting_timescale_days::Real=5.0,
     albedo_scheme::Symbol=:dynamic,
     ϵ_air::Real=0.8,
     ϵ_snow::Real=0.98,
@@ -198,6 +210,14 @@ function SnowpackPhysicalConstants(::Type{NF};
     seconds_per_day::Real=DEFAULT_SECONDS_PER_DAY,
     low_density_densification::Symbol=:bessi,
 ) where {NF <: AbstractFloat}
+    resolved_albedo_scheme = _normalize_albedo_scheme(albedo_scheme)
+    if resolved_albedo_scheme == ALBEDO_AGING
+        0 <= alpha_wet <= alpha_dry <= 1 || error(
+            "Aging albedos must satisfy 0 <= alpha_wet <= alpha_dry <= 1.",
+        )
+    end
+    aging_cold_timescale_days > 0 || error("`aging_cold_timescale_days` must be positive.")
+    aging_melting_timescale_days > 0 || error("`aging_melting_timescale_days` must be positive.")
     return SnowpackPhysicalConstants(
         convert(NF, rho_s),
         convert(NF, rho_i),
@@ -218,7 +238,9 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, alpha_wet),
         convert(NF, alpha_ice),
         convert(NF, max_lwc_albedo),
-        _normalize_albedo_scheme(albedo_scheme),
+        convert(NF, aging_cold_timescale_days),
+        convert(NF, aging_melting_timescale_days),
+        resolved_albedo_scheme,
         convert(NF, ϵ_air),
         convert(NF, ϵ_snow),
         convert(NF, σ),

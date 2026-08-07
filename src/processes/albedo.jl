@@ -69,6 +69,9 @@ function _refresh_dynamic_albedo_from_snowfall!(
     if _uses_constant_albedo(c)
         _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
         return _get_scalar(albedo_dynamic, idx)
+    elseif _uses_aging_albedo(c)
+        _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
+        return _get_scalar(albedo_dynamic, idx)
     end
 
     updated = min(
@@ -78,6 +81,58 @@ function _refresh_dynamic_albedo_from_snowfall!(
     )
     _set_scalar!(albedo_dynamic, idx, updated)
     return updated
+end
+
+"""
+    _update_aging_surface_albedo_arrays!(N_storage, mass, temperature,
+        albedo_dynamic, snow_age_days, idx, c, snowfall_rate, dt_days)
+
+Update snow albedo from the time elapsed since the latest snowfall event.
+Snowfall resets the age to zero and the albedo to `alpha_dry`.
+Otherwise snow age advances by `dt_days` and albedo decays exponentially
+toward `alpha_wet`, with separate cold- and melting-surface timescales.
+Bare columns use `alpha_ice` and carry zero snow age.
+"""
+function _update_aging_surface_albedo_arrays!(
+    N_storage,
+    mass,
+    temperature,
+    albedo_dynamic,
+    snow_age_days,
+    idx::Int,
+    c::SnowpackPhysicalConstants,
+    snowfall_rate,
+    dt_days,
+)
+    if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
+        _set_scalar!(snow_age_days, idx, zero(dt_days))
+        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        return c.alpha_ice
+    end
+
+    if snowfall_rate > zero(snowfall_rate)
+        _set_scalar!(snow_age_days, idx, zero(dt_days))
+        _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
+        return c.alpha_dry
+    end
+    age_days = max(_get_scalar(snow_age_days, idx), zero(dt_days)) + dt_days
+    _set_scalar!(snow_age_days, idx, age_days)
+
+    surface_temperature = _get_layer(temperature, 1, idx)
+    timescale_days = surface_temperature >= c.T0 ?
+        c.aging_melting_timescale_days :
+        c.aging_cold_timescale_days
+    previous_albedo = clamp(
+        _get_scalar(albedo_dynamic, idx),
+        c.alpha_wet,
+        c.alpha_dry,
+    )
+    updated_albedo = c.alpha_wet +
+                     (previous_albedo - c.alpha_wet) *
+                     exp(-dt_days / timescale_days)
+    updated_albedo = clamp(updated_albedo, c.alpha_wet, c.alpha_dry)
+    _set_scalar!(albedo_dynamic, idx, updated_albedo)
+    return updated_albedo
 end
 
 """
@@ -140,6 +195,19 @@ Update the surface albedo of column `idx` in `state` and return the new
 albedo. `dt_days` controls the elapsed time applied to dynamic snow aging.
 """
 function update_surface_albedo!(state, idx::Int, dt_days=one(eltype(state.mass)))
+    if _uses_aging_albedo(state.c)
+        return _update_aging_surface_albedo_arrays!(
+            state.N,
+            state.mass,
+            state.temperature,
+            state.albedo,
+            state.snow_age_days,
+            idx,
+            state.c,
+            zero(dt_days),
+            dt_days,
+        )
+    end
     return _update_surface_albedo_arrays!(
         state.N,
         state.mass,

@@ -30,6 +30,7 @@ include("processes/densification.jl")
 include("processes/percolation.jl")
 include("processes/refreezing.jl")
 include("processes/pdd.jl")
+include("processes/itm.jl")
 include("step.jl")
 include("diagnostics.jl")
 include("dataloaders.jl")
@@ -49,8 +50,8 @@ include("simulation.jl")
 export SnowpackGrid
 
 # Models
-export BESSIModel, PDDModel
-export BESSIState, PDDState
+export BESSIModel, PDDModel, ITMModel
+export BESSIState, PDDState, ITMState
 export build_model, initial_state
 
 # Forcing

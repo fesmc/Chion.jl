@@ -27,6 +27,14 @@ function validate_integrator_setup!(sim, options::RunOptions)
     if model isa BESSIModel && _uses_prescribed_albedo(model.c)
         all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
     end
+    if model isa ITMModel
+        all(isfinite, forcing.surface_height) || error("`surface_height` is required for ITMModel.")
+        all(isfinite, forcing.ice_thickness) || error("`ice_thickness` is required for ITMModel.")
+        all(isfinite, forcing.annual_pdd) || error("`annual_pdd` is required for ITMModel.")
+        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required for ITMModel.")
+        all(>=(0.0), forcing.ice_thickness) || error("`ice_thickness` must be non-negative for ITMModel.")
+        all(>=(0.0), forcing.annual_pdd) || error("`annual_pdd` must be non-negative for ITMModel.")
+    end
     spatial_grid = has_spatial_coords(grid)
     options.write_netcdf && !spatial_grid && error("NetCDF output requires a grid with spatial coordinates.")
     spatial_grid && length(grid.js) != ncol && error("Grid point count must match the domain column count.")
@@ -70,6 +78,8 @@ function _gpu_pdd_forcing(forcing::SnowpackForcing)
         to_gpu(forcing.snowfall_rate),
         to_gpu(forcing.rainfall_rate),
         forcing.shortwave_down,
+        forcing.q_sw_net,
+        forcing.has_q_sw_net,
         forcing.latitude_deg,
         forcing.wind_speed,
         forcing.q_lw_down,
@@ -81,6 +91,8 @@ function _gpu_pdd_forcing(forcing::SnowpackForcing)
         forcing.relative_humidity,
         forcing.has_relative_humidity,
         forcing.surface_height,
+        forcing.ice_thickness,
+        forcing.annual_pdd,
         forcing.air_pressure,
         forcing.prescribed_albedo,
         forcing.has_prescribed_albedo,
@@ -118,6 +130,24 @@ function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackFor
     )
 end
 
+function prepare_runtime!(model::ITMModel, state::ITMState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
+    is_gpu = options.backend == :gpu
+    is_gpu && !cuda_available() && error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
+    transfer(field) = is_gpu ? time_block!(timings, :gpu_transfer) do
+        adapt(gpu_storage_type(), field)
+    end : field
+    step_fields = is_gpu ? time_block!(timings, :gpu_transfer) do
+        adapt(gpu_storage_type(), forcing)
+    end : forcing
+    return (
+        H_snow=transfer(state.H_snow), alb_s=transfer(state.alb_s), smb=transfer(state.smb), smbi=transfer(state.smbi),
+        melt=transfer(state.melt), runoff=transfer(state.runoff), refreezing=transfer(state.refreezing), Tsrf=transfer(state.Tsrf),
+        melt_net=transfer(state.melt_net), smb_cum=transfer(state.smb_cum), smb_ice=transfer(state.smb_ice),
+        melt_cum=transfer(state.melt_cum), runoff_cum=transfer(state.runoff_cum), refreezing_cum=transfer(state.refreezing_cum),
+        step_fields=step_fields, is_gpu=is_gpu,
+    )
+end
+
 _backend_active_indices(indices::Vector{Int}, data) =
     getproperty(data, :is_gpu) ? adapt(gpu_storage_type(), indices) : indices
 
@@ -137,6 +167,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
     latent_heat_flux_sum,
     Tsrf,
     albedo_dynamic,
+    snow_age_days,
     inactive_indices,
     Ntot::Int,
     density_init,
@@ -164,6 +195,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
         latent_heat_flux_sum[idx] = zero(density_init)
         Tsrf[idx] = surface_temperature_init
         albedo_dynamic[idx] = albedo_init
+        snow_age_days[idx] = zero(density_init)
     end
 end
 
@@ -187,12 +219,13 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
         runtime.state.latent_heat_flux_sum,
         runtime.state.Tsrf,
         runtime.state.albedo,
+        runtime.state.snow_age_days,
         backend_indices,
         runtime.state.Ntot,
         convert(eltype(runtime.state.mass), model.density_init),
         convert(eltype(runtime.state.mass), model.temperature_init),
         runtime.state.c.T0,
-        runtime.state.c.alpha_dry;
+        _initial_snow_albedo(runtime.state.c);
         ndrange=length(inactive_indices),
     )
     _wait_kernel(event)
@@ -232,6 +265,28 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     return nothing
 end
 
+@kernel function _reset_itm_columns_kernel!(H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
+    smb_cum, smbi_cum, melt_cum, runoff_cum, refreezing_cum, inactive_indices, H_snow_init, albedo_init, T0)
+    active_idx = @index(Global)
+    if active_idx <= length(inactive_indices)
+        idx = inactive_indices[active_idx]
+        H_snow[idx] = H_snow_init; alb_s[idx] = albedo_init; smb[idx] = 0.0; smbi[idx] = 0.0
+        melt[idx] = 0.0; runoff[idx] = 0.0; refreezing[idx] = 0.0; Tsrf[idx] = T0; melt_net[idx] = 0.0
+        smb_cum[idx] = 0.0; smbi_cum[idx] = 0.0; melt_cum[idx] = 0.0; runoff_cum[idx] = 0.0; refreezing_cum[idx] = 0.0
+    end
+end
+
+function _reset_model_columns!(model::ITMModel, ::ITMState, runtime, inactive_indices::Vector{Int})
+    isempty(inactive_indices) && return nothing
+    indices = _backend_active_indices(inactive_indices, runtime)
+    event = _reset_itm_columns_kernel!(_ka_backend(runtime.H_snow))(runtime.H_snow, runtime.alb_s, runtime.smb,
+        runtime.smbi, runtime.melt, runtime.runoff, runtime.refreezing, runtime.Tsrf, runtime.melt_net,
+        runtime.smb_cum, runtime.smb_ice, runtime.melt_cum, runtime.runoff_cum, runtime.refreezing_cum, indices,
+        model.H_snow_max, model.alb_snow_dry, model.c.T0; ndrange=length(inactive_indices))
+    _wait_kernel(event)
+    return nothing
+end
+
 function _set_model_runtime_active_indices!(model_runtime::ModelRuntime, active::AbstractVector{Bool})
     length(active) == length(model_runtime.active) || error("Active mask length must match the model column count.")
     active_v = Vector{Bool}(active)
@@ -250,16 +305,8 @@ function init_model_runtime!(sim, options::RunOptions, timings::StepTimingStats)
     return ModelRuntime(data, active, active_indices)
 end
 
-function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
-    runtime = model_runtime.data
-    return _step_range!(
-        runtime.state,
-        forcing,
-        time_index:time_index,
-        runtime.workspace,
-        model_runtime.active_indices,
-        _bessi_step_kwargs(model),
-    )
+function step_model!(model::BESSIModel, state::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+    return step_model!(model, state, model_runtime, forcing, time_index:time_index)
 end
 
 function step_model!(model::BESSIModel, ::BESSIState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_range)
@@ -288,6 +335,11 @@ function step_model!(model::PDDModel, ::PDDState, model_runtime::ModelRuntime, f
     )
 end
 
+function step_model!(model::ITMModel, ::ITMState, model_runtime::ModelRuntime, forcing::SnowpackForcing, time_index::Int)
+    _itm_step_arrays!(model_runtime.data, forcing, time_index, model, model_runtime.active_indices)
+    return nothing
+end
+
 function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats)
     if runtime.is_gpu
         time_block!(timings, :gpu_transfer) do
@@ -298,13 +350,25 @@ function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions,
     return nothing
 end
 
+function _copy_vector_state_from_runtime!(state, runtime)
+    for name in fieldnames(typeof(state))
+        copyto!(getfield(state, name), Array(getfield(runtime, name)))
+    end
+    return state
+end
+
 function finalize_state!(::PDDModel, state::PDDState, runtime, ::RunOptions, timings::StepTimingStats)
     runtime.is_gpu || return nothing
     time_block!(timings, :gpu_transfer) do
-        copyto!(state.snowpack_swe, Array(runtime.snowpack_swe))
-        copyto!(state.smb_ice, Array(runtime.smb_ice))
-        copyto!(state.runoff, Array(runtime.runoff))
-        copyto!(state.pdd_sum, Array(runtime.pdd_sum))
+        _copy_vector_state_from_runtime!(state, runtime)
+    end
+    return nothing
+end
+
+function finalize_state!(::ITMModel, state::ITMState, runtime, ::RunOptions, timings::StepTimingStats)
+    runtime.is_gpu || return nothing
+    time_block!(timings, :gpu_transfer) do
+        _copy_vector_state_from_runtime!(state, runtime)
     end
     return nothing
 end

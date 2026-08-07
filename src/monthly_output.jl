@@ -214,3 +214,37 @@ function store_pdd_monthly!(output, monthly, row::Int)
     _wait_monthly_event(event, monthly.runoff)
     return output
 end
+
+function itm_monthly_output_buffer(runtime; nmonth::Integer)
+    dims = (Int(nmonth), length(runtime.H_snow))
+    allocate(field) = similar(field, Float32, dims)
+    return (; (name => allocate(getfield(runtime, name)) for name in ITM_OUTPUT_VARS)...)
+end
+
+@kernel function _store_itm_monthly_fields_kernel!(
+    H_snow_o, alb_s_o, smb_o, smbi_o, melt_o, runoff_o, refreezing_o, Tsrf_o, melt_net_o,
+    smb_cum_o, smb_ice_o, melt_cum_o, runoff_cum_o, refreezing_cum_o,
+    H_snow, alb_s, smb, smbi, melt, runoff, refreezing, Tsrf, melt_net,
+    smb_cum, smb_ice, melt_cum, runoff_cum, refreezing_cum, row::Int,
+)
+    idx = @index(Global)
+    if idx <= length(H_snow)
+        H_snow_o[row, idx] = H_snow[idx]; alb_s_o[row, idx] = alb_s[idx]; smb_o[row, idx] = smb[idx]
+        smbi_o[row, idx] = smbi[idx]; melt_o[row, idx] = melt[idx]; runoff_o[row, idx] = runoff[idx]
+        refreezing_o[row, idx] = refreezing[idx]; Tsrf_o[row, idx] = Tsrf[idx]; melt_net_o[row, idx] = melt_net[idx]
+        smb_cum_o[row, idx] = smb_cum[idx]; smb_ice_o[row, idx] = smb_ice[idx]; melt_cum_o[row, idx] = melt_cum[idx]
+        runoff_cum_o[row, idx] = runoff_cum[idx]; refreezing_cum_o[row, idx] = refreezing_cum[idx]
+    end
+end
+
+function store_itm_monthly!(output, runtime, row::Int)
+    row <= size(output.H_snow, 1) || error("ITM monthly output buffer is full.")
+    event = _store_itm_monthly_fields_kernel!(_ka_backend(runtime.H_snow))(
+        output.H_snow, output.alb_s, output.smb, output.smbi, output.melt, output.runoff, output.refreezing,
+        output.Tsrf, output.melt_net, output.smb_cum, output.smb_ice, output.melt_cum, output.runoff_cum,
+        output.refreezing_cum, runtime.H_snow, runtime.alb_s, runtime.smb, runtime.smbi, runtime.melt,
+        runtime.runoff, runtime.refreezing, runtime.Tsrf, runtime.melt_net, runtime.smb_cum, runtime.smb_ice,
+        runtime.melt_cum, runtime.runoff_cum, runtime.refreezing_cum, row; ndrange=length(runtime.H_snow))
+    _wait_monthly_event(event, runtime.H_snow)
+    return output
+end

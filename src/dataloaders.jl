@@ -16,15 +16,15 @@ end
 
 function _read_time_values(ds::NCDataset, time_name::AbstractString, ntime::Int)
     if haskey(ds, time_name)
-        raw = ds[time_name].var[:]
-        if eltype(raw) <: DateTime
-            return DateTime.(raw)
+        decoded = ds[time_name][:]
+        if eltype(decoded) <: DateTime
+            return DateTime.(decoded)
         end
     end
     if haskey(ds, "TIME")
-        raw = ds["TIME"].var[:]
-        if eltype(raw) <: DateTime
-            return DateTime.(raw)
+        decoded = ds["TIME"][:]
+        if eltype(decoded) <: DateTime
+            return DateTime.(decoded)
         end
     end
     if all(name -> haskey(ds, name), ("YYYY", "MM", "DD", "HH"))
@@ -171,6 +171,18 @@ function _wind_matrix(ds::NCDataset, wind_speed_name, ntime::Int, ny::Int, nx::I
     return _column_matrix(raw)
 end
 
+function _read_optional_finite_field(ds::NCDataset, name, ntime::Int, ny::Int, nx::Int)
+    values = zeros(Float64, nx * ny, ntime)
+    available = fill(false, nx * ny, ntime)
+    (isnothing(name) || !haskey(ds, name)) && return values, available
+
+    raw = _column_matrix(_read_time_y_x(ds, name, ntime, ny, nx))
+    available .= isfinite.(raw)
+    values .= raw
+    values[.!available] .= 0.0
+    return values, available
+end
+
 """
     load_forcing_file(path; kwargs...) -> (grid, forcing)
 
@@ -236,53 +248,30 @@ function load_forcing_file(
             nothing
         end
 
-        q_lw_m = zeros(Float64, nx * ny, ntime)
-        has_q_lw_m = fill(false, nx * ny, ntime)
-        if !isnothing(q_lw_down_name) && haskey(ds, q_lw_down_name)
-            q_lw_raw = _column_matrix(_read_time_y_x(ds, q_lw_down_name, ntime, ny, nx))
-            q_lw_m .= q_lw_raw
-            has_q_lw_m .= isfinite.(q_lw_raw)
-            q_lw_m[.!has_q_lw_m] .= 0.0
-        end
-
-        q_sh_m = zeros(Float64, nx * ny, ntime)
-        has_q_sh_m = fill(false, nx * ny, ntime)
-        if !isnothing(q_sh_name) && haskey(ds, q_sh_name)
-            q_sh_raw = _column_matrix(_read_time_y_x(ds, q_sh_name, ntime, ny, nx))
-            q_sh_m .= q_sh_raw
-            has_q_sh_m .= isfinite.(q_sh_raw)
-            q_sh_m[.!has_q_sh_m] .= 0.0
-        end
-
-        q_lh_m = zeros(Float64, nx * ny, ntime)
-        has_q_lh_m = fill(false, nx * ny, ntime)
-        if !isnothing(q_lh_name) && haskey(ds, q_lh_name)
-            q_lh_raw = _column_matrix(_read_time_y_x(ds, q_lh_name, ntime, ny, nx))
-            q_lh_m .= q_lh_raw
-            has_q_lh_m .= isfinite.(q_lh_raw)
-            q_lh_m[.!has_q_lh_m] .= 0.0
-        end
-
-        relative_humidity_m = zeros(Float64, nx * ny, ntime)
-        has_relative_humidity_m = fill(false, nx * ny, ntime)
-        if !isnothing(relative_humidity_name) && haskey(ds, relative_humidity_name)
-            relative_humidity_raw = _column_matrix(_read_time_y_x(ds, relative_humidity_name, ntime, ny, nx))
-            relative_humidity_m .= relative_humidity_raw
-            has_relative_humidity_m .= isfinite.(relative_humidity_raw)
-            relative_humidity_m[.!has_relative_humidity_m] .= 0.0
-        end
+        q_lw_m, has_q_lw_m = _read_optional_finite_field(
+            ds, q_lw_down_name, ntime, ny, nx,
+        )
+        q_sh_m, has_q_sh_m = _read_optional_finite_field(ds, q_sh_name, ntime, ny, nx)
+        q_lh_m, has_q_lh_m = _read_optional_finite_field(ds, q_lh_name, ntime, ny, nx)
+        relative_humidity_m, has_relative_humidity_m = _read_optional_finite_field(
+            ds, relative_humidity_name, ntime, ny, nx,
+        )
 
         air_temperature = air_temperature_in_celsius ? tair_m .+ 273.15 : tair_m
         air_pressure_m = fill(air_pressure_default, nx * ny, ntime)
+        surface_height_m = fill(NaN, nx * ny, ntime)
+        if !isnothing(surface_height_name) && haskey(ds, surface_height_name)
+            surface_height_data, surface_height_dims = _read_variable_data(ds, surface_height_name)
+            surface_height_v = _column_vector_y_x(_as_y_x(surface_height_data, surface_height_dims, ny, nx, surface_height_name))
+            surface_height_m .= surface_height_v
+        end
         if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
             pressure_raw = _column_matrix(_read_time_y_x(ds, air_pressure_name, ntime, ny, nx))
             finite_pressure = isfinite.(pressure_raw)
             air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
         elseif !isnothing(surface_height_name) && haskey(ds, surface_height_name)
-            surface_height_data, surface_height_dims = _read_variable_data(ds, surface_height_name)
-            surface_height = _column_vector_y_x(_as_y_x(surface_height_data, surface_height_dims, ny, nx, surface_height_name))
             air_pressure_m .= air_pressure_from_surface_height(
-                surface_height,
+                surface_height_m,
                 air_temperature;
                 dt_days=dt_days,
                 time_values=time_values,
@@ -291,14 +280,9 @@ function load_forcing_file(
             )
         end
 
-        prescribed_albedo_m = zeros(Float64, nx * ny, ntime)
-        has_prescribed_albedo_m = fill(false, nx * ny, ntime)
-        if !isnothing(prescribed_albedo_name) && haskey(ds, prescribed_albedo_name)
-            prescribed_albedo_raw = _column_matrix(_read_time_y_x(ds, prescribed_albedo_name, ntime, ny, nx))
-            prescribed_albedo_m .= prescribed_albedo_raw
-            has_prescribed_albedo_m .= isfinite.(prescribed_albedo_raw)
-            prescribed_albedo_m[.!has_prescribed_albedo_m] .= 0.0
-        end
+        prescribed_albedo_m, has_prescribed_albedo_m = _read_optional_finite_field(
+            ds, prescribed_albedo_name, ntime, ny, nx,
+        )
 
         snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
         rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
@@ -336,6 +320,7 @@ function load_forcing_file(
             has_q_lh=select_columns(has_q_lh_m),
             relative_humidity=select_columns(relative_humidity_m),
             has_relative_humidity=select_columns(has_relative_humidity_m),
+            surface_height=select_columns(surface_height_m),
             air_pressure=select_columns(air_pressure_m),
             prescribed_albedo=select_columns(prescribed_albedo_m),
             has_prescribed_albedo=select_columns(has_prescribed_albedo_m),
