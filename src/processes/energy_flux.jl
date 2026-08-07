@@ -118,7 +118,6 @@ function _thomas_forward!(
     idx::Int,
     n::Int,
 )
-    @assert n >= 1
     @inbounds for row_index in 2:n
         elimination_factor = _get_layer(lower_diagonal, row_index - 1, idx) / _get_layer(main_diagonal, row_index - 1, idx)
         _set_layer!(
@@ -156,7 +155,8 @@ function _thomas_backward!(
         idx,
         _get_layer(right_hand_side, n, idx) / _get_layer(main_diagonal, n, idx),
     )
-    @inbounds for row_index in (n - 1):-1:1
+    @inbounds for offset in Base.OneTo(max(n - 1, 0))
+        row_index = n - offset
         _set_layer!(
             right_hand_side,
             row_index,

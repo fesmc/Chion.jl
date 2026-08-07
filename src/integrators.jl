@@ -142,7 +142,7 @@ function _step_n!(integrator::SimulationIntegrator, n::Integer)
 end
 
 @inline _external_gpu_forcing(::BESSIModel, forcing::SnowpackForcing) =
-    adapt(gpu_storage_type(), forcing)
+    adapt(gpu_storage_type(), get_fields(forcing))
 @inline _external_gpu_forcing(::PDDModel, forcing::SnowpackForcing) =
     _gpu_forcing_view(PDDForcing(forcing))
 @inline _external_gpu_forcing(::ITMModel, forcing::SnowpackForcing) =

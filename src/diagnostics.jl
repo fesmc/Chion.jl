@@ -120,25 +120,32 @@ Domain-wide summary helpers.
 const _DOMAIN_SUMMARY_FIELDS =
     (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :melt, :refreezing, :vapor_mass, :sublimation, :latent_heat_flux_sum, :albedo)
 
-@inline function _column_summary(N, mass, mass_w, density, idx, sample)
-    n = N[idx]
+Base.@propagate_inbounds function _column_summary(N, mass, mass_w, density, idx, sample)
+    n = @inbounds N[idx]
     thickness_local = zero(eltype(sample))
     wet_mass_local = zero(eltype(sample))
     solid_mass_local = zero(eltype(sample))
     liquid_water_local = zero(eltype(sample))
-    for layer_index in 1:n
-        solid = mass[layer_index, idx]
-        liquid = mass_w[layer_index, idx]
-        rho = density[layer_index, idx]
-        solid_mass_local += solid
-        wet_mass_local += solid + liquid
-        liquid_water_local += liquid
-        if solid > zero(solid) && rho > EPS_TINY
-            thickness_local += solid / rho
+    @inbounds begin
+        for layer_index in 1:n
+            solid = mass[layer_index, idx]
+            liquid = mass_w[layer_index, idx]
+            rho = density[layer_index, idx]
+            solid_mass_local += solid
+            wet_mass_local += solid + liquid
+            liquid_water_local += liquid
+            valid_layer = (solid > zero(solid)) & (rho > EPS_TINY)
+            safe_density = ifelse(valid_layer, rho, one(rho))
+            thickness_local += ifelse(valid_layer, solid / safe_density, zero(solid))
         end
     end
-    bulk_density_local =
-        thickness_local > EPS_TINY ? solid_mass_local / thickness_local : zero(eltype(sample))
+    valid_thickness = thickness_local > EPS_TINY
+    safe_thickness = ifelse(valid_thickness, thickness_local, one(thickness_local))
+    bulk_density_local = ifelse(
+        valid_thickness,
+        solid_mass_local / safe_thickness,
+        zero(eltype(sample)),
+    )
     return thickness_local, wet_mass_local, bulk_density_local, liquid_water_local
 end
 
@@ -164,25 +171,25 @@ output arrays are mutated in-place.
 """
 @kernel function _summarize_domain_state_kernel!(
     output,
-    state::BESSIState,
+    fields,
 )
     idx = @index(Global)
-    if idx <= length(state.N)
+    @inbounds begin
         thickness_local, wet_mass_local, bulk_density_local, liquid_water_local =
-            _column_summary(state.N, state.mass, state.mass_w, state.density, idx, output.thickness)
+            _column_summary(fields.N, fields.mass, fields.mass_w, fields.density, idx, output.thickness)
         output.thickness[idx] = thickness_local
         output.wet_mass[idx] = wet_mass_local
         output.bulk_density[idx] = bulk_density_local
-        output.base_mass[idx] = state.mass_base[idx]
-        output.smb_ice[idx] = state.smb_ice[idx]
+        output.base_mass[idx] = fields.mass_base[idx]
+        output.smb_ice[idx] = fields.smb_ice[idx]
         output.liquid_water[idx] = liquid_water_local
-        output.runoff[idx] = state.runoff[idx]
-        output.melt[idx] = state.melt[idx]
-        output.refreezing[idx] = state.refreezing[idx]
-        output.vapor_mass[idx] = state.vapor_mass[idx]
-        output.sublimation[idx] = state.sublimation[idx]
-        output.latent_heat_flux_sum[idx] = state.latent_heat_flux_sum[idx]
-        output.albedo[idx] = state.albedo[idx]
+        output.runoff[idx] = fields.runoff[idx]
+        output.melt[idx] = fields.melt[idx]
+        output.refreezing[idx] = fields.refreezing[idx]
+        output.vapor_mass[idx] = fields.vapor_mass[idx]
+        output.sublimation[idx] = fields.sublimation[idx]
+        output.latent_heat_flux_sum[idx] = fields.latent_heat_flux_sum[idx]
+        output.albedo[idx] = fields.albedo[idx]
     end
 end
 
@@ -195,16 +202,16 @@ in-place.
 """
 @kernel function _summarize_year_state_kernel!(
     output,
-    state::BESSIState,
+    fields,
 )
     idx = @index(Global)
-    if idx <= length(state.N)
+    @inbounds begin
         thickness_local, wet_mass_local, bulk_density_local, _ =
-            _column_summary(state.N, state.mass, state.mass_w, state.density, idx, output.thickness)
+            _column_summary(fields.N, fields.mass, fields.mass_w, fields.density, idx, output.thickness)
         output.thickness[idx] = thickness_local
         output.wet_mass[idx] = wet_mass_local
         output.bulk_density[idx] = bulk_density_local
-        output.base_mass[idx] = state.mass_base[idx]
+        output.base_mass[idx] = fields.mass_base[idx]
     end
 end
 
@@ -237,7 +244,7 @@ function summarize_domain_state!(
         _summarize_domain_state_kernel!,
         state,
         output,
-        state,
+        get_fields(state),
     )
 end
 
@@ -271,6 +278,6 @@ function summarize_year_state!(
         _summarize_year_state_kernel!,
         state,
         output,
-        state,
+        get_fields(state),
     )
 end

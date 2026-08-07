@@ -383,6 +383,24 @@ const _FORCING_COPY_FIELD_NAMES = (
     _FORCING_MATRIX_FIELD_NAMES...,
 )
 
+const _BESSI_DEVICE_FORCING_FIELD_NAMES = (
+    :dt_days,
+    :day_of_year,
+    :solar_longitude_deg,
+    _FORCING_MATRIX_FIELD_NAMES...,
+)
+
+@generated function get_fields(forcing::SnowpackForcing)
+    entries = [
+        :($(name) = getproperty(forcing, $(QuoteNode(name))))
+        for name in _BESSI_DEVICE_FORCING_FIELD_NAMES
+    ]
+    return :((; $(entries...)))
+end
+
+@inline _device_forcing_fields(forcing::SnowpackForcing) = get_fields(forcing)
+@inline _device_forcing_fields(forcing::NamedTuple) = forcing
+
 struct SnowpackStepForcing{NF <: AbstractFloat}
     air_temperature::NF
     dt_days::NF
@@ -464,7 +482,7 @@ end
 @inline _step_dt(dt_days::Number, ::Int) = dt_days
 @inline _step_dt(dt_days::AbstractVector, time_index::Int) = @inbounds dt_days[time_index]
 
-@inline function _step_forcing_at(forcing::SnowpackForcing, idx::Int, time_index::Int)
+Base.@propagate_inbounds function _step_forcing_at(forcing, idx::Int, time_index::Int)
     @inbounds begin
         air_temperature = forcing.air_temperature[idx, time_index]
         return SnowpackStepForcing(

@@ -49,12 +49,72 @@ const DEFAULT_BESSI_STEP_OPTIONS = (
     diurnal_temperature_amplitude=0.0,
 )
 
-@inline _step_config_from_keywords(; kwargs...) = merge(DEFAULT_BESSI_STEP_OPTIONS, (; kwargs...))
+@inline function _step_config_from_keywords(; kwargs...)
+    config = merge(DEFAULT_BESSI_STEP_OPTIONS, (; kwargs...))
+    return merge(
+        config,
+        (
+            diurnal_shortwave_substeps=Val(_config_enabled(config.diurnal_shortwave_substeps)),
+            diurnal_temperature_cycle=Val(_config_enabled(config.diurnal_temperature_cycle)),
+        ),
+    )
+end
 
 @inline _step_config_from_keywords(kwargs::NamedTuple) = _step_config_from_keywords(; kwargs...)
 
 @inline _config_enabled(::Val{Enabled}) where {Enabled} = Enabled
 @inline _config_enabled(enabled::Bool) = enabled
+@inline _diurnal_air_temperature(::Val{false}, forcing, config, hour_angle_start, hour_angle_end) =
+    forcing.air_temperature
+@inline _diurnal_air_temperature(::Val{true}, forcing, config, hour_angle_start, hour_angle_end) =
+    _diurnal_temperature_interval_average(
+        forcing.air_temperature,
+        config.diurnal_temperature_amplitude,
+        hour_angle_start,
+        hour_angle_end,
+    )
+
+@inline _copy_liquid_water_for_compaction!(::Val{:bessi}, args...) = 0
+@inline function _copy_liquid_water_for_compaction!(
+    ::Val{:htessel},
+    N_storage,
+    mass_w,
+    liquid_water_before_energy,
+    idx,
+)
+    n = _n_active(N_storage, idx)
+    @inbounds for layer_index in 1:n
+        _set_layer!(
+            liquid_water_before_energy,
+            layer_index,
+            idx,
+            _get_layer(mass_w, layer_index, idx),
+        )
+    end
+    return n
+end
+
+@inline _apply_liquid_water_compaction!(::Val{:bessi}, args...) = nothing
+@inline function _apply_liquid_water_compaction!(
+    ::Val{:htessel},
+    N_storage,
+    mass,
+    mass_w,
+    density,
+    idx,
+    liquid_water_before_energy,
+    ice_density,
+)
+    return _apply_htessel_liquid_water_compaction!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        idx,
+        liquid_water_before_energy,
+        ice_density,
+    )
+end
 
 """
 Core stepping flow shared by batch stepping kernels.
@@ -69,8 +129,9 @@ end
     return nothing
 end
 
-function _step_diurnal_shortwave_interval!(
-    state,
+@inline function _step_diurnal_shortwave_interval!(
+    fields,
+    parameters::BESSIParameters,
     idx::Int,
     forcing::SnowpackStepForcing,
     config,
@@ -79,7 +140,6 @@ function _step_diurnal_shortwave_interval!(
     hour_angle_end,
 )
     fraction = (hour_angle_end - hour_angle_start) / oftype(forcing.dt_days, 2π)
-    fraction <= zero(fraction) && return nothing
     shortwave_down = _diurnal_shortwave_interval_average(
         forcing.shortwave_down,
         forcing.latitude_deg,
@@ -87,25 +147,24 @@ function _step_diurnal_shortwave_interval!(
         hour_angle_start,
         hour_angle_end,
     )
-    air_temperature = _config_enabled(config.diurnal_temperature_cycle) ?
-        _diurnal_temperature_interval_average(
-            forcing.air_temperature,
-            config.diurnal_temperature_amplitude,
-            hour_angle_start,
-            hour_angle_end,
-        ) :
-        forcing.air_temperature
-    q_sw_net = forcing.has_q_sw_net ?
+    air_temperature = _diurnal_air_temperature(
+        config.diurnal_temperature_cycle,
+        forcing,
+        config,
+        hour_angle_start,
+        hour_angle_end,
+    )
+    reconstructed_q_sw_net =
         _diurnal_shortwave_interval_average(
             forcing.q_sw_net,
             forcing.latitude_deg,
             forcing.solar_longitude_deg,
             hour_angle_start,
             hour_angle_end,
-        ) :
-        forcing.q_sw_net
+        )
+    q_sw_net = ifelse(forcing.has_q_sw_net, reconstructed_q_sw_net, forcing.q_sw_net)
     subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net)
-    return column_step_core!(state, idx, subforcing, workspace)
+    return column_step_core!(fields, parameters, idx, subforcing, workspace)
 end
 
 """
@@ -115,72 +174,119 @@ Advance one snowpack column by one forcing step using already-resolved arrays,
 constants, and scratch storage. This mutates the supplied state arrays
 in-place and may update runoff and SMB diagnostics.
 """
-function column_step!(
-    state,
+@inline function column_step!(
+    state::BESSIState,
     idx::Int,
     forcing::SnowpackStepForcing,
     config,
     workspace,
 )
-    if _config_enabled(config.diurnal_shortwave_substeps)
-        shortwave_for_criterion = forcing.has_q_sw_net ? forcing.q_sw_net : forcing.shortwave_down
-        n_substeps = _diurnal_shortwave_substep_count(
-            forcing.dt_days,
-            shortwave_for_criterion,
-            forcing.air_temperature,
-            config.diurnal_shortwave_min_air_temperature,
-            forcing.latitude_deg,
-            forcing.solar_longitude_deg,
-            config.diurnal_shortwave_threshold,
-            config.diurnal_shortwave_max_substeps,
-        )
-        if n_substeps > 1
-            day_start = -oftype(forcing.dt_days, π)
-            day_end = oftype(forcing.dt_days, π)
-            substep_width = (day_end - day_start) / n_substeps
-            for substep_index in 1:n_substeps
-                hour_angle_start = day_start + (substep_index - 1) * substep_width
-                hour_angle_end = substep_index == n_substeps ? day_end : hour_angle_start + substep_width
-                _step_diurnal_shortwave_interval!(
-                    state,
-                    idx,
-                    forcing,
-                    config,
-                    workspace,
-                    hour_angle_start,
-                    hour_angle_end,
-                )
-            end
-            return nothing
-        end
-    end
-
-    return column_step_core!(state, idx, forcing, workspace)
+    return column_step!(get_fields(state), state.parameters, idx, forcing, config, workspace)
 end
 
-function column_step_core!(
-    state,
+@inline function column_step!(
+    fields,
+    parameters::BESSIParameters,
+    idx::Int,
+    forcing::SnowpackStepForcing,
+    config,
+    workspace,
+)
+    return _column_step_diurnal!(
+        config.diurnal_shortwave_substeps,
+        fields,
+        parameters,
+        idx,
+        forcing,
+        config,
+        workspace,
+    )
+end
+
+@inline function _column_step_diurnal!(
+    ::Val{false},
+    fields,
+    parameters,
+    idx,
+    forcing,
+    config,
+    workspace,
+)
+    return column_step_core!(fields, parameters, idx, forcing, workspace)
+end
+
+@inline function _column_step_diurnal!(
+    ::Val{true},
+    fields,
+    parameters,
+    idx,
+    forcing,
+    config,
+    workspace,
+)
+    shortwave_for_criterion = ifelse(
+        forcing.has_q_sw_net,
+        forcing.q_sw_net,
+        forcing.shortwave_down,
+    )
+    n_substeps = _diurnal_shortwave_substep_count(
+        forcing.dt_days,
+        shortwave_for_criterion,
+        forcing.air_temperature,
+        config.diurnal_shortwave_min_air_temperature,
+        forcing.latitude_deg,
+        forcing.solar_longitude_deg,
+        config.diurnal_shortwave_threshold,
+        config.diurnal_shortwave_max_substeps,
+    )
+    day_start = -oftype(forcing.dt_days, π)
+    day_end = oftype(forcing.dt_days, π)
+    substep_width = (day_end - day_start) / n_substeps
+    for substep_index in 1:n_substeps
+        hour_angle_start = day_start + (substep_index - 1) * substep_width
+        hour_angle_end = ifelse(
+            substep_index == n_substeps,
+            day_end,
+            hour_angle_start + substep_width,
+        )
+        _step_diurnal_shortwave_interval!(
+            fields,
+            parameters,
+            idx,
+            forcing,
+            config,
+            workspace,
+            hour_angle_start,
+            hour_angle_end,
+        )
+    end
+    return nothing
+end
+
+Base.@propagate_inbounds function column_step_core!(
+    fields,
+    parameters::BESSIParameters,
     idx::Int,
     forcing::SnowpackStepForcing,
     workspace,
 )
-    N_storage = state.N
-    mass = state.mass
-    mass_w = state.mass_w
-    density = state.density
-    temperature = state.temperature
-    mass_base = state.mass_base
-    smb_ice = state.smb_ice
-    runoff = state.runoff
-    melt = state.melt
-    refreezing = state.refreezing
-    vapor_mass = state.vapor_mass
-    sublimation = state.sublimation
-    latent_heat_flux_sum = state.latent_heat_flux_sum
-    Tsrf = state.Tsrf
-    albedo_dynamic = state.albedo
-    snow_age_days = state.snow_age_days
-    c = state.c
+    N_storage = fields.N
+    mass = fields.mass
+    mass_w = fields.mass_w
+    density = fields.density
+    temperature = fields.temperature
+    mass_base = fields.mass_base
+    smb_ice = fields.smb_ice
+    runoff = fields.runoff
+    melt = fields.melt
+    refreezing = fields.refreezing
+    vapor_mass = fields.vapor_mass
+    sublimation = fields.sublimation
+    latent_heat_flux_sum = fields.latent_heat_flux_sum
+    Tsrf = fields.Tsrf
+    albedo_dynamic = fields.albedo
+    c = parameters.c
+    snow_age_days = fields.snow_age_days
 
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
@@ -199,10 +305,10 @@ function column_step_core!(
         albedo_dynamic,
         idx,
         c,
-        state.Ntot,
-        state.mass_max,
-        state.mass_split,
-        state.mass_min,
+        parameters.Ntot,
+        parameters.mass_max,
+        parameters.mass_split,
+        parameters.mass_min,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
         dt_seconds,
@@ -210,72 +316,72 @@ function column_step_core!(
         forcing.wind_speed,
     )
 
-    if forcing.snowfall_rate > zero(dt_seconds) &&
-       started_without_surface_snow &&
-       _n_active(N_storage, idx) > 0
-        _set_layer!(temperature, 1, idx, forcing.air_temperature)
-    end
-
-    use_prescribed_albedo && _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    initialize_surface_temperature =
+        (forcing.snowfall_rate > zero(dt_seconds)) &
+        started_without_surface_snow &
+        (_n_active(N_storage, idx) > 0)
+    previous_surface_temperature = _get_layer(temperature, 1, idx)
+    _set_layer!(
+        temperature,
+        1,
+        idx,
+        ifelse(initialize_surface_temperature, forcing.air_temperature, previous_surface_temperature),
+    )
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
-    if !has_surface_snow
-        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
-        use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
-        rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
-        _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
-        _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
-        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + rainfall_mass + bare_ice_fluxes.melt_mass)
-        _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_ice_fluxes.vapor_mass)
-        _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_ice_fluxes.sublimation_mass)
-        _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + bare_ice_fluxes.latent_heat_flux * forcing.dt_days)
-        return nothing
-    end
+    bare_ice = !has_surface_snow
+    bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
+    rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
+    bare_net_mass = ifelse(bare_ice, bare_ice_fluxes.net_mass_change, zero(dt_seconds))
+    bare_melt_mass = ifelse(bare_ice, bare_ice_fluxes.melt_mass, zero(dt_seconds))
+    bare_runoff_mass = ifelse(
+        bare_ice,
+        rainfall_mass + bare_ice_fluxes.melt_mass,
+        zero(dt_seconds),
+    )
+    bare_vapor_mass = ifelse(bare_ice, bare_ice_fluxes.vapor_mass, zero(dt_seconds))
+    bare_sublimation_mass = ifelse(bare_ice, bare_ice_fluxes.sublimation_mass, zero(dt_seconds))
+    bare_latent_heat_flux = ifelse(bare_ice, bare_ice_fluxes.latent_heat_flux, zero(dt_seconds))
+    _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_net_mass)
+    _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_melt_mass)
+    _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_runoff_mass)
+    _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_vapor_mass)
+    _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_sublimation_mass)
+    _set_scalar!(
+        latent_heat_flux_sum,
+        idx,
+        _get_scalar(latent_heat_flux_sum, idx) + bare_latent_heat_flux * forcing.dt_days,
+    )
 
-    if use_prescribed_albedo
-        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
-    elseif _uses_aging_albedo(c)
-        _update_aging_surface_albedo_arrays!(
-            N_storage,
-            mass,
-            temperature,
-            albedo_dynamic,
-            snow_age_days,
-            idx,
-            c,
-            forcing.snowfall_rate,
-            forcing.dt_days,
+    if _uses_aging_albedo(c)
+        diagnosed_albedo = _update_aging_surface_albedo_arrays!(
+            N_storage, mass, temperature, albedo_dynamic, snow_age_days,
+            idx, c, forcing.snowfall_rate, forcing.dt_days,
         )
     else
-        _update_surface_albedo_arrays!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            temperature,
-            albedo_dynamic,
-            idx,
-            c,
-            forcing.dt_days,
+        diagnosed_albedo = _update_surface_albedo_arrays!(
+            N_storage, mass, mass_w, density, temperature, albedo_dynamic,
+            idx, c, forcing.dt_days,
         )
     end
+    prescribed_albedo = _prescribed_surface_albedo(forcing)
+    _set_scalar!(
+        albedo_dynamic,
+        idx,
+        ifelse(use_prescribed_albedo, prescribed_albedo, diagnosed_albedo),
+    )
 
-    n_liquid_water_before_energy = 0
-    if _uses_htessel_densification(c)
-        n_liquid_water_before_energy = _n_active(N_storage, idx)
-        @inbounds for layer_index in 1:n_liquid_water_before_energy
-            _set_layer!(
-                workspace.liquid_water_before_energy,
-                layer_index,
-                idx,
-                _get_layer(mass_w, layer_index, idx),
-            )
-        end
-    end
+    densification_tag = _densification_tag(c)
+    n_liquid_water_before_energy = _copy_liquid_water_for_compaction!(
+        densification_tag,
+        N_storage,
+        mass_w,
+        workspace.liquid_water_before_energy,
+        idx,
+    )
 
     accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) +
-                        (has_surface_snow ? forcing.rainfall_rate : zero(dt_seconds))
+                        ifelse(has_surface_snow, forcing.rainfall_rate, zero(dt_seconds))
     _go_densification!(
         N_storage,
         mass,
@@ -336,88 +442,84 @@ function column_step_core!(
         c,
         forcing,
         dt_seconds,
-        state.mass_split,
-        state.mass_min,
+        parameters.mass_split,
+        parameters.mass_min,
     )
     _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
     _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + snow_vapor_fluxes.sublimation_mass)
     _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + snow_vapor_fluxes.latent_heat_flux * forcing.dt_days)
 
-    if energy.needs_melt
-        melt_mass = energy.melt_energy_available / c.Lm
-        melted_snow = _apply_melt!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            temperature,
-            runoff,
-            Tsrf,
-            albedo_dynamic,
-            idx,
-            state.mass_split,
-            state.mass_min,
-            melt_mass,
-            c,
-        )
-        if melted_snow < melt_mass && _n_active(N_storage, idx) == 0
-            ice_melt = melt_mass - melted_snow
-            _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - ice_melt)
-            _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + ice_melt)
-        end
-        _set_scalar!(melt, idx, _get_scalar(melt, idx) + melt_mass)
-    end
+    melt_mass = ifelse(
+        energy.needs_melt,
+        energy.melt_energy_available / c.Lm,
+        zero(energy.melt_energy_available),
+    )
+    melted_snow = _apply_melt!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        temperature,
+        runoff,
+        Tsrf,
+        albedo_dynamic,
+        idx,
+        parameters.mass_split,
+        parameters.mass_min,
+        melt_mass,
+        c,
+    )
+    melt_reaches_ice = (melted_snow < melt_mass) & (_n_active(N_storage, idx) == 0)
+    ice_melt = ifelse(melt_reaches_ice, melt_mass - melted_snow, zero(melt_mass))
+    _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - ice_melt)
+    _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + ice_melt)
+    _set_scalar!(melt, idx, _get_scalar(melt, idx) + melt_mass)
 
-    has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
-    if has_liquid_water
-        routed_runoff = _go_percolation!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            idx,
-            c.rho_i,
-            c.rho_w,
-        )
-        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + routed_runoff)
-        has_liquid_water = _column_has_liquid_water(N_storage, mass_w, idx)
-    end
+    routed_runoff = _go_percolation!(
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        idx,
+        c.rho_i,
+        c.rho_w,
+    )
+    _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + routed_runoff)
 
-    if _uses_htessel_densification(c) &&
-       n_liquid_water_before_energy > 0 &&
-       has_liquid_water
-        _apply_htessel_liquid_water_compaction!(
-            N_storage,
-            mass,
-            mass_w,
-            density,
-            idx,
-            workspace.liquid_water_before_energy,
-            c.rho_i,
-        )
-    end
+    _apply_liquid_water_compaction!(
+        densification_tag,
+        N_storage,
+        mass,
+        mass_w,
+        density,
+        idx,
+        workspace.liquid_water_before_energy,
+        c.rho_i,
+    )
 
-    if has_liquid_water
-        refrozen_mass = _go_refreezing!(
-            N_storage,
-            mass_w,
-            mass,
-            density,
-            temperature,
-            idx,
-            c.T0,
-            c.ci,
-            c.Lm,
-            c.rho_i,
-        )
-        _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
-    end
+    refrozen_mass = _go_refreezing!(
+        N_storage,
+        mass_w,
+        mass,
+        density,
+        temperature,
+        idx,
+        c.T0,
+        c.ci,
+        c.Lm,
+        c.rho_i,
+    )
+    _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
 
-    if use_prescribed_albedo
-        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
-    elseif !_surface_has_snow(N_storage, mass, idx)
-        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
+    final_has_snow = _surface_has_snow(N_storage, mass, idx)
+    final_albedo = ifelse(
+        use_prescribed_albedo,
+        prescribed_albedo,
+        ifelse(final_has_snow, _get_scalar(albedo_dynamic, idx), c.alpha_ice),
+    )
+    _set_scalar!(albedo_dynamic, idx, final_albedo)
+    if _uses_aging_albedo(c) && !final_has_snow
+        _set_scalar!(snow_age_days, idx, zero(dt_seconds))
     end
 
     return nothing
@@ -426,26 +528,51 @@ end
 """Batch stepping over forcing fields with one KernelAbstractions path for CPU and GPU."""
 
 """
+    _step_columns_single_kernel!(...)
+
+KernelAbstractions kernel that advances each column for one forcing time
+index. The absence of a dynamic time loop isolates Reactant compatibility
+failures to the BESSI column-process call graph.
+"""
+@kernel function _step_columns_single_kernel!(
+    fields,
+    parameters::BESSIParameters,
+    workspace::ColumnarStepWorkspace,
+    active_indices,
+    forcing_fields,
+    config,
+    time_index::Int,
+)
+    active_idx = @index(Global)
+    @inbounds begin
+        idx = active_indices[active_idx]
+        step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+        column_step!(fields, parameters, idx, step_forcing, config, workspace)
+    end
+end
+
+"""
     _step_columns_kernel!(...)
 
 KernelAbstractions kernel that extracts one time slice of the full forcing
 and advances each column independently in-place.
 """
 @kernel function _step_columns_kernel!(
-    state,
+    fields,
+    parameters::BESSIParameters,
     workspace::ColumnarStepWorkspace,
     active_indices,
-    forcing::SnowpackForcing,
+    forcing_fields,
     config,
     time_start::Int,
     time_stop::Int,
 )
     active_idx = @index(Global)
-    if active_idx <= length(active_indices)
+    @inbounds begin
         idx = active_indices[active_idx]
         for time_index in time_start:time_stop
-            step_forcing = _step_forcing_at(forcing, idx, time_index)
-            column_step!(state, idx, step_forcing, config, workspace)
+            step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+            column_step!(fields, parameters, idx, step_forcing, config, workspace)
         end
     end
 end
@@ -468,7 +595,7 @@ end
 
 @inline function _launch_step_columns_kernel!(
     state,
-    forcing::SnowpackForcing,
+    forcing,
     time_start::Int,
     time_stop::Int,
     workspace::ColumnarStepWorkspace,
@@ -477,12 +604,26 @@ end
 )
     time_stop >= time_start || return nothing
     backend = _ka_backend(state.mass)
+    if time_start == time_stop
+        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend))
+        return kernel!(
+            get_fields(state),
+            state.parameters,
+            workspace,
+            active_indices,
+            _device_forcing_fields(forcing),
+            config,
+            time_start,
+            ndrange=length(active_indices),
+        )
+    end
     kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend))
     return kernel!(
-        state,
+        get_fields(state),
+        state.parameters,
         workspace,
         active_indices,
-        forcing,
+        _device_forcing_fields(forcing),
         config,
         time_start,
         time_stop,
@@ -500,7 +641,7 @@ end
 
 function _step_range!(
     state,
-    forcing::SnowpackForcing,
+    forcing,
     time_range,
     workspace::ColumnarStepWorkspace,
     active_indices,

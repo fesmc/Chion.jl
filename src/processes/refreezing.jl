@@ -22,12 +22,14 @@ function _go_refreezing!(
     ice_density,
 )
     refrozen_mass = zero(latent_heat_of_melting)
+    n_active = _n_active(N_storage, idx)
 
-    @inbounds for layer_index in 1:_n_active(N_storage, idx)
+    @inbounds for layer_index in Base.OneTo(size(mass, 1))
         solid_mass = _get_layer(mass, layer_index, idx)
         liquid_water_mass = _get_layer(mass_w, layer_index, idx)
         layer_temperature = _get_layer(temperature, layer_index, idx)
-        if solid_mass > zero(solid_mass) &&
+        if layer_index <= n_active &&
+           solid_mass > zero(solid_mass) &&
            liquid_water_mass > zero(liquid_water_mass) &&
            layer_temperature < melting_temperature
             cold_content = (melting_temperature - layer_temperature) * ice_heat_capacity * solid_mass

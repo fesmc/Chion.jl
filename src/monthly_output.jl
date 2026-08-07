@@ -122,12 +122,15 @@ end
           getfield(source, $(QuoteNode(name)))[idx])
         for name in Names
     ]
-    return Expr(:block, assignments..., :(nothing))
+    return :(Base.@inbounds begin
+        $(assignments...)
+        nothing
+    end)
 end
 
-@kernel function _store_named_monthly_fields_kernel!(output, source, row::Int, ncol::Int)
+@kernel function _store_named_monthly_fields_kernel!(output, source, row::Int)
     idx = @index(Global)
-    if idx <= ncol
+    @inbounds begin
         _store_named_fields_at!(output, source, row, idx)
     end
 end
@@ -135,7 +138,7 @@ function _store_named_monthly_fields!(output, source, names, row::Int, reference
     output_fields = _named_fields(output, names)
     source_fields = _named_fields(source, names)
     kernel! = _store_named_monthly_fields_kernel!(_ka_backend(reference))
-    event = kernel!(output_fields, source_fields, row, length(reference); ndrange=length(reference))
+    event = kernel!(output_fields, source_fields, row; ndrange=length(reference))
     _wait_kernel(event)
     return output
 end

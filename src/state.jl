@@ -11,11 +11,11 @@ struct TransposedLayerMatrix{T, M <: AbstractMatrix{T}} <: AbstractMatrix{T}
 end
 
 Base.size(matrix::TransposedLayerMatrix) = reverse(size(matrix.parent))
-@inline function Base.getindex(matrix::TransposedLayerMatrix, layer::Int, column::Int)
+Base.@propagate_inbounds function Base.getindex(matrix::TransposedLayerMatrix, layer::Int, column::Int)
     @boundscheck checkbounds(matrix, layer, column)
     return @inbounds matrix.parent[column, layer]
 end
-@inline function Base.setindex!(matrix::TransposedLayerMatrix, value, layer::Int, column::Int)
+Base.@propagate_inbounds function Base.setindex!(matrix::TransposedLayerMatrix, value, layer::Int, column::Int)
     @boundscheck checkbounds(matrix, layer, column)
     @inbounds matrix.parent[column, layer] = value
     return value
@@ -237,6 +237,11 @@ struct PDDState{ST <: AbstractVector{Float64}}
     pdd_sum::ST
 end
 
+const _PDD_STATE_FIELD_NAMES = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
+@inline get_fields(state::PDDState) = NamedTuple{_PDD_STATE_FIELD_NAMES}(
+    ntuple(index -> getfield(state, _PDD_STATE_FIELD_NAMES[index]), Val(length(_PDD_STATE_FIELD_NAMES))),
+)
+
 function PDDState(model::PDDModel)
     ncol = ncols(model.grid)
     return PDDState(
@@ -271,6 +276,14 @@ struct ITMState{ST <: AbstractVector{Float64}}
     runoff_cum::ST
     refreezing_cum::ST
 end
+
+const _ITM_STATE_FIELD_NAMES = (
+    :H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf,
+    :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum,
+)
+@inline get_fields(state::ITMState) = NamedTuple{_ITM_STATE_FIELD_NAMES}(
+    ntuple(index -> getfield(state, _ITM_STATE_FIELD_NAMES[index]), Val(length(_ITM_STATE_FIELD_NAMES))),
+)
 
 function ITMState(model::ITMModel)
     ncol = ncols(model.grid)

@@ -61,7 +61,7 @@ Apply one PDD step to one column. The budget follows the Fortran reference:
 Consequently, every step closes as
 `snowfall + rainfall == Δsnowpack_swe + Δsmb_ice + Δrunoff`.
 """
-@inline function _pdd_apply_column!(
+Base.@propagate_inbounds function _pdd_apply_column!(
     snowpack_swe,
     smb_ice,
     runoff,
@@ -79,9 +79,13 @@ Consequently, every step closes as
 
     available_snow = snowpack_swe[idx] + snowfall
     snow_melt = min(available_snow, ddf_snow * pdd)
-    remaining_pdd = ddf_snow > zero(ddf_snow) ?
-                    max(pdd - snow_melt / ddf_snow, zero(pdd)) :
-                    zero(pdd)
+    positive_degree_factor = ddf_snow > zero(ddf_snow)
+    safe_degree_factor = ifelse(positive_degree_factor, ddf_snow, one(ddf_snow))
+    remaining_pdd = ifelse(
+        positive_degree_factor,
+        max(pdd - snow_melt / safe_degree_factor, zero(pdd)),
+        zero(pdd),
+    )
     ice_melt = ddf_ice * remaining_pdd
 
     remaining_snow = available_snow - snow_melt
@@ -96,7 +100,7 @@ Consequently, every step closes as
 end
 
 @kernel function _pdd_step_kernel!(
-    state::PDDState,
+    fields,
     air_temperature,
     snowfall_rate,
     rainfall_rate,
@@ -113,7 +117,7 @@ end
     active_indices,
 )
     active_idx = @index(Global)
-    if active_idx <= length(active_indices)
+    @inbounds begin
         idx = active_indices[active_idx]
         snowfall = _pdd_step_mass(
             snowfall_rate[idx, time_index],
@@ -133,10 +137,10 @@ end
             pdd_method,
         )
         _pdd_apply_column!(
-            state.snowpack_swe,
-            state.smb_ice,
-            state.runoff,
-            state.pdd_sum,
+            fields.snowpack_swe,
+            fields.smb_ice,
+            fields.runoff,
+            fields.pdd_sum,
             idx,
             snowfall,
             rainfall,
@@ -168,7 +172,7 @@ function _pdd_step_arrays!(
 
     kernel! = _pdd_step_kernel!(_ka_backend(state.snowpack_swe))
     event = kernel!(
-        state,
+        get_fields(state),
         forcing.air_temperature,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
