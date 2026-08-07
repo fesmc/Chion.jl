@@ -98,12 +98,66 @@ end
         grid = SnowpackGrid(1)
         m1 = BESSIModel(grid; albedo=:dynamic)
         m2 = BESSIModel(grid; albedo=:constant)
-        m3 = BESSIModel(grid; densification=:htessel)
-        m4 = BESSIModel(grid; fresh_snow_density=:parameterized)
+        m3 = BESSIModel(grid; albedo=:aging)
+        m4 = BESSIModel(grid; densification=:htessel)
+        m5 = BESSIModel(grid; fresh_snow_density=:parameterized)
         @test m1.c.albedo_scheme == Chion.ALBEDO_DYNAMIC
         @test m2.c.albedo_scheme == Chion.ALBEDO_CONSTANT
-        @test m3.c.low_density_densification == Chion.LOW_DENSIFICATION_HTESSEL
-        @test m4.c.fresh_snow_density_scheme == Chion.FRESH_SNOW_DENSITY_PARAMETERIZED
+        @test m3.c.albedo_scheme == Chion.ALBEDO_AGING
+        @test m3.c.alpha_dry == 0.81
+        @test m3.c.alpha_wet == 0.70
+        @test m3.c.aging_cold_timescale_days == 20.0
+        @test m3.c.aging_melting_timescale_days == 5.0
+        @test m4.c.low_density_densification == Chion.LOW_DENSIFICATION_HTESSEL
+        @test m5.c.fresh_snow_density_scheme == Chion.FRESH_SNOW_DENSITY_PARAMETERIZED
+
+        err = _captured_exception() do
+            BESSIModel(grid; albedo=:aging, alpha_dry=0.5, alpha_wet=0.6)
+        end
+        @test err isa Exception
+        @test occursin("alpha_wet", sprint(showerror, err))
+    end
+
+    @testset "aging albedo follows snowfall age" begin
+        model = BESSIModel(SnowpackGrid(1); albedo=:aging)
+        state = BESSIState(model)
+        state.N[1] = 1
+        state.mass[1, 1] = 300.0
+        state.temperature[1, 1] = model.c.T0 - 1.0
+
+        @test state.albedo[1] == model.c.alpha_dry
+        @test state.snow_age_days[1] == 0.0
+
+        Chion.update_surface_albedo!(state, 1, 1.0)
+        @test state.snow_age_days[1] == 1.0
+        @test state.albedo[1] ≈ model.c.alpha_wet +
+                                 (model.c.alpha_dry - model.c.alpha_wet) * exp(-1 / 20) atol=1e-12
+
+        state.temperature[1, 1] = model.c.T0
+        Chion.update_surface_albedo!(state, 1, 1.0)
+        @test state.snow_age_days[1] == 2.0
+        @test state.albedo[1] ≈ model.c.alpha_wet +
+                                 (model.c.alpha_dry - model.c.alpha_wet) *
+                                 exp(-1 / 20 - 1 / 5) atol=1e-12
+
+        Chion._update_aging_surface_albedo_arrays!(
+            state.N,
+            state.mass,
+            state.temperature,
+            state.albedo,
+            state.snow_age_days,
+            1,
+            state.c,
+            1.0 / state.c.seconds_per_day,
+            1.0,
+        )
+        @test state.snow_age_days[1] == 0.0
+        @test state.albedo[1] == model.c.alpha_dry
+
+        state.N[1] = 0
+        Chion.update_surface_albedo!(state, 1, 1.0)
+        @test state.snow_age_days[1] == 0.0
+        @test state.albedo[1] == model.c.alpha_ice
     end
 
     @testset "SnowpackForcing conversions and validation" begin
@@ -139,6 +193,41 @@ end
         @test occursin("air_temperature_c", sprint(showerror, err))
     end
 
+    @testset "SnowpackForcing keeps invariant fields compact" begin
+        forcing = SnowpackForcing(
+            dt_days=[1.0, 1.0],
+            ncol=3,
+            air_temperature_c=[-10.0, -9.0],
+            snowfall_mm_day=1.0,
+            rainfall_mm_day=0.0,
+            shortwave_down=100.0,
+            latitude_deg=[60.0, 70.0, 80.0],
+            surface_height=[0.0, 500.0, 1000.0],
+        )
+
+        @test forcing.q_lw_down isa Chion.ConstantForcingMatrix
+        @test forcing.has_q_lw_down isa Chion.ConstantForcingMatrix
+        @test forcing.air_temperature isa Chion.TimeForcingMatrix
+        @test forcing.shortwave_down isa Chion.ConstantForcingMatrix
+        @test forcing.latitude_deg isa Chion.ColumnForcingMatrix
+        @test forcing.surface_height isa Chion.ColumnForcingMatrix
+        @test Matrix(forcing.q_lw_down) == zeros(3, 2)
+        @test Matrix(forcing.latitude_deg) == [60.0 60.0; 70.0 70.0; 80.0 80.0]
+    end
+
+    @testset "transposed layer storage preserves logical indexing" begin
+        logical = reshape(collect(1.0:12.0), 3, 4)
+        storage = Chion.TransposedLayerMatrix(permutedims(logical, (2, 1)))
+        @test size(storage) == size(logical)
+        @test Array(storage) == logical
+        storage[2, 3] = -1.0
+        @test storage.parent[3, 2] == -1.0
+
+        scratch = similar(storage, Float64, 3, 4)
+        @test scratch isa Chion.TransposedLayerMatrix
+        @test size(scratch.parent) == (4, 3)
+    end
+
     @testset "Simulation saves an exact state field" begin
         mktempdir() do dir
             model, forcing, grid = _sample_model_forcing_grid()
@@ -161,6 +250,8 @@ end
             @test !haskey(ds, "step_cycle")
             @test !haskey(ds, "history_mean_thickness")
             @test size(ds["thickness"]) == (3, 2, 2)
+            @test ds["t"].attrib["calendar"] == "proleptic_gregorian"
+            @test ds["t"][:] == forcing.time_values
             @test ds.attrib["records_written"] == "3"
             @test !haskey(ds.attrib, "cycles_completed")
             close(ds)
@@ -242,6 +333,21 @@ end
         @test result.netcdf_path == ""
     end
 
+    @testset "BESSI simulation can skip annual metrics" begin
+        model, forcing, _ = _sample_model_forcing_grid()
+        result = run!(Simulation(model; forcing=forcing,
+            backend=:threads,
+            years=2,
+            write_netcdf=false,
+            compute_year_metrics=false,
+        ); io=devnull)
+        timing_keys = [row.key for row in first(timing_rows(result.timings))]
+        @test result.status == :complete
+        @test isempty(result.history)
+        @test !(:year_metrics in timing_keys)
+        @test !(:summarize_columns_year in timing_keys)
+    end
+
     @testset "BESSI KA interval step matches serial column stepping" begin
         model, forcing, _ = _sample_model_forcing_grid()
         serial = BESSIState(model)
@@ -279,6 +385,8 @@ end
         @test stepped.smb_ice ≈ serial.smb_ice
         @test stepped.runoff ≈ serial.runoff
         @test stepped.Tsrf ≈ serial.Tsrf
+        @test stepped.albedo ≈ serial.albedo
+        @test stepped.snow_age_days ≈ serial.snow_age_days
     end
 
     @testset "Simulation owns reference and current state" begin
@@ -409,6 +517,8 @@ end
             loaded = load_forcing_file(forcing_path)
             @test size(loaded.forcing.air_temperature) == (4, 2)
             @test size(loaded.forcing.snowfall_rate) == (4, 2)
+            @test loaded.forcing.time_values ==
+                  [DateTime(2001, 1, 1, 12), DateTime(2001, 1, 2, 12)]
             @test sort(collect(zip(loaded.grid.js, loaded.grid.is))) == [(1, 1), (1, 2), (2, 1), (2, 2)]
 
             masked = load_forcing_file(forcing_path; mask_name="MSK", mask_threshold=50.0)
