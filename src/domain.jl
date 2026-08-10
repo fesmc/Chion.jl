@@ -13,15 +13,34 @@ end
     return nothing
 end
 
-"""Spatial discretization for a set of independent snowpack columns."""
-struct SnowpackGrid
-    ncol::Int
-    x::Union{Nothing, Vector{Float64}}
-    y::Union{Nothing, Vector{Float64}}
-    js::Union{Nothing, Vector{Int}}
-    is::Union{Nothing, Vector{Int}}
-    mask::Union{Nothing, Matrix{Float64}}
+struct SpatialLayout
+    x::Vector{Float64}
+    y::Vector{Float64}
+    js::Vector{Int}
+    is::Vector{Int}
+    mask::Matrix{Float64}
 end
+
+"""Spatial discretization for a set of independent snowpack columns."""
+struct SnowpackGrid{L<:Union{Nothing,SpatialLayout}}
+    ncol::Int
+    layout::L
+end
+
+
+@inline function Base.getproperty(grid::SnowpackGrid, name::Symbol)
+    name === :ncol && return getfield(grid, :ncol)
+    name === :layout && return getfield(grid, :layout)
+    if name in (:x, :y, :js, :is, :mask)
+        layout = getfield(grid, :layout)
+        return isnothing(layout) ? nothing : getfield(layout, name)
+    end
+    return getfield(grid, name)
+end
+
+Base.propertynames(::SnowpackGrid, private::Bool=false) = private ?
+    (:ncol, :layout, :x, :y, :js, :is, :mask) :
+    (:ncol, :x, :y, :js, :is, :mask)
 
 function SnowpackGrid(
     ncol::Integer;
@@ -45,16 +64,15 @@ function SnowpackGrid(
         mask_m = isnothing(mask) ? ones(Float64, length(y_v), length(x_v)) : Matrix{Float64}(mask)
         size(mask_m, 1) == length(y_v) || error("`mask` y-dimension must match `y`.")
         size(mask_m, 2) == length(x_v) || error("`mask` x-dimension must match `x`.")
-        return SnowpackGrid(Int(ncol), x_v, y_v, js_v, is_v, mask_m)
+        return SnowpackGrid(Int(ncol), SpatialLayout(x_v, y_v, js_v, is_v, mask_m))
     end
-    return SnowpackGrid(Int(ncol), nothing, nothing, nothing, nothing, nothing)
+    return SnowpackGrid(Int(ncol), nothing)
 end
 
 ncols(grid::SnowpackGrid) = grid.ncol
 
-has_spatial_coords(grid::SnowpackGrid) =
-    !isnothing(grid.x) && !isnothing(grid.y) && !isnothing(grid.js) &&
-    !isnothing(grid.is) && !isnothing(grid.mask)
+has_spatial_coords(::SnowpackGrid{Nothing}) = false
+has_spatial_coords(::SnowpackGrid{SpatialLayout}) = true
 
 @inline function _validate_mass_partition(mass_max, mass_split, mass_min)
     mass_split < mass_max || error("`mass_split` must be smaller than `mass_max`.")

@@ -7,7 +7,7 @@ CurrentModule = Chion
 The supported public workflow is:
 
 1. build a `SnowpackGrid`
-2. build `BESSIModel` or `PDDModel`
+2. build `BESSIModel`, `PDDModel`, or `ITMModel`
 3. build `SnowpackForcing`
 4. build `Simulation`
 5. call `run!`
@@ -38,6 +38,13 @@ bulk snow reservoir with configurable `ddf_snow`, `ddf_ice`,
 temperature; `pdd_method=:pism` applies the Calov-Greve expectation integral
 at every timestep.
 
+`ITMModel` ports the Fortran insolation-temperature-melt scheme. It requires
+explicit `latitude_deg`, `surface_height`, `ice_thickness` (m), and
+`annual_pdd` (K day) in `SnowpackForcing`. `q_sw_net`, when supplied, is its
+insolation driver; otherwise ITM uses `shortwave_down`. It preserves the
+Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
+`runoff`, `refreezing`) and cumulative `mmWE` fields.
+
 ## Input Units
 
 `SnowpackForcing` accepts either model-native fields or user-facing fields:
@@ -47,6 +54,8 @@ at every timestep.
 - `air_temperature_c`, `snowfall_mm_day`, and `rainfall_mm_day` are converted
   to native units.
 - `shortwave_down` is always `W m^-2`.
+- `ice_thickness` is metres and `annual_pdd` is K day; both are required by
+  `ITMModel`.
 - scalar and time-vector forcing values are broadcast over columns.
 
 `load_forcing_file` can select spatial columns directly with `mask_name` and
@@ -66,6 +75,9 @@ For `PDDModel`, `:all` writes `snowpack_swe`, `smb_ice`, `runoff`, and
 `pdd_sum` every forcing step. `:monthly` writes month-end snowpack SWE and
 monthly changes in the three cumulative fields. Monthly output for both models
 is buffered and written to NetCDF in chunks after stepping.
+
+For `ITMModel`, `:all` writes its Fortran-compatible state and budget fields
+at every forcing step. `:monthly` writes month-end snapshots of those fields.
 
 NetCDF outputs include an unlimited, CF-style `t` record coordinate in days
 since `1970-01-01 00:00:00`, using the `proleptic_gregorian` calendar. Full-state output
@@ -88,11 +100,13 @@ SnowpackGrid
 SnowpackForcing
 BESSIModel
 PDDModel
+ITMModel
 Simulation
 RunOptions
 SimulationResult
 BESSIState
 PDDState
+ITMState
 initial_state
 init_integrator
 SimulationIntegrator

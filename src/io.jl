@@ -1,46 +1,52 @@
 # Output grids, NetCDF schema, and output helpers for Simulation runs.
 
-const NETCDF_METADATA = Dict{Symbol, NamedTuple}(
-    :thickness => (name="thickness", long_name="Snow thickness", units="m"),
-    :wet_mass => (name="wet_mass", long_name="Snow wet mass", units="mmWE"),
-    :bulk_density => (name="bulk_density", long_name="Bulk snow density", units="kg m-3"),
-    :liquid_water => (name="liquid_water", long_name="Liquid water mass", units="kg m-2"),
-    :mass_base => (name="mass_base", long_name="Firn mass exported to the ice model", units="mmWE"),
-    :smb_ice => (name="smb_ice", long_name="Net mass forcing to the ice sheet", units="mmWE"),
-    :runoff => (name="runoff", long_name="Cumulative runoff", units="mmWE"),
-    :melt => (name="melt", long_name="Cumulative melt", units="mmWE"),
-    :refreezing => (name="refreezing", long_name="Cumulative refreezing", units="mmWE"),
-    :sublimation => (name="sublimation", long_name="Cumulative sublimation", units="mmWE"),
-    :latent_heat_flux => (name="latent_heat_flux", long_name="Monthly mean turbulent latent heat flux", units="W m-2"),
-    :latent_heat_flux_sum => (name="latent_heat_flux_sum", long_name="Integrated turbulent latent heat flux", units="W m-2"),
-    :Tsrf => (name="Tsrf", long_name="Surface temperature", units="K"),
-    :albedo => (name="albedo", long_name="Surface albedo", units="1"),
-    :snow_age_days => (name="snow_age_days", long_name="Time since the latest snowfall event", units="day"),
-    :N => (name="N", long_name="Number of active snow layers", units="1"),
-    :mass => (name="mass", long_name="Layer snow mass", units="kg m-2"),
-    :mass_w => (name="mass_w", long_name="Layer liquid-water mass", units="kg m-2"),
-    :density => (name="density", long_name="Layer density", units="kg m-3"),
-    :temperature => (name="temperature", long_name="Layer temperature", units="K"),
-    :snowpack_swe => (name="snowpack_swe", long_name="Snowpack water equivalent", units="mmWE"),
-    :pdd_sum => (name="pdd_sum", long_name="Cumulative positive degree days", units="degC day"),
-    :H_snow => (name="H_snow", long_name="ITM snowpack water equivalent", units="mmWE"),
-    :smb => (name="smb", long_name="ITM total surface mass balance rate", units="mmWE day-1"),
-    :smbi => (name="smbi", long_name="ITM ice-facing mass balance rate", units="mmWE day-1"),
-    :melt_net => (name="melt_net", long_name="ITM net melt rate", units="mmWE day-1"),
-    :smb_cum => (name="smb_cum", long_name="ITM cumulative surface mass balance", units="mmWE"),
-    :melt_cum => (name="melt_cum", long_name="ITM cumulative melt", units="mmWE"),
-    :runoff_cum => (name="runoff_cum", long_name="ITM cumulative runoff", units="mmWE"),
-    :refreezing_cum => (name="refreezing_cum", long_name="ITM cumulative refreezing", units="mmWE"),
-    :alb_s => (name="alb_s", long_name="ITM surface albedo", units="1"),
+struct OutputMetadata
+    name::String
+    long_name::String
+    units::String
+end
+
+const NETCDF_METADATA = Dict{Symbol, OutputMetadata}(
+    :thickness => OutputMetadata("thickness", "Snow thickness", "m"),
+    :wet_mass => OutputMetadata("wet_mass", "Snow wet mass", "mmWE"),
+    :bulk_density => OutputMetadata("bulk_density", "Bulk snow density", "kg m-3"),
+    :liquid_water => OutputMetadata("liquid_water", "Liquid water mass", "kg m-2"),
+    :mass_base => OutputMetadata("mass_base", "Firn mass exported to the ice model", "mmWE"),
+    :smb_ice => OutputMetadata("smb_ice", "Net mass forcing to the ice sheet", "mmWE"),
+    :runoff => OutputMetadata("runoff", "Cumulative runoff", "mmWE"),
+    :melt => OutputMetadata("melt", "Cumulative melt", "mmWE"),
+    :refreezing => OutputMetadata("refreezing", "Cumulative refreezing", "mmWE"),
+    :sublimation => OutputMetadata("sublimation", "Cumulative sublimation", "mmWE"),
+    :latent_heat_flux => OutputMetadata("latent_heat_flux", "Monthly mean turbulent latent heat flux", "W m-2"),
+    :latent_heat_flux_sum => OutputMetadata("latent_heat_flux_sum", "Integrated turbulent latent heat flux", "W m-2"),
+    :Tsrf => OutputMetadata("Tsrf", "Surface temperature", "K"),
+    :albedo => OutputMetadata("albedo", "Surface albedo", "1"),
+    :snow_age_days => OutputMetadata("snow_age_days", "Time since the latest snowfall event", "day"),
+    :N => OutputMetadata("N", "Number of active snow layers", "1"),
+    :mass => OutputMetadata("mass", "Layer snow mass", "kg m-2"),
+    :mass_w => OutputMetadata("mass_w", "Layer liquid-water mass", "kg m-2"),
+    :density => OutputMetadata("density", "Layer density", "kg m-3"),
+    :temperature => OutputMetadata("temperature", "Layer temperature", "K"),
+    :snowpack_swe => OutputMetadata("snowpack_swe", "Snowpack water equivalent", "mmWE"),
+    :pdd_sum => OutputMetadata("pdd_sum", "Cumulative positive degree days", "degC day"),
+    :H_snow => OutputMetadata("H_snow", "ITM snowpack water equivalent", "mmWE"),
+    :smb => OutputMetadata("smb", "ITM total surface mass balance rate", "mmWE day-1"),
+    :smbi => OutputMetadata("smbi", "ITM ice-facing mass balance rate", "mmWE day-1"),
+    :melt_net => OutputMetadata("melt_net", "ITM net melt rate", "mmWE day-1"),
+    :smb_cum => OutputMetadata("smb_cum", "ITM cumulative surface mass balance", "mmWE"),
+    :melt_cum => OutputMetadata("melt_cum", "ITM cumulative melt", "mmWE"),
+    :runoff_cum => OutputMetadata("runoff_cum", "ITM cumulative runoff", "mmWE"),
+    :refreezing_cum => OutputMetadata("refreezing_cum", "ITM cumulative refreezing", "mmWE"),
+    :alb_s => OutputMetadata("alb_s", "ITM surface albedo", "1"),
 )
 
-const DEFAULT_STATE_OUTPUT_VARS = [:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo]
-const STATE_FIELD_OUTPUT_VARS = [:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_age_days]
-const MONTHLY_OUTPUT_VARS = [:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo]
-const NETCDF_VARIABLES = unique(vcat(DEFAULT_STATE_OUTPUT_VARS, STATE_FIELD_OUTPUT_VARS))
-const PDD_OUTPUT_VARS = [:snowpack_swe, :smb_ice, :runoff, :pdd_sum]
-const ITM_OUTPUT_VARS = [:H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf, :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum]
-const ALL_OUTPUT_VARS = unique(vcat(NETCDF_VARIABLES, MONTHLY_OUTPUT_VARS, PDD_OUTPUT_VARS, ITM_OUTPUT_VARS))
+const DEFAULT_STATE_OUTPUT_VARS = (:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo)
+const STATE_FIELD_OUTPUT_VARS = (:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_age_days)
+const MONTHLY_OUTPUT_VARS = (:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
+const NETCDF_VARIABLES = (DEFAULT_STATE_OUTPUT_VARS..., STATE_FIELD_OUTPUT_VARS...)
+const PDD_OUTPUT_VARS = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
+const ITM_OUTPUT_VARS = (:H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf, :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum)
+const ALL_OUTPUT_VARS = Tuple(unique((NETCDF_VARIABLES..., MONTHLY_OUTPUT_VARS..., PDD_OUTPUT_VARS..., ITM_OUTPUT_VARS...)))
 
 output_variables(::BESSIModel) = NETCDF_VARIABLES
 output_variables(::PDDModel) = PDD_OUTPUT_VARS
@@ -48,8 +54,7 @@ output_variables(::ITMModel) = ITM_OUTPUT_VARS
 monthly_output_variables(::BESSIModel) = MONTHLY_OUTPUT_VARS
 monthly_output_variables(::PDDModel) = PDD_OUTPUT_VARS
 monthly_output_variables(::ITMModel) = ITM_OUTPUT_VARS
-supports_monthly_output(::Union{BESSIModel, PDDModel}) = true
-supports_monthly_output(::ITMModel) = true
+supports_monthly_output(::AbstractSnowModel) = true
 
 @inline _grid_shape(layout) = size(layout.mask)
 
@@ -72,8 +77,6 @@ struct NetCDFOutput
     buffer_layer_float::Array{Float32, 3}
     buffer_time_point_float::Array{Float32, 3}
 end
-
-_meta_value(meta, key::Symbol, default) = hasproperty(meta, key) ? getproperty(meta, key) : default
 
 function state_output_vars(model, selected)
     isempty(selected) && return Symbol[]
@@ -104,7 +107,7 @@ function init_state_netcdf(
     record_time_values::Vector{DateTime},
     layout,
     state,
-    vars::Vector{Symbol};
+    vars;
     nlayer::Integer=1,
 )
     mkpath(dirname(path))
@@ -136,14 +139,14 @@ function init_state_netcdf(
         values = key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
             getfield(state, :latent_heat_flux_sum) :
             getfield(state, key)
-        meta = get(NETCDF_METADATA, key, (name=String(key), long_name=String(key), units="", integer=eltype(values) <: Integer))
+        meta = get(NETCDF_METADATA, key, OutputMetadata(String(key), String(key), ""))
         if values isa AbstractVector
             # NCDatasets uses Julia column-major dimension order, which is the
             # reverse of the order shown in CDL. Defining (x, y, t) here emits
             # field(t, y, x), with the record dimension first for ncview.
-            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("x", "y", "t"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
+            handles[key] = _def_nc_var(ds, meta.name, ("x", "y", "t"), (key=key, long_name=meta.long_name, units=meta.units, integer=eltype(values) <: Integer))
         elseif values isa AbstractMatrix
-            handles[key] = _def_nc_var(ds, String(_meta_value(meta, :name, String(key))), ("x", "y", "layer", "t"), (key=key, long_name=_meta_value(meta, :long_name, String(key)), units=_meta_value(meta, :units, ""), integer=eltype(values) <: Integer))
+            handles[key] = _def_nc_var(ds, meta.name, ("x", "y", "layer", "t"), (key=key, long_name=meta.long_name, units=meta.units, integer=eltype(values) <: Integer))
         end
     end
     time_var[1:ntime] = _netcdf_time_days.(record_time_values)
@@ -179,7 +182,7 @@ function resolve_netcdf_path(options)
 end
 
 function normalize_netcdf_variables(spec)
-    if spec isa AbstractVector
+    if spec isa Union{AbstractVector, Tuple}
         tokens = String[string(x) for x in spec]
     else
         text = lowercase(strip(String(spec)))

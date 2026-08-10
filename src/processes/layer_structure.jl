@@ -70,7 +70,8 @@ function _split_surface_layer!(
     new_n = _n_active(N_storage, idx) + 1
     _set_n_active!(N_storage, idx, new_n)
 
-    @inbounds for layer_index in new_n:-1:3
+    @inbounds for offset in Base.OneTo(max(new_n - 2, 0))
+        layer_index = new_n - offset + 1
         _set_layer!(mass, layer_index, idx, _get_layer(mass, layer_index - 1, idx))
         _set_layer!(mass_w, layer_index, idx, _get_layer(mass_w, layer_index - 1, idx))
         _set_layer!(density, layer_index, idx, _get_layer(density, layer_index - 1, idx))
@@ -473,7 +474,9 @@ function _enforce_snow_depth_cap!(
     if excess_depth > zero(excess_depth)
         excess_basal_mass = zero(eltype(mass))
         remaining_excess_depth = excess_depth
-        @inbounds for layer_index in _n_active(N_storage, idx):-1:1
+        n_active = _n_active(N_storage, idx)
+        @inbounds for offset in Base.OneTo(n_active)
+            layer_index = n_active - offset + 1
             layer_mass = _get_layer(mass, layer_index, idx)
             layer_density = _get_layer(density, layer_index, idx)
             if layer_mass <= zero(layer_mass)
