@@ -316,60 +316,40 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.wind_speed,
     )
 
-    initialize_surface_temperature =
-        (forcing.snowfall_rate > zero(dt_seconds)) &
-        started_without_surface_snow &
-        (_n_active(N_storage, idx) > 0)
-    previous_surface_temperature = _get_layer(temperature, 1, idx)
-    _set_layer!(
-        temperature,
-        1,
-        idx,
-        ifelse(initialize_surface_temperature, forcing.air_temperature, previous_surface_temperature),
-    )
+    if forcing.snowfall_rate > zero(dt_seconds) &&
+       started_without_surface_snow &&
+       _n_active(N_storage, idx) > 0
+        _set_layer!(temperature, 1, idx, forcing.air_temperature)
+    end
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
-    bare_ice = !has_surface_snow
-    bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
-    rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
-    bare_net_mass = ifelse(bare_ice, bare_ice_fluxes.net_mass_change, zero(dt_seconds))
-    bare_melt_mass = ifelse(bare_ice, bare_ice_fluxes.melt_mass, zero(dt_seconds))
-    bare_runoff_mass = ifelse(
-        bare_ice,
-        rainfall_mass + bare_ice_fluxes.melt_mass,
-        zero(dt_seconds),
-    )
-    bare_vapor_mass = ifelse(bare_ice, bare_ice_fluxes.vapor_mass, zero(dt_seconds))
-    bare_sublimation_mass = ifelse(bare_ice, bare_ice_fluxes.sublimation_mass, zero(dt_seconds))
-    bare_latent_heat_flux = ifelse(bare_ice, bare_ice_fluxes.latent_heat_flux, zero(dt_seconds))
-    _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_net_mass)
-    _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_melt_mass)
-    _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + bare_runoff_mass)
-    _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_vapor_mass)
-    _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_sublimation_mass)
-    _set_scalar!(
-        latent_heat_flux_sum,
-        idx,
-        _get_scalar(latent_heat_flux_sum, idx) + bare_latent_heat_flux * forcing.dt_days,
-    )
+    if !has_surface_snow
+        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
+        use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
+        rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
+        _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
+        _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + rainfall_mass + bare_ice_fluxes.melt_mass)
+        _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + bare_ice_fluxes.vapor_mass)
+        _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + bare_ice_fluxes.sublimation_mass)
+        _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + bare_ice_fluxes.latent_heat_flux * forcing.dt_days)
+        return nothing
+    end
 
-    if _uses_aging_albedo(c)
-        diagnosed_albedo = _update_aging_surface_albedo_arrays!(
+    if use_prescribed_albedo
+        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    elseif _uses_aging_albedo(c)
+        _update_aging_surface_albedo_arrays!(
             N_storage, mass, temperature, albedo_dynamic, snow_age_days,
             idx, c, forcing.snowfall_rate, forcing.dt_days,
         )
     else
-        diagnosed_albedo = _update_surface_albedo_arrays!(
+        _update_surface_albedo_arrays!(
             N_storage, mass, mass_w, density, temperature, albedo_dynamic,
             idx, c, forcing.dt_days,
         )
     end
-    prescribed_albedo = _prescribed_surface_albedo(forcing)
-    _set_scalar!(
-        albedo_dynamic,
-        idx,
-        ifelse(use_prescribed_albedo, prescribed_albedo, diagnosed_albedo),
-    )
 
     densification_tag = _densification_tag(c)
     n_liquid_water_before_energy = _copy_liquid_water_for_compaction!(
@@ -380,8 +360,7 @@ Base.@propagate_inbounds function column_step_core!(
         idx,
     )
 
-    accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) +
-                        ifelse(has_surface_snow, forcing.rainfall_rate, zero(dt_seconds))
+    accumulation_rate = max(forcing.snowfall_rate, zero(dt_seconds)) + forcing.rainfall_rate
     _go_densification!(
         N_storage,
         mass,
@@ -512,14 +491,11 @@ Base.@propagate_inbounds function column_step_core!(
     _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
 
     final_has_snow = _surface_has_snow(N_storage, mass, idx)
-    final_albedo = ifelse(
-        use_prescribed_albedo,
-        prescribed_albedo,
-        ifelse(final_has_snow, _get_scalar(albedo_dynamic, idx), c.alpha_ice),
-    )
-    _set_scalar!(albedo_dynamic, idx, final_albedo)
-    if _uses_aging_albedo(c) && !final_has_snow
-        _set_scalar!(snow_age_days, idx, zero(dt_seconds))
+    if use_prescribed_albedo
+        _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    elseif !final_has_snow
+        _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
+        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
     end
 
     return nothing
@@ -544,10 +520,12 @@ failures to the BESSI column-process call graph.
     time_index::Int,
 )
     active_idx = @index(Global)
-    @inbounds begin
-        idx = active_indices[active_idx]
-        step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-        column_step!(fields, parameters, idx, step_forcing, config, workspace)
+    if active_idx <= length(active_indices)
+        @inbounds begin
+            idx = active_indices[active_idx]
+            step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+            column_step!(fields, parameters, idx, step_forcing, config, workspace)
+        end
     end
 end
 
@@ -568,11 +546,13 @@ and advances each column independently in-place.
     time_stop::Int,
 )
     active_idx = @index(Global)
-    @inbounds begin
-        idx = active_indices[active_idx]
-        for time_index in time_start:time_stop
-            step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-            column_step!(fields, parameters, idx, step_forcing, config, workspace)
+    if active_idx <= length(active_indices)
+        @inbounds begin
+            idx = active_indices[active_idx]
+            for time_index in time_start:time_stop
+                step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+                column_step!(fields, parameters, idx, step_forcing, config, workspace)
+            end
         end
     end
 end

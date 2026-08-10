@@ -51,6 +51,17 @@ function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
     end
     return dest
 end
+
+# BESSI stores compact forcing fields as a named tuple in its GPU runtime.
+# Keep `sync_forcing!` functional for that representation as well as for the
+# public `SnowpackForcing` container.
+function _copy_forcing!(dest::NamedTuple, src::SnowpackForcing)
+    for name in _FORCING_COPY_FIELD_NAMES
+        _copy_forcing_field!(getproperty(dest, name), getproperty(src, name))
+    end
+    return dest
+end
+
 function _copy_forcing!(dest::PDDForcing, src::SnowpackForcing)
     copyto!(dest.dt_days, src.dt_days)
     _copy_forcing_field!(dest.air_temperature, src.air_temperature)
