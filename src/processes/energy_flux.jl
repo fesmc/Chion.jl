@@ -87,6 +87,47 @@ end
     return constant, linear
 end
 
+# SEMIX uses a neutral aerodynamic transfer coefficient on stable surfaces and
+# a bulk-Richardson enhancement on unstable surfaces (Willeit et al.).
+@inline function _semix_aerodynamic_resistance(c::SnowpackPhysicalConstants, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
+    z0h = z0m / c.semix_zm_to_zh
+    neutral_ch = c.semix_karman^2 /
+                 _safe_positive(log(c.semix_surface_height / z0m) * log(c.semix_surface_height / z0h))
+    wind = max(wind_speed, oftype(wind_speed, 0.1))
+    bulk_richardson = oftype(surface_temperature, 9.80665) * c.semix_surface_height *
+                      (surface_temperature - air_temperature) /
+                      _safe_positive(air_temperature * wind^2)
+    stability_factor = ifelse(
+        bulk_richardson < zero(bulk_richardson),
+        sqrt(max(one(bulk_richardson) - oftype(bulk_richardson, 16) * bulk_richardson, one(bulk_richardson))),
+        one(bulk_richardson),
+    )
+    return one(wind) / _safe_positive(neutral_ch * stability_factor * wind)
+end
+
+@inline _semix_air_density(air_temperature, air_pressure) =
+    air_pressure / _safe_positive(oftype(air_temperature, 287.05) * air_temperature)
+
+@inline function _semix_turbulent_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
+    air_density = _semix_air_density(air_temperature, air_pressure)
+    resistance = _semix_aerodynamic_resistance(c, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
+    sensible_coefficient = air_density * c.cp_air / resistance
+    sensible_constant = sensible_coefficient * air_temperature
+    q_air = oftype(surface_temperature, 0.622) * _relative_humidity_fraction(relative_humidity) *
+            _bessi_ice_saturation_vapor_pressure(air_temperature, c.T0) / _safe_positive(air_pressure)
+    q_surface_pressure = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
+    q_surface = oftype(surface_temperature, 0.622) * q_surface_pressure / _safe_positive(air_pressure)
+    dq_surface = oftype(surface_temperature, 0.622) *
+                 _bessi_ice_saturation_vapor_pressure_derivative(surface_temperature, c.T0, q_surface_pressure) /
+                 _safe_positive(air_pressure)
+    latent_exchange = (c.Lv + c.Lm) * air_density / resistance
+    # SEMIX's l_dew default suppresses condensation/dew onto the surface.
+    latent_active = q_air <= q_surface
+    latent_constant = ifelse(latent_active, latent_exchange * (q_air - q_surface + dq_surface * surface_temperature), zero(surface_temperature))
+    latent_linear = ifelse(latent_active, latent_exchange * dq_surface, zero(surface_temperature))
+    return sensible_constant, sensible_coefficient, latent_constant, latent_linear
+end
+
 """
     shortwave_absorbed(shortwave_down; surface_albedo)
 
@@ -341,6 +382,7 @@ function _go_energy_flux_resolved!(
     use_relative_humidity::Bool,
     relative_humidity,
     air_pressure,
+    wind_speed,
 )
     n_layers = _n_active(N_storage, idx)
     if n_layers <= 0 || _get_layer(mass, 1, idx) <= zero(eltype(mass))
@@ -372,15 +414,27 @@ function _go_energy_flux_resolved!(
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
         shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
-    longwave_flux_constant = use_q_lw_down ?
-        (q_lw_down_value + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth) :
-        (c.σ * (c.ϵ_air * air_temperature^4 + c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth))
+    longwave_down = use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+    longwave_flux_constant = if _uses_semix_seb(c)
+        c.ϵ_snow * (longwave_down + c.σ * oftype(air_temperature, 3.0) * surface_temperature_fourth)
+    else
+        longwave_down + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth
+    end
     longwave_flux_linear = c.σ * c.ϵ_snow * oftype(air_temperature, 4.0) * surface_temperature_cube
-    sensible_heat_flux_constant = use_q_sh ? q_sh_value : air_temperature * c.D_sh
-    sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : c.D_sh
+    semix_sensible_constant, semix_sensible_linear, semix_latent_constant, semix_latent_linear =
+        _semix_turbulent_flux_linearized(
+            previous_surface_temperature, c, air_temperature, relative_humidity,
+            air_pressure, wind_speed, c.semix_z0m_snow,
+        )
+    sensible_heat_flux_constant = use_q_sh ? q_sh_value :
+                                  _uses_semix_seb(c) ? semix_sensible_constant : air_temperature * c.D_sh
+    sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) :
+                                _uses_semix_seb(c) ? semix_sensible_linear : c.D_sh
     turbulent_latent_heat_constant, turbulent_latent_heat_linear = if use_q_lh
         q_lh_value, zero(dt_seconds)
     elseif use_relative_humidity
+        _uses_semix_seb(c) ?
+        (semix_latent_constant, semix_latent_linear) :
         _bessi_latent_vapor_flux_linearized(previous_surface_temperature, c, air_temperature, relative_humidity, air_pressure)
     else
         zero(dt_seconds), zero(dt_seconds)
@@ -575,5 +629,6 @@ function go_energy_flux!(
         false,
         zero(dt_seconds),
         oftype(dt_seconds, 101_325.0),
+        oftype(dt_seconds, 5),
     )
 end

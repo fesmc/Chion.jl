@@ -287,6 +287,7 @@ Base.@propagate_inbounds function column_step_core!(
     albedo_dynamic = fields.albedo
     c = parameters.c
     snow_age_days = fields.snow_age_days
+    w_snow_max = fields.w_snow_max
 
     dt_seconds = forcing.dt_days * c.seconds_per_day
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
@@ -339,6 +340,11 @@ Base.@propagate_inbounds function column_step_core!(
 
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
+    elseif _uses_semix_albedo(c)
+        _update_semix_surface_albedo!(
+            N_storage, mass, mass_w, temperature, albedo_dynamic, w_snow_max,
+            idx, c, forcing.snowfall_rate, forcing,
+        )
     elseif _uses_aging_albedo(c)
         _update_aging_surface_albedo_arrays!(
             N_storage, mass, temperature, albedo_dynamic, snow_age_days,
@@ -406,6 +412,7 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.has_relative_humidity,
         forcing.relative_humidity,
         forcing.air_pressure,
+        forcing.wind_speed,
     )
 
     snow_vapor_fluxes = _apply_snow_surface_vapor_mass_flux!(

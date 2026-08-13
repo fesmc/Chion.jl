@@ -212,6 +212,11 @@ function load_forcing_file(
     surface_height_name::Union{Nothing, AbstractString}="SH",
     air_pressure_temperature_mode=:annual_mean,
     prescribed_albedo_name::Union{Nothing, AbstractString}=nothing,
+    coszm_name::Union{Nothing, AbstractString}=nothing,
+    cloud_name::Union{Nothing, AbstractString}=nothing,
+    dust_deposition_name::Union{Nothing, AbstractString}=nothing,
+    z_sur_std_name::Union{Nothing, AbstractString}=nothing,
+    prescribed_ice_albedo_name::Union{Nothing, AbstractString}=nothing,
     latitude_name::Union{Nothing, AbstractString}="LAT",
     mask_name::Union{Nothing, AbstractString}=nothing,
     mask_threshold::Real=0.0,
@@ -283,6 +288,11 @@ function load_forcing_file(
         prescribed_albedo_m, has_prescribed_albedo_m = _read_optional_finite_field(
             ds, prescribed_albedo_name, ntime, ny, nx,
         )
+        coszm_m, has_coszm_m = _read_optional_finite_field(ds, coszm_name, ntime, ny, nx)
+        cloud_m, has_cloud_m = _read_optional_finite_field(ds, cloud_name, ntime, ny, nx)
+        dust_deposition_m, has_dust_deposition_m = _read_optional_finite_field(ds, dust_deposition_name, ntime, ny, nx)
+        z_sur_std_m, has_z_sur_std_m = _read_optional_finite_field(ds, z_sur_std_name, ntime, ny, nx)
+        prescribed_ice_albedo_m, has_prescribed_ice_albedo_m = _read_optional_finite_field(ds, prescribed_ice_albedo_name, ntime, ny, nx)
 
         snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
         rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
@@ -324,6 +334,11 @@ function load_forcing_file(
             air_pressure=select_columns(air_pressure_m),
             prescribed_albedo=select_columns(prescribed_albedo_m),
             has_prescribed_albedo=select_columns(has_prescribed_albedo_m),
+            coszm=select_columns(coszm_m), has_coszm=select_columns(has_coszm_m),
+            cloud=select_columns(cloud_m), has_cloud=select_columns(has_cloud_m),
+            dust_deposition=select_columns(dust_deposition_m), has_dust_deposition=select_columns(has_dust_deposition_m),
+            z_sur_std=select_columns(z_sur_std_m), has_z_sur_std=select_columns(has_z_sur_std_m),
+            prescribed_ice_albedo=select_columns(prescribed_ice_albedo_m), has_prescribed_ice_albedo=select_columns(has_prescribed_ice_albedo_m),
             latitude_deg=isnothing(latitude_deg) || isnothing(mask_name) ? latitude_deg : latitude_deg[rows],
         )
         return (grid=grid, forcing=forcing)

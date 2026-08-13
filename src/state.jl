@@ -62,6 +62,7 @@ struct BESSIState{
     Tsrf::VT
     albedo::VT
     snow_age_days::VT
+    w_snow_max::VT
     thickness::VT
     wet_mass::VT
     bulk_density::VT
@@ -97,6 +98,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     :Tsrf,
     :albedo,
     :snow_age_days,
+    :w_snow_max,
     :thickness,
     :wet_mass,
     :bulk_density,
@@ -129,6 +131,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
         fields.Tsrf[idx] = surface_temperature_init
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)
+        fields.w_snow_max[idx] = zero(density_init)
         fields.thickness[idx] = zero(density_init)
         fields.wet_mass[idx] = zero(density_init)
         fields.bulk_density[idx] = zero(density_init)
@@ -176,6 +179,7 @@ function BESSIState(model::BESSIModel)
         Matrix{NF}(undef, model.Ntot, ncol),
         Matrix{NF}(undef, model.Ntot, ncol),
         Matrix{NF}(undef, model.Ntot, ncol),
+        Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),

@@ -317,6 +317,11 @@ const _FORCING_OPTIONAL_FIELD_NAMES = (
     :q_lh,
     :relative_humidity,
     :prescribed_albedo,
+    :coszm,
+    :cloud,
+    :dust_deposition,
+    :z_sur_std,
+    :prescribed_ice_albedo,
 )
 const _FORCING_AVAILABILITY_TO_FIELD = (
     has_q_sw_net=:q_sw_net,
@@ -325,6 +330,11 @@ const _FORCING_AVAILABILITY_TO_FIELD = (
     has_q_lh=:q_lh,
     has_relative_humidity=:relative_humidity,
     has_prescribed_albedo=:prescribed_albedo,
+    has_coszm=:coszm,
+    has_cloud=:cloud,
+    has_dust_deposition=:dust_deposition,
+    has_z_sur_std=:z_sur_std,
+    has_prescribed_ice_albedo=:prescribed_ice_albedo,
 )
 
 @generated function _forcing_field_property(fields::NamedTuple, ::Val{Name}) where {Name}
@@ -374,6 +384,16 @@ const _FORCING_MATRIX_FIELD_NAMES = (
     :air_pressure,
     :prescribed_albedo,
     :has_prescribed_albedo,
+    :coszm,
+    :has_coszm,
+    :cloud,
+    :has_cloud,
+    :dust_deposition,
+    :has_dust_deposition,
+    :z_sur_std,
+    :has_z_sur_std,
+    :prescribed_ice_albedo,
+    :has_prescribed_ice_albedo,
 )
 
 const _FORCING_COPY_FIELD_NAMES = (
@@ -421,6 +441,16 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     air_pressure::NF
     prescribed_albedo::NF
     has_prescribed_albedo::Bool
+    coszm::NF
+    has_coszm::Bool
+    cloud::NF
+    has_cloud::Bool
+    dust_deposition::NF
+    has_dust_deposition::Bool
+    z_sur_std::NF
+    has_z_sur_std::Bool
+    prescribed_ice_albedo::NF
+    has_prescribed_ice_albedo::Bool
     latitude_deg::NF
     day_of_year::NF
     solar_longitude_deg::NF
@@ -446,6 +476,11 @@ function SnowpackStepForcing(
     air_pressure=oftype(air_temperature, 101_325.0),
     prescribed_albedo=zero(air_temperature),
     has_prescribed_albedo::Bool=false,
+    coszm=zero(air_temperature), has_coszm::Bool=false,
+    cloud=zero(air_temperature), has_cloud::Bool=false,
+    dust_deposition=zero(air_temperature), has_dust_deposition::Bool=false,
+    z_sur_std=zero(air_temperature), has_z_sur_std::Bool=false,
+    prescribed_ice_albedo=zero(air_temperature), has_prescribed_ice_albedo::Bool=false,
     latitude_deg=zero(air_temperature),
     day_of_year=zero(air_temperature),
     solar_longitude_deg=_solar_longitude_deg_from_calendar_day(day_of_year),
@@ -470,6 +505,8 @@ function SnowpackStepForcing(
         air_pressure,
         prescribed_albedo,
         has_prescribed_albedo,
+        coszm, has_coszm, cloud, has_cloud, dust_deposition, has_dust_deposition,
+        z_sur_std, has_z_sur_std, prescribed_ice_albedo, has_prescribed_ice_albedo,
         latitude_deg,
         day_of_year,
         solar_longitude_deg,
@@ -505,6 +542,11 @@ Base.@propagate_inbounds function _step_forcing_at(forcing, idx::Int, time_index
             air_pressure=forcing.air_pressure[idx, time_index],
             prescribed_albedo=forcing.prescribed_albedo[idx, time_index],
             has_prescribed_albedo=forcing.has_prescribed_albedo[idx, time_index],
+            coszm=forcing.coszm[idx, time_index], has_coszm=forcing.has_coszm[idx, time_index],
+            cloud=forcing.cloud[idx, time_index], has_cloud=forcing.has_cloud[idx, time_index],
+            dust_deposition=forcing.dust_deposition[idx, time_index], has_dust_deposition=forcing.has_dust_deposition[idx, time_index],
+            z_sur_std=forcing.z_sur_std[idx, time_index], has_z_sur_std=forcing.has_z_sur_std[idx, time_index],
+            prescribed_ice_albedo=forcing.prescribed_ice_albedo[idx, time_index], has_prescribed_ice_albedo=forcing.has_prescribed_ice_albedo[idx, time_index],
             latitude_deg=forcing.latitude_deg[idx, time_index],
             day_of_year=forcing.day_of_year[time_index],
             solar_longitude_deg=forcing.solar_longitude_deg[time_index],
@@ -553,6 +595,11 @@ function SnowpackForcing(;
     prescribed_albedo=nothing,
     has_prescribed_albedo=nothing,
     latitude_deg=nothing,
+    coszm=nothing, has_coszm=nothing,
+    cloud=nothing, has_cloud=nothing,
+    dust_deposition=nothing, has_dust_deposition=nothing,
+    z_sur_std=nothing, has_z_sur_std=nothing,
+    prescribed_ice_albedo=nothing, has_prescribed_ice_albedo=nothing,
     time_values=nothing,
 )
     has_native = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
@@ -666,6 +713,11 @@ function SnowpackForcing(;
     prescribed_albedo_m, has_prescribed_albedo_m = _optional_forcing_field(
         prescribed_albedo, has_prescribed_albedo, 0.0, dims, column_count, ntime, "prescribed_albedo",
     )
+    coszm_m, has_coszm_m = _optional_forcing_field(coszm, has_coszm, 0.0, dims, column_count, ntime, "coszm")
+    cloud_m, has_cloud_m = _optional_forcing_field(cloud, has_cloud, 0.0, dims, column_count, ntime, "cloud")
+    dust_deposition_m, has_dust_deposition_m = _optional_forcing_field(dust_deposition, has_dust_deposition, 0.0, dims, column_count, ntime, "dust_deposition")
+    z_sur_std_m, has_z_sur_std_m = _optional_forcing_field(z_sur_std, has_z_sur_std, 0.0, dims, column_count, ntime, "z_sur_std")
+    prescribed_ice_albedo_m, has_prescribed_ice_albedo_m = _optional_forcing_field(prescribed_ice_albedo, has_prescribed_ice_albedo, 0.0, dims, column_count, ntime, "prescribed_ice_albedo")
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
@@ -689,6 +741,11 @@ function SnowpackForcing(;
         ("air_pressure", air_pressure_m),
         ("prescribed_albedo", prescribed_albedo_m),
         ("has_prescribed_albedo", has_prescribed_albedo_m),
+        ("coszm", coszm_m), ("has_coszm", has_coszm_m),
+        ("cloud", cloud_m), ("has_cloud", has_cloud_m),
+        ("dust_deposition", dust_deposition_m), ("has_dust_deposition", has_dust_deposition_m),
+        ("z_sur_std", z_sur_std_m), ("has_z_sur_std", has_z_sur_std_m),
+        ("prescribed_ice_albedo", prescribed_ice_albedo_m), ("has_prescribed_ice_albedo", has_prescribed_ice_albedo_m),
     )
         _ensure_matching_field_sizes(dims, name, field)
     end
@@ -719,6 +776,11 @@ function SnowpackForcing(;
         annual_pdd=annual_pdd_m,
         air_pressure=air_pressure_m,
         prescribed_albedo=OptionalForcingField(prescribed_albedo_m, has_prescribed_albedo_m),
+        coszm=OptionalForcingField(coszm_m, has_coszm_m),
+        cloud=OptionalForcingField(cloud_m, has_cloud_m),
+        dust_deposition=OptionalForcingField(dust_deposition_m, has_dust_deposition_m),
+        z_sur_std=OptionalForcingField(z_sur_std_m, has_z_sur_std_m),
+        prescribed_ice_albedo=OptionalForcingField(prescribed_ice_albedo_m, has_prescribed_ice_albedo_m),
     )
     return SnowpackForcing(calendar, fields)
 end

@@ -32,13 +32,26 @@ surface-flux units.
     use_relative_humidity::Bool,
     relative_humidity,
     air_pressure,
+    wind_speed,
+    z0m,
+    emissivity,
 )
-    longwave_flux = use_q_lw_down ?
-        q_lw_down_value - c.σ * c.ϵ_snow * surface_temperature^4 :
-        c.σ * (c.ϵ_air * air_temperature^4 - c.ϵ_snow * surface_temperature^4)
-    sensible_heat_flux = use_q_sh ? q_sh_value : c.D_sh * (air_temperature - surface_temperature)
+    longwave_down = use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+    longwave_flux = _uses_semix_seb(c) ?
+        emissivity * (longwave_down - c.σ * surface_temperature^4) :
+        longwave_down - c.σ * c.ϵ_snow * surface_temperature^4
+    semix_sensible_constant, semix_sensible_linear, semix_latent_constant, semix_latent_linear =
+        _semix_turbulent_flux_linearized(
+            surface_temperature, c, air_temperature, relative_humidity,
+            air_pressure, wind_speed, z0m,
+        )
+    sensible_heat_flux = use_q_sh ? q_sh_value :
+                         _uses_semix_seb(c) ? semix_sensible_constant - semix_sensible_linear * surface_temperature :
+                         c.D_sh * (air_temperature - surface_temperature)
     latent_heat_flux = use_q_lh ? q_lh_value :
-                       use_relative_humidity ? _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure) :
+                       use_relative_humidity ?
+                       (_uses_semix_seb(c) ? semix_latent_constant - semix_latent_linear * surface_temperature :
+                        _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)) :
                        zero(dt_seconds)
     rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
     return longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux
@@ -67,6 +80,7 @@ energy.
     use_relative_humidity::Bool,
     relative_humidity,
     air_pressure,
+    wind_speed,
     surface_albedo,
 )
     absorbed_shortwave = use_q_sw_net ?
@@ -90,6 +104,9 @@ energy.
             use_relative_humidity,
             relative_humidity,
             air_pressure,
+            wind_speed,
+            c.semix_z0m_ice,
+            c.eps_ice,
         )...,
     )
 end
@@ -118,6 +135,7 @@ function _bare_ice_surface_mass_fluxes_resolved(
     use_relative_humidity::Bool,
     relative_humidity,
     air_pressure,
+    wind_speed,
     surface_albedo,
 )
     absorbed_shortwave, longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
@@ -138,8 +156,9 @@ function _bare_ice_surface_mass_fluxes_resolved(
             use_relative_humidity,
             relative_humidity,
             air_pressure,
+            wind_speed,
             surface_albedo,
-    )
+        )
     net_surface_flux = absorbed_shortwave + longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
     melt_mass = max(net_surface_flux, zero(net_surface_flux)) * dt_seconds / c.Lm
     vapor_mass = latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
@@ -178,6 +197,9 @@ function _bare_ice_ablation_mass(
         forcing.has_relative_humidity,
         forcing.relative_humidity,
         forcing.air_pressure,
+        forcing.wind_speed,
+        _uses_semix_albedo(c) && forcing.has_prescribed_ice_albedo ?
+            clamp(forcing.prescribed_ice_albedo, zero(forcing.prescribed_ice_albedo), one(forcing.prescribed_ice_albedo)) :
         _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo ?
             _prescribed_surface_albedo(forcing) :
             c.alpha_ice,
@@ -193,10 +215,20 @@ end
     use_relative_humidity::Bool,
     relative_humidity,
     air_pressure,
+    wind_speed,
 )
-    return use_q_lh ? q_lh_value :
-           use_relative_humidity ? _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure) :
-           zero(surface_temperature)
+    if use_q_lh
+        return q_lh_value
+    elseif !use_relative_humidity
+        return zero(surface_temperature)
+    elseif _uses_semix_seb(c)
+        _, _, latent_constant, latent_linear = _semix_turbulent_flux_linearized(
+            surface_temperature, c, air_temperature, relative_humidity,
+            air_pressure, wind_speed, c.semix_z0m_snow,
+        )
+        return latent_constant - latent_linear * surface_temperature
+    end
+    return _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
 end
 
 """
@@ -237,6 +269,7 @@ function _apply_snow_surface_vapor_mass_flux!(
         forcing.has_relative_humidity,
         forcing.relative_humidity,
         forcing.air_pressure,
+        forcing.wind_speed,
     )
     if latent_heat_flux == zero(latent_heat_flux)
         return _surface_vapor_fluxes(zero(latent_heat_flux), latent_heat_flux)

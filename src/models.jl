@@ -5,7 +5,7 @@ Model definitions exposed by Chion's simulation-first API.
 abstract type AbstractSnowModel end
 
 """Immutable BESSI configuration shared by the model and its state containers.
-Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, and `:aging`.
+Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, `:aging`, and `:semix`.
 """
 struct BESSIParameters{C <: SnowpackPhysicalConstants}
     c::C
@@ -24,7 +24,7 @@ end
 const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_temperature_cycle)
 
 """
-    BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
+    BESSIModel(grid; albedo=:aging, seb_scheme=:bessi, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
 `BESSIState` and owned by `Simulation.now`.
@@ -57,7 +57,8 @@ end
 
 function BESSIModel(
     grid::SnowpackGrid;
-    albedo::Symbol=:dynamic,
+    albedo::Symbol=:aging,
+    seb_scheme::Symbol=:bessi,
     densification::Symbol=:bessi,
     fresh_snow_density::Symbol=:constant,
     Ntot::Int=DEFAULT_NTOT,
@@ -83,6 +84,7 @@ function BESSIModel(
     c = SnowpackPhysicalConstants(
         Float64;
         albedo_scheme=albedo,
+        seb_scheme=seb_scheme,
         low_density_densification=densification,
         fresh_snow_density_scheme=fresh_snow_density,
         kwargs...,
