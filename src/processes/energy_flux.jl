@@ -142,8 +142,12 @@ end
 @inline shortwave_absorbed(shortwave_down, surface_albedo) =
     (one(shortwave_down) - clamp(surface_albedo, zero(surface_albedo), one(surface_albedo))) * shortwave_down
 
-@inline interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ) =
-    (Kᵢ * Δzᵢ + Kⱼ * Δzⱼ) / _safe_positive((Δzᵢ + Δzⱼ)^2)
+@inline function interface_conductance(Kᵢ, Δzᵢ, Kⱼ, Δzⱼ)
+    # Thermal resistances over the two half layers are in series:
+    # G = 1 / (Δzᵢ / (2Kᵢ) + Δzⱼ / (2Kⱼ)).
+    return oftype(Kᵢ, 2.0) * Kᵢ * Kⱼ /
+           _safe_positive(Kⱼ * Δzᵢ + Kᵢ * Δzⱼ)
+end
 
 """
     _thomas_forward!(lower_diagonal, main_diagonal, upper_diagonal, right_hand_side, idx, n)
