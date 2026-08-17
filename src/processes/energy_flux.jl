@@ -37,8 +37,26 @@ from above. Mutates `temperature_profile` in-place and returns it.
     return temperature_profile
 end
 
-@inline _snow_thermal_conductivity(ρ, Kᵢ) =
-    Kᵢ * (ρ * oftype(ρ, 1.0e-3))^oftype(ρ, 1.88)
+@inline function _snow_thermal_conductivity(ρ, temperature, ice_density)
+    # Calonne et al. (2019), Eq. (5): a smooth blend of the snow and firn
+    # regressions, scaled by the temperature dependences of ice and air.
+    reference_ice_conductivity = oftype(ρ, 2.107)
+    reference_air_conductivity = oftype(ρ, 0.024)
+    transition = one(ρ) / (one(ρ) + exp(-oftype(ρ, 0.04) * (ρ - oftype(ρ, 450.0))))
+    ice_conductivity = oftype(ρ, 9.828) * exp(-oftype(ρ, 5.7e-3) * temperature)
+    air_conductivity = oftype(ρ, 2.334e-3) * temperature^oftype(ρ, 1.5) /
+                       _safe_positive(oftype(ρ, 164.54) + temperature)
+    snow_conductivity = reference_air_conductivity -
+                         oftype(ρ, 1.23e-4) * ρ +
+                         oftype(ρ, 2.5e-6) * ρ^2
+    firn_conductivity = reference_ice_conductivity +
+                         oftype(ρ, 3.618e-3) * (ρ - ice_density)
+    snow_scale = ice_conductivity * air_conductivity /
+                 (reference_ice_conductivity * reference_air_conductivity)
+    firn_scale = ice_conductivity / reference_ice_conductivity
+    return (one(ρ) - transition) * snow_scale * snow_conductivity +
+           transition * firn_scale * firn_conductivity
+end
 
 @inline _bessi_latent_exchange_coefficient(c::SnowpackPhysicalConstants) =
     c.latent_heat_flux_ratio * c.D_sh / c.cp_air * oftype(c.D_sh, 0.622) * (c.Lv + c.Lm)
@@ -491,13 +509,18 @@ function _go_energy_flux_resolved!(
 
     previous_layer_density = _get_layer(density, 1, idx)
     previous_layer_thickness = surface_mass / _safe_positive(previous_layer_density)
-    previous_layer_conductivity = _snow_thermal_conductivity(previous_layer_density, c.Ki)
+    previous_layer_conductivity = _snow_thermal_conductivity(
+        previous_layer_density,
+        previous_surface_temperature,
+        c.rho_i,
+    )
     _set_layer!(rhs, 1, idx, previous_surface_temperature + surface_rhs_term)
 
     @inbounds for layer_index in 2:n_layers
         layer_density = _get_layer(density, layer_index, idx)
         layer_thickness = _get_layer(mass, layer_index, idx) / _safe_positive(layer_density)
-        layer_conductivity = _snow_thermal_conductivity(layer_density, c.Ki)
+        layer_temperature = _get_layer(temperature, layer_index, idx)
+        layer_conductivity = _snow_thermal_conductivity(layer_density, layer_temperature, c.rho_i)
         _set_layer!(
             interface_terms,
             layer_index - 1,
