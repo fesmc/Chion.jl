@@ -222,6 +222,9 @@ function _bessi_step_kwargs(
         diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
         diurnal_temperature_cycle=Val(DiurnalTemperature),
         diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
+        diurnal_temperature_amplitude_gradient=model.diurnal_temperature_amplitude_gradient,
+        diurnal_temperature_amplitude_reference_height=model.diurnal_temperature_amplitude_reference_height,
+        diurnal_temperature_amplitude_max=model.diurnal_temperature_amplitude_max,
     )
 end
 

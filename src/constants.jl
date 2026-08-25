@@ -96,12 +96,15 @@ struct SnowpackPhysicalConstants{
     T0::NF
     seconds_per_day::NF
     seb_scheme::UInt8
+    turbulent_flux_scheme::UInt8
     eps_ice::NF
     semix_karman::NF
     semix_surface_height::NF
     semix_z0m_snow::NF
     semix_z0m_ice::NF
     semix_zm_to_zh::NF
+    semix_sensible_exchange_factor::NF
+    semix_latent_exchange_factor::NF
     semix_snow_albedo::UInt8
     semix_frac_vu::NF
     semix_alb_snow_vis_new::NF
@@ -177,6 +180,10 @@ Return the floating-point element type used by the physical constants set `c`.
 ) where {NF, FreshSnowDensity, Albedo, Densification} = Albedo === :semix
 
 @inline _uses_semix_seb(c::SnowpackPhysicalConstants) = c.seb_scheme == SEB_SEMIX
+
+"""Whether turbulent sensible and latent heat use the SEMIX bulk formulation."""
+@inline _uses_semix_turbulence(c::SnowpackPhysicalConstants) =
+    c.turbulent_flux_scheme == SEB_SEMIX
 
 @inline _initial_snow_albedo(c::SnowpackPhysicalConstants) =
     c.alpha_dry
@@ -283,7 +290,7 @@ function SnowpackPhysicalConstants(::Type{NF};
     D_sh::Real=10.0,
     alpha_dry::Real=0.81,
     alpha_wet::Real=0.60,
-    alpha_ice::Real=0.4,
+    alpha_ice::Real=0.3,
     max_lwc_albedo::Real=0.1,
     aging_cold_timescale_days::Real=20.0,
     aging_melting_timescale_days::Real=2.0,
@@ -295,12 +302,15 @@ function SnowpackPhysicalConstants(::Type{NF};
     seconds_per_day::Real=DEFAULT_SECONDS_PER_DAY,
     low_density_densification::Symbol=:bessi,
     seb_scheme::Symbol=:bessi,
+    turbulent_flux_scheme::Symbol=:bessi,
     eps_ice::Real=0.98,
     semix_karman::Real=0.4,
     semix_surface_height::Real=10.0,
     semix_z0m_snow::Real=0.001,
     semix_z0m_ice::Real=0.01,
     semix_zm_to_zh::Real=10.0,
+    semix_sensible_exchange_factor::Real=1.0,
+    semix_latent_exchange_factor::Real=1.0,
     semix_snow_albedo::Symbol=:dang,
     semix_frac_vu::Real=0.45,
     semix_alb_snow_vis_new::Real=0.99,
@@ -332,12 +342,15 @@ function SnowpackPhysicalConstants(::Type{NF};
     albedo_flag = _normalize_albedo_scheme(albedo_scheme)
     densification_flag = _normalize_low_density_densification(low_density_densification)
     seb_flag = _normalize_seb_scheme(seb_scheme)
+    turbulent_flux_flag = _normalize_seb_scheme(turbulent_flux_scheme)
     semix_albedo_flag = _normalize_semix_snow_albedo(semix_snow_albedo)
     semix_karman > 0 || error("`semix_karman` must be positive.")
     semix_surface_height > 0 || error("`semix_surface_height` must be positive.")
     semix_z0m_snow > 0 || error("`semix_z0m_snow` must be positive.")
     semix_z0m_ice > 0 || error("`semix_z0m_ice` must be positive.")
     semix_zm_to_zh > 0 || error("`semix_zm_to_zh` must be positive.")
+    semix_sensible_exchange_factor > 0 || error("`semix_sensible_exchange_factor` must be positive.")
+    semix_latent_exchange_factor > 0 || error("`semix_latent_exchange_factor` must be positive.")
     fresh_snow_density_tag = fresh_snow_density_flag == FRESH_SNOW_DENSITY_CONSTANT ? :constant : :parameterized
     albedo_tag = albedo_flag == ALBEDO_CONSTANT ? :constant :
                  albedo_flag == ALBEDO_PRESCRIBED ? :prescribed :
@@ -371,12 +384,15 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, T0),
         convert(NF, seconds_per_day),
         seb_flag,
+        turbulent_flux_flag,
         convert(NF, eps_ice),
         convert(NF, semix_karman),
         convert(NF, semix_surface_height),
         convert(NF, semix_z0m_snow),
         convert(NF, semix_z0m_ice),
         convert(NF, semix_zm_to_zh),
+        convert(NF, semix_sensible_exchange_factor),
+        convert(NF, semix_latent_exchange_factor),
         semix_albedo_flag,
         convert(NF, semix_frac_vu),
         convert(NF, semix_alb_snow_vis_new),

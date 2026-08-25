@@ -46,11 +46,11 @@ surface-flux units.
             air_pressure, wind_speed, z0m,
         )
     sensible_heat_flux = use_q_sh ? q_sh_value :
-                         _uses_semix_seb(c) ? semix_sensible_constant - semix_sensible_linear * surface_temperature :
+                         _uses_semix_turbulence(c) ? semix_sensible_constant - semix_sensible_linear * surface_temperature :
                          c.D_sh * (air_temperature - surface_temperature)
     latent_heat_flux = use_q_lh ? q_lh_value :
                        use_relative_humidity ?
-                       (_uses_semix_seb(c) ? semix_latent_constant - semix_latent_linear * surface_temperature :
+                       (_uses_semix_turbulence(c) ? semix_latent_constant - semix_latent_linear * surface_temperature :
                         _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)) :
                        zero(dt_seconds)
     rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
@@ -87,8 +87,7 @@ energy.
         q_sw_net_value :
         max(shortwave_down, zero(dt_seconds)) *
         (one(dt_seconds) - clamp(surface_albedo, zero(surface_albedo), one(surface_albedo)))
-    return (
-        absorbed_shortwave,
+    longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
         _resolved_nonshortwave_surface_flux_components(
             c,
             air_temperature,
@@ -107,7 +106,20 @@ energy.
             wind_speed,
             c.semix_z0m_ice,
             c.eps_ice,
-        )...,
+        )
+    # Bare ice remains a solid surface at the melting point: its direct
+    # vapour exchange is sublimation/deposition and therefore carries Lᵥ+Lₘ.
+    # (Snow with liquid water uses Lᵥ in the snow-surface routine.)
+    latent_heat_flux = !use_q_lh && use_relative_humidity && !_uses_semix_turbulence(c) ?
+        _bessi_latent_vapor_flux(
+            c.T0, c, air_temperature, relative_humidity, air_pressure, c.Lv + c.Lm,
+        ) : latent_heat_flux
+    return (
+        absorbed_shortwave,
+        longwave_flux,
+        sensible_heat_flux,
+        latent_heat_flux,
+        rain_heat_flux,
     )
 end
 
@@ -166,6 +178,10 @@ function _bare_ice_surface_mass_fluxes_resolved(
         melt_mass=melt_mass,
         _surface_vapor_fluxes(vapor_mass, latent_heat_flux)...,
         net_mass_change=vapor_mass - melt_mass,
+        absorbed_shortwave=absorbed_shortwave,
+        longwave_flux=longwave_flux,
+        sensible_heat_flux=sensible_heat_flux,
+        rain_heat_flux=rain_heat_flux,
     )
 end
 
@@ -221,7 +237,7 @@ end
         return q_lh_value
     elseif !use_relative_humidity
         return zero(surface_temperature)
-    elseif _uses_semix_seb(c)
+    elseif _uses_semix_turbulence(c)
         _, _, latent_constant, latent_linear = _semix_turbulent_flux_linearized(
             surface_temperature, c, air_temperature, relative_humidity,
             air_pressure, wind_speed, c.semix_z0m_snow,
@@ -275,11 +291,22 @@ function _apply_snow_surface_vapor_mass_flux!(
         return _surface_vapor_fluxes(zero(latent_heat_flux), latent_heat_flux)
     end
 
-    vapor_mass = if surface_temperature < c.T0
-        latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
-    else
-        latent_heat_flux * dt_seconds / c.Lv
-    end
+    # A prescribed latent-heat flux must also control its associated mass
+    # exchange. This preserves the MAR LHF/SU consistency in all-prescribed
+    # runs. For parameterized fluxes, SEMIX converts its resolved energy flux
+    # with the phase-appropriate latent heat, while BESSI retains its direct
+    # vapour-gradient bookkeeping.
+    vapor_mass = forcing.has_q_lh ?
+                 latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c) :
+                 _uses_semix_turbulence(c) ?
+                 latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c) :
+                 _bessi_vapor_mass_flux(
+                     surface_temperature,
+                     c,
+                     forcing.air_temperature,
+                     forcing.relative_humidity,
+                     forcing.air_pressure,
+                 ) * dt_seconds
 
     if surface_temperature < c.T0
         updated_surface_mass = max(_get_layer(mass, 1, idx) + vapor_mass, zero(vapor_mass))

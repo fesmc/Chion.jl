@@ -58,8 +58,14 @@ end
            transition * firn_scale * firn_conductivity
 end
 
-@inline _bessi_latent_exchange_coefficient(c::SnowpackPhysicalConstants) =
-    c.latent_heat_flux_ratio * c.D_sh / c.cp_air * oftype(c.D_sh, 0.622) * (c.Lv + c.Lm)
+"""Bulk turbulent vapour-mass transfer coefficient (kg m⁻² s⁻¹ Pa⁻¹)."""
+@inline _bessi_vapor_exchange_coefficient(c::SnowpackPhysicalConstants) =
+    c.latent_heat_flux_ratio * c.D_sh / c.cp_air * oftype(c.D_sh, 0.622)
+
+
+"""Latent heat for vapour exchange at a snow surface of the given temperature."""
+@inline _surface_vapor_latent_heat(surface_temperature, c::SnowpackPhysicalConstants) =
+    surface_temperature < c.T0 ? c.Lv + c.Lm : c.Lv
 
 @inline function _relative_humidity_fraction(relative_humidity)
     rh = relative_humidity > one(relative_humidity) ? relative_humidity / oftype(relative_humidity, 100.0) : relative_humidity
@@ -88,37 +94,46 @@ end
     return es * oftype(surface_temperature, 22.46) * oftype(surface_temperature, 272.62) / _safe_positive(denominator * denominator)
 end
 
-@inline function _bessi_latent_vapor_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
-    exchange = _bessi_latent_exchange_coefficient(c) / _safe_positive(air_pressure)
+@inline function _bessi_vapor_mass_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
+    exchange = _bessi_vapor_exchange_coefficient(c) / _safe_positive(air_pressure)
     ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
     es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
     return exchange * (ea - es)
 end
 
+@inline function _bessi_latent_vapor_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure, latent_heat=_surface_vapor_latent_heat(surface_temperature, c))
+    vapor_mass_flux = _bessi_vapor_mass_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+    return latent_heat * vapor_mass_flux
+end
+
 @inline function _bessi_latent_vapor_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
-    exchange = _bessi_latent_exchange_coefficient(c) / _safe_positive(air_pressure)
+    exchange = _bessi_vapor_exchange_coefficient(c) / _safe_positive(air_pressure)
     ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
     es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
     des_dT = _bessi_ice_saturation_vapor_pressure_derivative(surface_temperature, c.T0, es)
-    linear = exchange * des_dT
-    constant = exchange * (ea - es + des_dT * surface_temperature)
+    latent_heat = _surface_vapor_latent_heat(surface_temperature, c)
+    linear = latent_heat * exchange * des_dT
+    constant = latent_heat * exchange * (ea - es + des_dT * surface_temperature)
     return constant, linear
 end
 
-# SEMIX uses a neutral aerodynamic transfer coefficient on stable surfaces and
-# a bulk-Richardson enhancement on unstable surfaces (Willeit et al.).
+# SEMIX uses a neutral aerodynamic transfer coefficient corrected with the
+# bulk Richardson number. Positive Ri denotes warm air over a colder surface
+# (stable stratification) and suppresses turbulent exchange; negative Ri
+# denotes an unstable surface layer and enhances it.
 @inline function _semix_aerodynamic_resistance(c::SnowpackPhysicalConstants, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
     z0h = z0m / c.semix_zm_to_zh
     neutral_ch = c.semix_karman^2 /
                  _safe_positive(log(c.semix_surface_height / z0m) * log(c.semix_surface_height / z0h))
     wind = max(wind_speed, oftype(wind_speed, 0.1))
     bulk_richardson = oftype(surface_temperature, 9.80665) * c.semix_surface_height *
-                      (surface_temperature - air_temperature) /
+                      (air_temperature - surface_temperature) /
                       _safe_positive(air_temperature * wind^2)
     stability_factor = ifelse(
         bulk_richardson < zero(bulk_richardson),
         sqrt(max(one(bulk_richardson) - oftype(bulk_richardson, 16) * bulk_richardson, one(bulk_richardson))),
-        one(bulk_richardson),
+        one(bulk_richardson) /
+        (one(bulk_richardson) + oftype(bulk_richardson, 10) * bulk_richardson),
     )
     return one(wind) / _safe_positive(neutral_ch * stability_factor * wind)
 end
@@ -129,7 +144,7 @@ end
 @inline function _semix_turbulent_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
     air_density = _semix_air_density(air_temperature, air_pressure)
     resistance = _semix_aerodynamic_resistance(c, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
-    sensible_coefficient = air_density * c.cp_air / resistance
+    sensible_coefficient = c.semix_sensible_exchange_factor * air_density * c.cp_air / resistance
     sensible_constant = sensible_coefficient * air_temperature
     q_air = oftype(surface_temperature, 0.622) * _relative_humidity_fraction(relative_humidity) *
             _bessi_ice_saturation_vapor_pressure(air_temperature, c.T0) / _safe_positive(air_pressure)
@@ -138,11 +153,12 @@ end
     dq_surface = oftype(surface_temperature, 0.622) *
                  _bessi_ice_saturation_vapor_pressure_derivative(surface_temperature, c.T0, q_surface_pressure) /
                  _safe_positive(air_pressure)
-    latent_exchange = (c.Lv + c.Lm) * air_density / resistance
-    # SEMIX's l_dew default suppresses condensation/dew onto the surface.
-    latent_active = q_air <= q_surface
-    latent_constant = ifelse(latent_active, latent_exchange * (q_air - q_surface + dq_surface * surface_temperature), zero(surface_temperature))
-    latent_linear = ifelse(latent_active, latent_exchange * dq_surface, zero(surface_temperature))
+    # Permit both sublimation and deposition. At a melting/wet surface this
+    # carries L_v; otherwise exchange with the solid surface carries L_s.
+    latent_exchange = c.semix_latent_exchange_factor *
+                      _surface_vapor_latent_heat(surface_temperature, c) * air_density / resistance
+    latent_constant = latent_exchange * (q_air - q_surface + dq_surface * surface_temperature)
+    latent_linear = latent_exchange * dq_surface
     return sensible_constant, sensible_coefficient, latent_constant, latent_linear
 end
 
@@ -265,8 +281,13 @@ tuple.
     heating,
     surface_flux_constant,
     surface_flux_linear,
+    longwave_flux_constant,
+    longwave_flux_linear,
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
+    absorbed_shortwave,
+    sensible_heat_flux_constant,
+    sensible_heat_flux_linear,
 )
     return (
         needs_melt=needs_melt,
@@ -275,8 +296,13 @@ tuple.
         heating=heating,
         surface_flux_constant=surface_flux_constant,
         surface_flux_linear=surface_flux_linear,
+        longwave_flux_constant=longwave_flux_constant,
+        longwave_flux_linear=longwave_flux_linear,
         latent_heat_linear_coefficient=latent_heat_linear_coefficient,
         latent_heat_constant_term=latent_heat_constant_term,
+        absorbed_shortwave=absorbed_shortwave,
+        sensible_heat_flux_constant=sensible_heat_flux_constant,
+        sensible_heat_flux_linear=sensible_heat_flux_linear,
     )
 end
 @inline _energy_flux_result(
@@ -286,8 +312,13 @@ end
     heating,
     surface_flux_constant,
     surface_flux_linear,
+    longwave_flux_constant,
+    longwave_flux_linear,
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
+    absorbed_shortwave,
+    sensible_heat_flux_constant,
+    sensible_heat_flux_linear,
 ) = _energy_flux_result(
     ;
     needs_melt,
@@ -296,8 +327,13 @@ end
     heating,
     surface_flux_constant,
     surface_flux_linear,
+    longwave_flux_constant,
+    longwave_flux_linear,
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
+    absorbed_shortwave,
+    sensible_heat_flux_constant,
+    sensible_heat_flux_linear,
 )
 
 """
@@ -415,8 +451,13 @@ function _go_energy_flux_resolved!(
             zero(dt_seconds),
             zero(dt_seconds),
             zero(dt_seconds),
+            zero(dt_seconds),
+            zero(dt_seconds),
             latent_heat_linear_coefficient_eff,
             latent_heat_constant_term_eff,
+            zero(dt_seconds),
+            zero(dt_seconds),
+            zero(dt_seconds),
         )
     end
 
@@ -449,13 +490,13 @@ function _go_energy_flux_resolved!(
             air_pressure, wind_speed, c.semix_z0m_snow,
         )
     sensible_heat_flux_constant = use_q_sh ? q_sh_value :
-                                  _uses_semix_seb(c) ? semix_sensible_constant : air_temperature * c.D_sh
+                                  _uses_semix_turbulence(c) ? semix_sensible_constant : air_temperature * c.D_sh
     sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) :
-                                _uses_semix_seb(c) ? semix_sensible_linear : c.D_sh
+                                _uses_semix_turbulence(c) ? semix_sensible_linear : c.D_sh
     turbulent_latent_heat_constant, turbulent_latent_heat_linear = if use_q_lh
         q_lh_value, zero(dt_seconds)
     elseif use_relative_humidity
-        _uses_semix_seb(c) ?
+        _uses_semix_turbulence(c) ?
         (semix_latent_constant, semix_latent_linear) :
         _bessi_latent_vapor_flux_linearized(previous_surface_temperature, c, air_temperature, relative_humidity, air_pressure)
     else
@@ -502,8 +543,13 @@ function _go_energy_flux_resolved!(
             heating,
             surface_flux_constant,
             surface_flux_linear,
+            longwave_flux_constant,
+            longwave_flux_linear,
             latent_heat_linear_coefficient_eff,
             latent_heat_constant_term_eff,
+            absorbed_shortwave,
+            sensible_heat_flux_constant,
+            sensible_heat_flux_linear,
         )
     end
 
@@ -537,7 +583,12 @@ function _go_energy_flux_resolved!(
         previous_layer_conductivity = layer_conductivity
     end
 
-    β_scale = -oftype(dt_seconds, 2.0) * dt_seconds / c.ci
+    # `interface_conductance` is the physical conductance between layer
+    # centres (the two half-layer resistances in series).  The finite-volume
+    # energy balance therefore contributes -Δt G / (cᵢ mᵢ) off diagonal;
+    # the legacy factor of two belonged to the former half-conductance
+    # approximation and would double vertical heat diffusion here.
+    β_scale = -dt_seconds / c.ci
 
     β1 = β_scale / _safe_positive(_get_layer(mass, 1, idx))
     _set_layer!(upper, 1, idx, β1 * _get_layer(interface_terms, 1, idx))
@@ -603,8 +654,13 @@ function _go_energy_flux_resolved!(
         heating,
         surface_flux_constant,
         surface_flux_linear,
+        longwave_flux_constant,
+        longwave_flux_linear,
         latent_heat_linear_coefficient_eff,
         latent_heat_constant_term_eff,
+        absorbed_shortwave,
+        sensible_heat_flux_constant,
+        sensible_heat_flux_linear,
     )
 end
 

@@ -164,6 +164,7 @@ end
         prescribed_ice_albedo=forcing.prescribed_ice_albedo,
         has_prescribed_ice_albedo=forcing.has_prescribed_ice_albedo,
         latitude_deg=forcing.latitude_deg,
+        surface_height=forcing.surface_height,
         day_of_year=forcing.day_of_year,
         solar_longitude_deg=forcing.solar_longitude_deg,
     )

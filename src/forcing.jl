@@ -452,6 +452,7 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     prescribed_ice_albedo::NF
     has_prescribed_ice_albedo::Bool
     latitude_deg::NF
+    surface_height::NF
     day_of_year::NF
     solar_longitude_deg::NF
 end
@@ -482,6 +483,7 @@ function SnowpackStepForcing(
     z_sur_std=zero(air_temperature), has_z_sur_std::Bool=false,
     prescribed_ice_albedo=zero(air_temperature), has_prescribed_ice_albedo::Bool=false,
     latitude_deg=zero(air_temperature),
+    surface_height=zero(air_temperature),
     day_of_year=zero(air_temperature),
     solar_longitude_deg=_solar_longitude_deg_from_calendar_day(day_of_year),
 )
@@ -508,6 +510,7 @@ function SnowpackStepForcing(
         coszm, has_coszm, cloud, has_cloud, dust_deposition, has_dust_deposition,
         z_sur_std, has_z_sur_std, prescribed_ice_albedo, has_prescribed_ice_albedo,
         latitude_deg,
+        surface_height,
         day_of_year,
         solar_longitude_deg,
     )
@@ -548,6 +551,7 @@ Base.@propagate_inbounds function _step_forcing_at(forcing, idx::Int, time_index
             z_sur_std=forcing.z_sur_std[idx, time_index], has_z_sur_std=forcing.has_z_sur_std[idx, time_index],
             prescribed_ice_albedo=forcing.prescribed_ice_albedo[idx, time_index], has_prescribed_ice_albedo=forcing.has_prescribed_ice_albedo[idx, time_index],
             latitude_deg=forcing.latitude_deg[idx, time_index],
+            surface_height=forcing.surface_height[idx, time_index],
             day_of_year=forcing.day_of_year[time_index],
             solar_longitude_deg=forcing.solar_longitude_deg[time_index],
         )

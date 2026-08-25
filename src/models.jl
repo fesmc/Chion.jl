@@ -19,12 +19,16 @@ struct BESSIParameters{C <: SnowpackPhysicalConstants}
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::Float64
     diurnal_temperature_amplitude::Float64
+    diurnal_temperature_amplitude_gradient::Float64
+    diurnal_temperature_amplitude_reference_height::Float64
+    diurnal_temperature_amplitude_max::Float64
 end
 
 const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_temperature_cycle)
 
 """
-    BESSIModel(grid; albedo=:aging, seb_scheme=:bessi, densification=:bessi, ...)
+    BESSIModel(grid; albedo=:aging, seb_scheme=:bessi,
+               turbulent_flux_scheme=:bessi, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
 `BESSIState` and owned by `Simulation.now`.
@@ -59,6 +63,7 @@ function BESSIModel(
     grid::SnowpackGrid;
     albedo::Symbol=:aging,
     seb_scheme::Symbol=:bessi,
+    turbulent_flux_scheme::Symbol=:bessi,
     densification::Symbol=:bessi,
     fresh_snow_density::Symbol=:constant,
     Ntot::Int=DEFAULT_NTOT,
@@ -74,17 +79,25 @@ function BESSIModel(
     diurnal_shortwave_min_air_temperature_c::Real=-8.0,
     diurnal_temperature_cycle::Bool=false,
     diurnal_temperature_amplitude_c::Real=5.0,
+    diurnal_temperature_amplitude_gradient_c_per_km::Real=0.0,
+    diurnal_temperature_amplitude_reference_height_m::Real=0.0,
+    diurnal_temperature_amplitude_max_c::Real=Inf,
     kwargs...,
 )
     diurnal_shortwave_threshold >= 0 || error("`diurnal_shortwave_threshold` must be non-negative.")
     1 <= diurnal_shortwave_max_substeps <= 24 || error("`diurnal_shortwave_max_substeps` must be between 1 and 24.")
     isfinite(diurnal_shortwave_min_air_temperature_c) || error("`diurnal_shortwave_min_air_temperature_c` must be finite.")
     diurnal_temperature_amplitude_c >= 0 || error("`diurnal_temperature_amplitude_c` must be non-negative.")
+    isfinite(diurnal_temperature_amplitude_gradient_c_per_km) ||
+        error("`diurnal_temperature_amplitude_gradient_c_per_km` must be finite.")
+    diurnal_temperature_amplitude_max_c >= diurnal_temperature_amplitude_c ||
+        error("`diurnal_temperature_amplitude_max_c` must be at least the base amplitude.")
     resolved_diurnal_shortwave_substeps = diurnal_shortwave_substeps || diurnal_shortwave
     c = SnowpackPhysicalConstants(
         Float64;
         albedo_scheme=albedo,
         seb_scheme=seb_scheme,
+        turbulent_flux_scheme=turbulent_flux_scheme,
         low_density_densification=densification,
         fresh_snow_density_scheme=fresh_snow_density,
         kwargs...,
@@ -103,6 +116,9 @@ function BESSIModel(
         Int(diurnal_shortwave_max_substeps),
         Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
         Float64(diurnal_temperature_amplitude_c),
+        Float64(diurnal_temperature_amplitude_gradient_c_per_km) / 1000,
+        Float64(diurnal_temperature_amplitude_reference_height_m),
+        Float64(diurnal_temperature_amplitude_max_c),
     )
     return BESSIModel{
         resolved_diurnal_shortwave_substeps,

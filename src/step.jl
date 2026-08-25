@@ -20,15 +20,33 @@ end
 EnergyWorkspace(state) =
     EnergyWorkspace(state.mass, number_type(state.c), state.Ntot)
 
-struct ColumnarStepWorkspace{LWT,ET}
+struct ColumnarStepWorkspace{LWT,ET,LWE,SWE,SHE,RHE}
     liquid_water_before_energy::LWT
     energy::ET
+    # Cumulative net-longwave energy (J m⁻²), recorded from the same
+    # linearized boundary condition used by the energy solver.
+    net_longwave_energy::LWE
+    absorbed_shortwave_energy::SWE
+    sensible_heat_energy::SHE
+    rain_heat_energy::RHE
 end
 
 function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
+    net_longwave_energy = _workspace_array(storage, NF, ncol)
+    absorbed_shortwave_energy = _workspace_array(storage, NF, ncol)
+    sensible_heat_energy = _workspace_array(storage, NF, ncol)
+    rain_heat_energy = _workspace_array(storage, NF, ncol)
+    fill!(net_longwave_energy, zero(NF))
+    fill!(absorbed_shortwave_energy, zero(NF))
+    fill!(sensible_heat_energy, zero(NF))
+    fill!(rain_heat_energy, zero(NF))
     return ColumnarStepWorkspace(
         _workspace_array(storage, NF, Ntot, ncol),
         EnergyWorkspace(storage, NF, Ntot, ncol),
+        net_longwave_energy,
+        absorbed_shortwave_energy,
+        sensible_heat_energy,
+        rain_heat_energy,
     )
 end
 
@@ -47,6 +65,9 @@ const DEFAULT_BESSI_STEP_OPTIONS = (
     diurnal_shortwave_min_air_temperature=265.15,
     diurnal_temperature_cycle=Val(false),
     diurnal_temperature_amplitude=0.0,
+    diurnal_temperature_amplitude_gradient=0.0,
+    diurnal_temperature_amplitude_reference_height=0.0,
+    diurnal_temperature_amplitude_max=Inf,
 )
 
 @inline function _step_config_from_keywords(; kwargs...)
@@ -69,7 +90,13 @@ end
 @inline _diurnal_air_temperature(::Val{true}, forcing, config, hour_angle_start, hour_angle_end) =
     _diurnal_temperature_interval_average(
         forcing.air_temperature,
-        config.diurnal_temperature_amplitude,
+        clamp(
+            config.diurnal_temperature_amplitude +
+            config.diurnal_temperature_amplitude_gradient *
+            max(forcing.surface_height - config.diurnal_temperature_amplitude_reference_height, zero(forcing.surface_height)),
+            zero(forcing.air_temperature),
+            config.diurnal_temperature_amplitude_max,
+        ),
         hour_angle_start,
         hour_angle_end,
     )
@@ -283,6 +310,10 @@ Base.@propagate_inbounds function column_step_core!(
     vapor_mass = fields.vapor_mass
     sublimation = fields.sublimation
     latent_heat_flux_sum = fields.latent_heat_flux_sum
+    net_longwave_energy = workspace.net_longwave_energy
+    absorbed_shortwave_energy = workspace.absorbed_shortwave_energy
+    sensible_heat_energy = workspace.sensible_heat_energy
+    rain_heat_energy = workspace.rain_heat_energy
     Tsrf = fields.Tsrf
     albedo_dynamic = fields.albedo
     c = parameters.c
@@ -328,6 +359,17 @@ Base.@propagate_inbounds function column_step_core!(
         _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
+        _set_scalar!(
+            net_longwave_energy,
+            idx,
+            _get_scalar(net_longwave_energy, idx) + bare_ice_fluxes.longwave_flux * dt_seconds,
+        )
+        _set_scalar!(absorbed_shortwave_energy, idx,
+            _get_scalar(absorbed_shortwave_energy, idx) + bare_ice_fluxes.absorbed_shortwave * dt_seconds)
+        _set_scalar!(sensible_heat_energy, idx,
+            _get_scalar(sensible_heat_energy, idx) + bare_ice_fluxes.sensible_heat_flux * dt_seconds)
+        _set_scalar!(rain_heat_energy, idx,
+            _get_scalar(rain_heat_energy, idx) + bare_ice_fluxes.rain_heat_flux * dt_seconds)
         rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + bare_ice_fluxes.net_mass_change)
         _set_scalar!(melt, idx, _get_scalar(melt, idx) + bare_ice_fluxes.melt_mass)
@@ -414,6 +456,41 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.air_pressure,
         forcing.wind_speed,
     )
+    _set_scalar!(
+        net_longwave_energy,
+        idx,
+        _get_scalar(net_longwave_energy, idx) +
+        (energy.longwave_flux_constant - energy.longwave_flux_linear * _get_scalar(Tsrf, idx)) * dt_seconds,
+    )
+    _set_scalar!(
+        absorbed_shortwave_energy,
+        idx,
+        _get_scalar(absorbed_shortwave_energy, idx) + energy.absorbed_shortwave * dt_seconds,
+    )
+    _set_scalar!(
+        sensible_heat_energy,
+        idx,
+        _get_scalar(sensible_heat_energy, idx) +
+        (energy.sensible_heat_flux_constant - energy.sensible_heat_flux_linear * _get_scalar(Tsrf, idx)) * dt_seconds,
+    )
+    # The snow energy solver carries precipitation enthalpy in its effective
+    # latent-heat coefficients. Record its rain component separately for the
+    # energy diagnostic. Snowfall takes precedence when both phases occur,
+    # matching `_diagnose_latent_heat_flux_coefficients`.
+    rain_heat_flux = ifelse(
+        forcing.snowfall_rate > zero(forcing.snowfall_rate),
+        zero(dt_seconds),
+        ifelse(
+            forcing.rainfall_rate > zero(forcing.rainfall_rate),
+            forcing.rainfall_rate * c.cw * (forcing.air_temperature - c.T0),
+            zero(dt_seconds),
+        ),
+    )
+    _set_scalar!(
+        rain_heat_energy,
+        idx,
+        _get_scalar(rain_heat_energy, idx) + rain_heat_flux * dt_seconds,
+    )
 
     snow_vapor_fluxes = _apply_snow_surface_vapor_mass_flux!(
         N_storage,
@@ -495,6 +572,7 @@ Base.@propagate_inbounds function column_step_core!(
         c.Lm,
         c.rho_i,
     )
+
     _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
 
     final_has_snow = _surface_has_snow(N_storage, mass, idx)

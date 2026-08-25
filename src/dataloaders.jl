@@ -167,7 +167,18 @@ _column_vector_y_x(field::AbstractMatrix{<:Real}) = vec(permutedims(Float64.(fie
 function _wind_matrix(ds::NCDataset, wind_speed_name, ntime::Int, ny::Int, nx::Int, wind_default::Float64)
     isnothing(wind_speed_name) && return fill(wind_default, nx * ny, ntime)
     haskey(ds, wind_speed_name) || return fill(wind_default, nx * ny, ntime)
-    raw = _read_time_y_x(ds, wind_speed_name, ntime, ny, nx)
+    data, dim_names = _read_variable_data(ds, wind_speed_name)
+    # MAR UVZ is available at 10, 50, and 100 m. SEMIX uses the lowest,
+    # 10 m wind level, which is the appropriate near-surface wind input.
+    if ndims(data) == 4
+        lower_names = lowercase.(String.(dim_names))
+        wind_level_dim = findfirst(name -> occursin("zuv", name), lower_names)
+        if !isnothing(wind_level_dim)
+            data = Array(selectdim(data, wind_level_dim, 1))
+            dim_names = ntuple(i -> i < wind_level_dim ? dim_names[i] : dim_names[i + 1], 3)
+        end
+    end
+    raw = _as_time_y_x(data, dim_names, ntime, ny, nx, wind_speed_name)
     return _column_matrix(raw)
 end
 
