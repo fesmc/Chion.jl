@@ -571,6 +571,7 @@ Base.@propagate_inbounds function column_step_core!(
         c.ci,
         c.Lm,
         c.rho_i,
+        parameters.refreezing_correction,
     )
 
     _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)

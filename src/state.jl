@@ -69,7 +69,9 @@ struct BESSIState{
     liquid_water::VT
 end
 
-const _BESSI_STATE_PARAMETER_NAMES = (:c, :Ntot, :mass_max, :mass_split, :mass_min)
+const _BESSI_STATE_PARAMETER_NAMES = (
+    :c, :Ntot, :mass_max, :mass_split, :mass_min, :refreezing_correction,
+)
 
 @inline function Base.getproperty(state::BESSIState, name::Symbol)
     hasfield(typeof(state), name) && return getfield(state, name)

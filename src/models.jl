@@ -15,6 +15,7 @@ struct BESSIParameters{C <: SnowpackPhysicalConstants}
     mass_min::Float64
     density_init::Float64
     temperature_init::Float64
+    refreezing_correction::Float64
     diurnal_shortwave_threshold::Float64
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::Float64
@@ -28,10 +29,13 @@ const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_tempe
 
 """
     BESSIModel(grid; albedo=:aging, seb_scheme=:bessi,
-               turbulent_flux_scheme=:bessi, densification=:bessi, ...)
+               turbulent_flux_scheme=:semix, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`BESSIState` and owned by `Simulation.now`.
+`BESSIState` and owned by `Simulation.now`. Turbulent sensible and latent heat
+use the SEMIX formulation by default; set `turbulent_flux_scheme=:bessi` to use
+the BESSI formulation. `seb_scheme` independently controls the remaining
+surface-energy-balance details and defaults to `:bessi`.
 """
 struct BESSIModel{
         DiurnalShortwave,
@@ -63,7 +67,7 @@ function BESSIModel(
     grid::SnowpackGrid;
     albedo::Symbol=:aging,
     seb_scheme::Symbol=:bessi,
-    turbulent_flux_scheme::Symbol=:bessi,
+    turbulent_flux_scheme::Symbol=:semix,
     densification::Symbol=:bessi,
     fresh_snow_density::Symbol=:constant,
     Ntot::Int=DEFAULT_NTOT,
@@ -72,6 +76,7 @@ function BESSIModel(
     mass_min::Real=DEFAULT_MASS_MIN,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
+    refreezing_correction::Real=1.0,
     diurnal_shortwave::Bool=false,
     diurnal_shortwave_substeps::Bool=false,
     diurnal_shortwave_threshold::Real=0.0,
@@ -84,6 +89,8 @@ function BESSIModel(
     diurnal_temperature_amplitude_max_c::Real=Inf,
     kwargs...,
 )
+    isfinite(refreezing_correction) && refreezing_correction > 0 ||
+        error("`refreezing_correction` must be finite and positive.")
     diurnal_shortwave_threshold >= 0 || error("`diurnal_shortwave_threshold` must be non-negative.")
     1 <= diurnal_shortwave_max_substeps <= 24 || error("`diurnal_shortwave_max_substeps` must be between 1 and 24.")
     isfinite(diurnal_shortwave_min_air_temperature_c) || error("`diurnal_shortwave_min_air_temperature_c` must be finite.")
@@ -112,6 +119,7 @@ function BESSIModel(
         mass_min,
         Float64(density_init),
         Float64(temperature_init),
+        Float64(refreezing_correction),
         Float64(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),
         Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
