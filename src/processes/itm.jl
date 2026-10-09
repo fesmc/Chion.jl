@@ -2,7 +2,6 @@
 
 @inline _itm_transmissivity(z, a, b) = a + b * sqrt(max(z, zero(z)))
 @inline _itm_latitude_offset(c, b, lat0, lat) = c + b * (lat - lat0)
-@inline _itm_planetary_albedo(albedo, a, b) = a + b * albedo
 @inline _itm_snow_albedo(model, ::Nothing) = model.alb_snow_wet
 @inline _itm_snow_albedo(model, melt) = ifelse(melt > model.melt_crit, model.alb_snow_wet, model.alb_snow_dry)
 

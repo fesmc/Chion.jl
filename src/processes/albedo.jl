@@ -231,7 +231,8 @@ end
     _update_surface_albedo_arrays!(N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c, dt_days)
 
 Update the diagnosed surface albedo for column `idx` in-place using either the
-constant or dynamic albedo scheme. Dynamic snow aging is scaled by `dt_days`.
+constant or dynamic albedo scheme. Dynamic snow aging and wetness relaxation
+are scaled by `dt_days`.
 """
 function _update_surface_albedo_arrays!(
     N_storage,
@@ -268,10 +269,13 @@ function _update_surface_albedo_arrays!(
     updated_albedo = max(updated_albedo, c.alpha_wet)
 
     liquid_water_content = _surface_liquid_water_content(N_storage, mass, mass_w, density, idx, c)
-    if liquid_water_content > zero(liquid_water_content) && c.max_lwc_albedo > EPS_TINY
-        wet_adjusted_albedo = updated_albedo - (
-            updated_albedo - c.alpha_wet
-        ) * (liquid_water_content / c.max_lwc_albedo)
+    if dt_days > zero(dt_days) && liquid_water_content > zero(liquid_water_content) && c.max_lwc_albedo > EPS_TINY
+        wet_fraction = clamp(liquid_water_content / c.max_lwc_albedo,
+                             zero(liquid_water_content), one(liquid_water_content))
+        # Preserve the one-day relaxation while composing consistently across
+        # substeps at fixed wetness. Saturated wetness reaches alpha_wet directly.
+        retention = (one(wet_fraction) - wet_fraction)^oftype(wet_fraction, dt_days)
+        wet_adjusted_albedo = c.alpha_wet + (updated_albedo - c.alpha_wet) * retention
         updated_albedo = max(c.alpha_wet, min(updated_albedo, wet_adjusted_albedo))
     end
 
@@ -284,7 +288,8 @@ end
     update_surface_albedo!(state, idx, dt_days=1)
 
 Update the surface albedo of column `idx` in `state` and return the new
-albedo. `dt_days` controls the elapsed time applied to dynamic snow aging.
+albedo. `dt_days` controls the elapsed time applied to dynamic snow aging and
+wetness relaxation.
 """
 function update_surface_albedo!(state, idx::Int, dt_days=one(eltype(state.mass)))
     if _uses_aging_albedo(state.c)

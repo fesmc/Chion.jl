@@ -13,6 +13,7 @@ const NETCDF_METADATA = Dict{Symbol, OutputMetadata}(
     :liquid_water => OutputMetadata("liquid_water", "Liquid water mass", "kg m-2"),
     :mass_base => OutputMetadata("mass_base", "Firn mass exported to the ice model", "mmWE"),
     :smb_ice => OutputMetadata("smb_ice", "Net mass forcing to the ice sheet", "mmWE"),
+    :surface_smb => OutputMetadata("surface_smb", "Surface mass balance", "mmWE"),
     :runoff => OutputMetadata("runoff", "Cumulative runoff", "mmWE"),
     :melt => OutputMetadata("melt", "Cumulative melt", "mmWE"),
     :refreezing => OutputMetadata("refreezing", "Cumulative refreezing", "mmWE"),
@@ -42,7 +43,7 @@ const NETCDF_METADATA = Dict{Symbol, OutputMetadata}(
 
 const DEFAULT_STATE_OUTPUT_VARS = (:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo)
 const STATE_FIELD_OUTPUT_VARS = (:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_age_days)
-const MONTHLY_OUTPUT_VARS = (:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
+const MONTHLY_OUTPUT_VARS = (:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
 const NETCDF_VARIABLES = (DEFAULT_STATE_OUTPUT_VARS..., STATE_FIELD_OUTPUT_VARS...)
 const PDD_OUTPUT_VARS = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
 const ITM_OUTPUT_VARS = (:H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf, :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum)
@@ -136,7 +137,9 @@ function init_state_netcdf(
     _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(layout.mask, (2, 1))))
     handles = Dict{Symbol, Any}()
     for key in vars
-        values = key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
+        values = key == :surface_smb ?
+            getfield(state, :smb_ice) :
+            key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
             getfield(state, :latent_heat_flux_sum) :
             getfield(state, key)
         meta = get(NETCDF_METADATA, key, OutputMetadata(String(key), String(key), ""))

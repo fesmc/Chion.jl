@@ -29,6 +29,7 @@ function _sample_model_forcing_grid()
         rainfall_mm_day   = 0.0,
         shortwave_down    = [120.0, 140.0, 160.0],
         wind_speed        = 3.0,
+        latitude_deg      = 70.0,
         time_values       = [DateTime(2001, 1, 15, 12), DateTime(2001, 2, 15, 12), DateTime(2001, 3, 15, 12)],
     )
     return model, forcing, grid
@@ -94,6 +95,189 @@ function _write_sample_forcing_file_4d(path::AbstractString)
 end
 
 @testset "Run API" begin
+    @testset "Refreezing correction scales cold-content capacity" begin
+        grid = SnowpackGrid(1)
+        @test BESSIModel(grid).refreezing_correction == 1.0
+        @test BESSIModel(grid; refreezing_correction=1.5).refreezing_correction == 1.5
+        @test_throws ErrorException BESSIModel(grid; refreezing_correction=0.0)
+
+        function corrected_refreezing(factor)
+            liquid = [20.0]
+            solid = [100.0]
+            density = [400.0]
+            temperature = [263.15]
+            result = Chion.go_refreezing!(
+                liquid, solid, density, temperature,
+                273.15, 2110.0, 334000.0, 917.0;
+                refreezing_correction=factor,
+            )
+            return (; result..., liquid, solid, density, temperature)
+        end
+
+        baseline = corrected_refreezing(1.0)
+        corrected = corrected_refreezing(1.5)
+        @test corrected.refrozen_mass ≈ 1.5 * baseline.refrozen_mass
+        @test corrected.refrozen_mass < 20.0
+        @test corrected.liquid[1] + corrected.solid[1] ≈ 120.0
+        @test corrected.temperature[1] == 273.15
+    end
+
+    @testset "SEMIX aerodynamic resistance follows atmospheric stability" begin
+        c = Chion.SnowpackPhysicalConstants(Float64)
+        @test c.turbulent_flux_scheme == Chion.SEB_SEMIX
+        @test c.seb_scheme == Chion.SEB_SEMIX
+        neutral = Chion._semix_aerodynamic_resistance(c, 268.0, 268.0, 80_000.0, 5.0, c.semix_z0m_snow)
+        stable = Chion._semix_aerodynamic_resistance(c, 268.0, 273.0, 80_000.0, 5.0, c.semix_z0m_snow)
+        unstable = Chion._semix_aerodynamic_resistance(c, 273.0, 268.0, 80_000.0, 5.0, c.semix_z0m_snow)
+        @test stable > neutral > unstable
+        weakly_suppressed = Chion.SnowpackPhysicalConstants(Float64; semix_stable_coefficient=2.0)
+        @test Chion._semix_aerodynamic_resistance(
+            weakly_suppressed, 268.0, 273.0, 80_000.0, 5.0, weakly_suppressed.semix_z0m_snow,
+        ) < stable
+
+        surface_temperature = 263.0
+        air_temperature = 268.0
+        relative_humidity = 0.8
+        air_pressure = 80_000.0
+        wind_speed = 5.0
+        _, sensible, latent, _ = Chion._resolved_nonshortwave_surface_flux_components(
+            c, air_temperature, 0.0, 86_400.0, surface_temperature,
+            true, 0.0, false, 0.0, false, 0.0, true, relative_humidity,
+            air_pressure, wind_speed, c.semix_z0m_snow, c.ϵ_snow,
+        )
+        sensible_constant, sensible_linear, latent_constant, latent_linear =
+            Chion._semix_turbulent_flux_linearized(
+                surface_temperature, c, air_temperature, relative_humidity,
+                air_pressure, wind_speed, c.semix_z0m_snow,
+            )
+        @test sensible ≈ sensible_constant - sensible_linear * surface_temperature
+        @test latent ≈ latent_constant - latent_linear * surface_temperature
+
+        bessi = Chion.SnowpackPhysicalConstants(Float64; turbulent_flux_scheme=:bessi)
+        @test bessi.turbulent_flux_scheme == Chion.SEB_BESSI
+        _, bessi_sensible, bessi_latent, _ = Chion._resolved_nonshortwave_surface_flux_components(
+            bessi, air_temperature, 0.0, 86_400.0, surface_temperature,
+            true, 0.0, false, 0.0, false, 0.0, true, relative_humidity,
+            air_pressure, wind_speed, bessi.semix_z0m_snow, bessi.ϵ_snow,
+        )
+        @test bessi_sensible ≈ bessi.D_sh * (air_temperature - surface_temperature)
+        @test bessi_latent ≈ Chion._bessi_latent_vapor_flux(
+            surface_temperature, bessi, air_temperature, relative_humidity, air_pressure,
+        )
+        @test sensible != bessi_sensible
+        @test latent != bessi_latent
+
+        _, prescribed_sensible, prescribed_latent, _ =
+            Chion._resolved_nonshortwave_surface_flux_components(
+                c, air_temperature, 0.0, 86_400.0, surface_temperature,
+                true, 0.0, true, 12.0, true, -8.0, true, relative_humidity,
+                air_pressure, wind_speed, c.semix_z0m_snow, c.ϵ_snow,
+            )
+        @test prescribed_sensible == 12.0
+        @test prescribed_latent == -8.0
+    end
+
+    @testset "Energy-flux two-layer diffusion uses physical interface conductance" begin
+        model = BESSIModel(SnowpackGrid(1); Ntot=2, D_sh=0.0, ϵ_snow=0.0, ice_substrate_layers=0)
+        state = BESSIState(model)
+        state.N[1] = 2
+        state.mass[:, 1] .= 300.0
+        state.density[:, 1] .= 300.0
+        state.temperature[:, 1] .= (270.0, 260.0)
+        state.Tsrf[1] = 270.0
+        workspace = Chion.EnergyWorkspace(state.mass, Float64, state.Ntot, state.ncol)
+        dt_seconds = 3600.0
+
+        Chion.go_energy_flux!(
+            state, 1, 270.0, 0.0, 0.0, 0.0, dt_seconds;
+            scratch=workspace, q_sw_net=0.0, q_lw_down=0.0, q_sh=0.0, q_lh=0.0,
+        )
+
+        k1 = Chion._snow_thermal_conductivity(300.0, 270.0, model.c.rho_i)
+        k2 = Chion._snow_thermal_conductivity(300.0, 260.0, model.c.rho_i)
+        conductance = Chion.interface_conductance(k1, 1.0, k2, 1.0)
+        a = dt_seconds * conductance / (model.c.ci * 300.0)
+        temperature_difference = 270.0 - 260.0
+        expected = (
+            270.0 - a * temperature_difference / (1 + 2a),
+            260.0 + a * temperature_difference / (1 + 2a),
+        )
+        @test state.temperature[:, 1] ≈ collect(expected) atol=1e-12
+    end
+
+    @testset "Robin surface boundary melts over a subfreezing top-cell centre" begin
+        model = BESSIModel(SnowpackGrid(1); Ntot=1, D_sh=0.0, ϵ_snow=0.0, ice_substrate_layers=0)
+        state = BESSIState(model)
+        state.N[1] = 1
+        state.mass[1, 1] = 100.0
+        state.density[1, 1] = 300.0
+        state.temperature[1, 1] = 270.0
+        state.Tsrf[1] = 270.0
+        scratch = Chion.EnergyWorkspace(state.mass, Float64, 1, 1)
+
+        energy = Chion.go_energy_flux!(
+            state, 1, 280.0, 400.0, 0.0, 0.0, 86_400.0;
+            scratch, q_lw_down=0.0, q_sh=0.0, q_lh=0.0,
+        )
+
+        @test state.Tsrf[1] == model.c.T0
+        @test state.temperature[1, 1] < model.c.T0
+        @test energy.melt_energy_available > 0.0
+    end
+
+    @testset "Robin melting boundary retains subsurface conduction" begin
+        model = BESSIModel(SnowpackGrid(1); Ntot=2, D_sh=0.0, ϵ_snow=0.0, ice_substrate_layers=0)
+        state = BESSIState(model)
+        state.N[1] = 2
+        state.mass[:, 1] .= (100.0, 300.0)
+        state.density[:, 1] .= (300.0, 500.0)
+        state.temperature[:, 1] .= (270.0, 260.0)
+        state.Tsrf[1] = 270.0
+        before = copy(state.temperature[:, 1])
+        scratch = Chion.EnergyWorkspace(state.mass, Float64, 2, 1)
+        input_flux = 100.0
+        dt_seconds = 86_400.0
+        energy = Chion.go_energy_flux!(
+            state, 1, 280.0, 0.0, 0.0, 0.0, dt_seconds;
+            scratch, q_sw_net=input_flux, q_lw_down=0.0, q_sh=0.0, q_lh=0.0,
+        )
+
+        sensible_change = sum(state.mass[:, 1] .* model.c.ci .* (state.temperature[:, 1] .- before))
+        @test state.Tsrf[1] == model.c.T0
+        @test state.temperature[1, 1] < model.c.T0
+        @test sensible_change + energy.melt_energy_available ≈ input_flux * dt_seconds atol=1e-6
+    end
+
+    @testset "Fresh snow on bare ice takes the air temperature in every new layer" begin
+        model = BESSIModel(SnowpackGrid(1); diurnal_shortwave_substeps=false)
+        state = BESSIState(model)
+        state.ice_temperature .= 250.0
+        state.Tsrf[1] = 250.0
+        # 30 mm w.e. of snowfall is split over several fine near-surface layers.
+        forcing = Chion.SnowpackStepForcing(250.0, 1.0, 30.0 / 86_400, 0.0, 0.0, 5.0;
+            q_sw_net=0.0, has_q_sw_net=true, q_lw_down=0.0, has_q_lw_down=true,
+            q_sh=0.0, has_q_sh=true, q_lh=0.0, has_q_lh=true)
+        config = Chion._step_config_from_keywords(; Chion._bessi_step_kwargs(model)...)
+        Chion.column_step!(state, 1, forcing, config, Chion.ColumnarStepWorkspace(state))
+        @test state.N[1] >= 2
+        # Only radiative cooling acts, so no layer may end up warmer than the air.
+        @test maximum(state.temperature[1:state.N[1], 1]) <= 250.0 + 1e-9
+    end
+
+    @testset "Public energy solve couples the ice substrate on bare ice" begin
+        model = BESSIModel(SnowpackGrid(1))
+        state = BESSIState(model)
+        state.ice_temperature .= model.c.T0
+        state.Tsrf[1] = model.c.T0
+        energy = Chion.go_energy_flux!(state, 1, 250.0, 0.0, 0.0, 0.0, 86_400.0;
+            scratch=Chion.EnergyWorkspace(state), q_sw_net=0.0, q_lw_down=0.0, q_sh=0.0, q_lh=0.0)
+        @test !energy.needs_melt
+        @test state.Tsrf[1] < model.c.T0
+        @test state.ice_temperature[1, 1] < model.c.T0
+        @test_throws ErrorException Chion.go_energy_flux!(state, 1, 250.0, 0.0, 0.0, 0.0, 86_400.0;
+            scratch=Chion.EnergyWorkspace(state.mass, Float64, 1, 1), q_sw_net=0.0, q_lw_down=0.0, q_sh=0.0, q_lh=0.0)
+    end
+
     @testset "BESSIModel scheme types" begin
         grid = SnowpackGrid(1)
         m1 = BESSIModel(grid; albedo=:dynamic)
@@ -101,15 +285,71 @@ end
         m3 = BESSIModel(grid; albedo=:aging)
         m4 = BESSIModel(grid; densification=:htessel)
         m5 = BESSIModel(grid; fresh_snow_density=:parameterized)
+        m6 = BESSIModel(grid)
+        m7 = BESSIModel(grid; turbulent_flux_scheme=:bessi)
         @test m1.c.albedo_scheme == Chion.ALBEDO_DYNAMIC
         @test m2.c.albedo_scheme == Chion.ALBEDO_CONSTANT
         @test m3.c.albedo_scheme == Chion.ALBEDO_AGING
         @test m3.c.alpha_dry == 0.81
         @test m3.c.alpha_wet == 0.70
         @test m3.c.aging_cold_timescale_days == 20.0
-        @test m3.c.aging_melting_timescale_days == 5.0
+        @test m3.c.aging_melting_timescale_days == 2.0
         @test m4.c.low_density_densification == Chion.LOW_DENSIFICATION_HTESSEL
         @test m5.c.fresh_snow_density_scheme == Chion.FRESH_SNOW_DENSITY_PARAMETERIZED
+        @test m6.c.turbulent_flux_scheme == Chion.SEB_SEMIX
+        @test m6.c.seb_scheme == Chion.SEB_SEMIX
+        @test m7.c.turbulent_flux_scheme == Chion.SEB_BESSI
+
+        for kwargs in (
+            (; fresh_snow_density=:bessi),
+            (; fresh_snow_density=:htessel),
+            (; albedo=:legacy),
+            (; albedo=:bessi),
+        )
+            alias_error = _captured_exception(() -> BESSIModel(grid; kwargs...))
+            @test alias_error isa Exception
+            @test occursin("Use :", sprint(showerror, alias_error))
+        end
+        for selector in ("BESSIModel", :PDDModel, "ITMModel")
+            selector_error = _captured_exception(() -> build_model(selector, grid))
+            @test selector_error isa Exception
+            @test occursin("Use `:bessi`, `:pdd`, or `:itm`", sprint(showerror, selector_error))
+        end
+        @test build_model("bessi", grid) isa BESSIModel
+        @test build_model(BESSIModel, grid) isa BESSIModel
+        @test BESSIModel(grid; diurnal_shortwave_substeps=true).diurnal_shortwave_substeps
+        @test_throws MethodError BESSIModel(grid; diurnal_shortwave=true)
+        @test PDDModel(grid; pdd_method=:pism).pdd_method == Chion.PDD_METHOD_PISM
+        @test_throws Exception PDDModel(grid; pdd_method=:calov_greve)
+        @test Chion.SnowpackPhysicalConstants(
+            Float64; semix_snow_albedo=:warren_wiscombe,
+        ).semix_snow_albedo == Chion.SEMIX_ALBEDO_WW
+        @test RunOptions(backend=:threads).backend == :threads
+        @test_throws Exception RunOptions(backend=:cpu)
+
+        accumulation_state = BESSIState(m6)
+        @test_throws MethodError Chion._apply_accumulation!(
+            accumulation_state.N,
+            accumulation_state.mass,
+            accumulation_state.mass_w,
+            accumulation_state.density,
+            accumulation_state.temperature,
+            accumulation_state.mass_base,
+            accumulation_state.smb_ice,
+            accumulation_state.runoff,
+            accumulation_state.Tsrf,
+            accumulation_state.albedo,
+            1,
+            accumulation_state.c,
+            accumulation_state.Ntot,
+            accumulation_state.mass_max,
+            accumulation_state.mass_split,
+            accumulation_state.mass_min,
+            0.0,
+            0.0,
+            accumulation_state.c.seconds_per_day;
+            T_air=260.0,
+        )
 
         err = _captured_exception() do
             BESSIModel(grid; albedo=:aging, alpha_dry=0.5, alpha_wet=0.6)
@@ -131,14 +371,18 @@ end
         Chion.update_surface_albedo!(state, 1, 1.0)
         @test state.snow_age_days[1] == 1.0
         @test state.albedo[1] ≈ model.c.alpha_wet +
-                                 (model.c.alpha_dry - model.c.alpha_wet) * exp(-1 / 20) atol=1e-12
+                                 (model.c.alpha_dry - model.c.alpha_wet) *
+                                 exp(-1 / model.c.aging_cold_timescale_days) atol=1e-12
 
         state.temperature[1, 1] = model.c.T0
         Chion.update_surface_albedo!(state, 1, 1.0)
         @test state.snow_age_days[1] == 2.0
         @test state.albedo[1] ≈ model.c.alpha_wet +
                                  (model.c.alpha_dry - model.c.alpha_wet) *
-                                 exp(-1 / 20 - 1 / 5) atol=1e-12
+                                 exp(
+                                     -1 / model.c.aging_cold_timescale_days -
+                                     1 / model.c.aging_melting_timescale_days,
+                                 ) atol=1e-12
 
         Chion._update_aging_surface_albedo_arrays!(
             state.N,
@@ -241,7 +485,7 @@ end
                 write_netcdf=true,
                 output_dir=dir,
                 netcdf_path=joinpath(dir, "save_exact.nc"),
-                backend=:cpu,
+                backend=:threads,
                 years=1,
                 history_year_stride=1,
             )
@@ -345,7 +589,7 @@ end
 
     @testset "Bare-ice rainfall is routed directly to runoff" begin
         grid = SnowpackGrid(1)
-        model = BESSIModel(grid; Ntot=4)
+        model = BESSIModel(grid; Ntot=4, diurnal_shortwave_substeps=false)
         rainfall_mm = 7.0
         neutral_longwave_down = model.c.σ * model.c.ϵ_snow * model.c.T0^4
         forcing = SnowpackForcing(
@@ -358,7 +602,7 @@ end
             q_sh=[0.0],
             q_lh=[0.0],
         )
-        sim = Simulation(model; forcing=forcing, backend=:cpu, years=1)
+        sim = Simulation(model; forcing=forcing, backend=:threads, years=1)
 
         result = run!(sim; io=devnull)
 
@@ -368,6 +612,37 @@ end
         @test sim.now.melt[1] ≈ 0.0 atol=1e-12
         @test sum(sim.now.mass) ≈ 0.0 atol=1e-12
         @test sum(sim.now.mass_w) ≈ 0.0 atol=1e-12
+    end
+
+    @testset "Prescribed latent heat controls snow vapor mass" begin
+        grid = SnowpackGrid(1)
+        model = BESSIModel(grid; Ntot=1, albedo=:constant, diurnal_shortwave_substeps=false)
+        state = BESSIState(model)
+        state.N[1] = 1
+        state.mass[1, 1] = 100.0
+        state.density[1, 1] = 400.0
+        state.temperature[1, 1] = 263.15
+        state.Tsrf[1] = 263.15
+        q_lh = 20.0
+        forcing = SnowpackForcing(
+            dt_days=[1.0],
+            air_temperature=[263.15],
+            snowfall_rate=[0.0],
+            rainfall_rate=[0.0],
+            shortwave_down=[0.0],
+            q_sw_net=[0.0],
+            q_lw_down=[0.0],
+            q_sh=[0.0],
+            q_lh=[q_lh],
+            relative_humidity=[0.0],
+            air_pressure=[101325.0],
+        )
+        sim = Simulation(model; forcing=forcing, state=state, backend=:threads, years=1)
+        @test run!(sim; io=devnull).status == :complete
+        expected = q_lh * model.c.seconds_per_day / (model.c.Lv + model.c.Lm)
+
+        @test sim.now.vapor_mass[1] ≈ expected rtol=1e-12
+        @test sim.now.mass[1, 1] ≈ 100.0 + expected rtol=1e-12
     end
 
     @testset "BESSI simulation can skip annual metrics" begin
@@ -486,10 +761,10 @@ end
             rainfall_mm_day=[0.0],
             shortwave_down=[100.0],
         )
-        scheduled = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
+        scheduled = Simulation(BESSIModel(grid; Ntot=4, diurnal_shortwave_substeps=false); forcing=forcing, years=1)
         run!(scheduled; io=devnull)
 
-        external = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
+        external = Simulation(BESSIModel(grid; Ntot=4, diurnal_shortwave_substeps=false); forcing=forcing, years=1)
         integrator = init_integrator(external; io=devnull)
         step!(integrator, 1.0, true)
         result = finalize!(integrator)
@@ -508,7 +783,7 @@ end
             rainfall_mm_day=0.0,
             shortwave_down=100.0,
         )
-        sim = Simulation(BESSIModel(grid; Ntot=4); forcing=forcing, years=1)
+        sim = Simulation(BESSIModel(grid; Ntot=4, diurnal_shortwave_substeps=false); forcing=forcing, years=1)
         integrator = init_integrator(sim; io=devnull)
         surface_height = [0.0, 1000.0]
 
@@ -529,7 +804,7 @@ end
 
     @testset "non-spatial grids only require coordinates for NetCDF" begin
         grid = SnowpackGrid(1)
-        model = BESSIModel(grid; Ntot=4)
+        model = BESSIModel(grid; Ntot=4, diurnal_shortwave_substeps=false)
         forcing = SnowpackForcing(
             dt_days=[1.0, 1.0],
             air_temperature_c=[-10.0, -9.0],
@@ -563,7 +838,7 @@ end
             @test collect(zip(masked.grid.js, masked.grid.is)) == [(1, 1), (1, 2)]
             @test masked.grid.mask == [100.0 75.0; 0.0 25.0]
 
-            sim = Simulation(BESSIModel(loaded.grid; Ntot=4);
+            sim = Simulation(BESSIModel(loaded.grid; Ntot=4, diurnal_shortwave_substeps=false);
                 forcing=loaded.forcing,
                 years=1,
                 backend=:threads,
@@ -798,7 +1073,7 @@ end
             rainfall_mm_day=0.0,
             shortwave_down=0.0,
         )
-        sim = Simulation(model; forcing=forcing, backend=:cpu, years=1)
+        sim = Simulation(model; forcing=forcing, backend=:threads, years=1)
         integrator = init_integrator(sim; io=devnull)
         set_active_mask!(integrator, [true, false])
         step!(integrator)
@@ -821,7 +1096,7 @@ end
                 rainfall_mm_day=1.0,
                 shortwave_down=0.0,
             )
-            cpu = Simulation(model; forcing=forcing, backend=:cpu, years=1)
+            cpu = Simulation(model; forcing=forcing, backend=:threads, years=1)
             gpu = Simulation(model; forcing=forcing, backend=:gpu, years=1)
 
             run!(cpu; io=devnull)

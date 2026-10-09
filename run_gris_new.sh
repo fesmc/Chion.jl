@@ -1,19 +1,18 @@
 #!/bin/bash
-
-#SBATCH --qos=priority
-##SBATCH --partition=gpu
+#SBATCH --qos=gpushort
+#SBATCH --partition=gpu
 #SBATCH --nodes=1
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --time=0-5:30:00
 #SBATCH --job-name=gris_mar_case
-##SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:1
 #SBATCH --output=/p/projects/ou/labs/ai/Nils/Chion.jl/logs/gris-mar-%j.log
 #SBATCH --error=/p/projects/ou/labs/ai/Nils/Chion.jl/logs/gris-mar-%j.err
 
 set -euo pipefail
 
-module load julia
+module load julia/1.12.2
 module load hdf5
 module load netcdf-c
 
@@ -22,6 +21,9 @@ SCRIPT_PATH="${PROJECT_DIR}/examples/scripts/run_gris_forcing_file_case.jl"
 THREAD_COUNT="${SLURM_CPUS_PER_TASK}"
 
 export JULIA_NUM_THREADS="${THREAD_COUNT}"
+# Keep compute-node package resolution consistent with the project manifest.
+export JULIA_DEPOT_PATH="${PROJECT_DIR}/.julia-depot:/home/bochow/.julia:"
+export JULIA_PKG_PRECOMPILE_AUTO=0
 export OPENBLAS_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OMP_NUM_THREADS=1
@@ -33,6 +35,7 @@ export NETCDF_LIB="${NETCDF_LIB:-libnetcdf.so}"
 mkdir -p "${PROJECT_DIR}/logs"
 cd "${PROJECT_DIR}"
 
-srun julia -O3 --check-bounds=no --math-mode=fast \
+srun julia --project="${PROJECT_DIR}" --startup-file=no \
+    -O3 --check-bounds=no --math-mode=fast \
     --threads "${THREAD_COUNT}" \
     "${SCRIPT_PATH}"

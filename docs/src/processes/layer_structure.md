@@ -69,6 +69,25 @@ only enough basal mass to remove the excess depth:
 \Delta H_{\mathrm{base}} = H_{\mathrm{solid}} - H_{\mathrm{ref}}.
 ```
 
+## Near-Surface Layers
+
+`near_surface_layer_max_thicknesses_m` (default `(0.02, 0.05, 0.10, 0.30)` m)
+fixes the maximum thickness of the four uppermost layers. After accumulation
+and again after melt, sublimation, compaction and refreezing, the column is
+re-meshed conservatively so that the surface energy balance always sees a thin
+top cell. Without these limits the surface layer can hold up to `mass_max`.
+
+## Ice Substrate
+
+`ice_substrate_layers` (default 5) adds a fixed-geometry layer of glacier ice
+below the snow/firn column. Its top layer is `ice_substrate_top_thickness_m`
+(default 0.05 m) thick and thicknesses double downward (1.55 m in total for the
+defaults). The substrate is thermal only: it is solved in the same implicit heat
+equation as the snow layers with an insulated base, stores cold content and
+forms the surface when no snow is left. Bare ice must therefore be re-warmed to
+the melting point before it melts; melt and rain on bare ice run off. Set
+`ice_substrate_layers=0` for the original bare-ice treatment at the melting point.
+
 ## API
 
 ```@docs

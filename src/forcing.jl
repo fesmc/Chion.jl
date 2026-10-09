@@ -76,9 +76,12 @@ end
     size(field) == reference || error("`$name` must have shape $(reference), got $(size(field)).")
 end
 
+# Arrays are used as they are (the matrix helpers copy once); other iterables are collected.
+@inline _forcing_array(field) = field isa AbstractArray ? field : collect(field)
+
 @inline function _forcing_column_count(field, ntime::Int)
     field isa Number && return 1
-    data = collect(field)
+    data = _forcing_array(field)
     ndims(data) == 1 && return 1
     ndims(data) == 2 || error("Forcing fields must be scalars, vectors, or matrices.")
     size(data, 2) == ntime || error("Matrix forcing fields must have $ntime columns, got $(size(data, 2)).")
@@ -89,7 +92,7 @@ end
     if field isa Number
         return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
-    data = collect(field)
+    data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
         return TimeForcingMatrix(Float64.(data), ncol)
@@ -104,13 +107,13 @@ end
     if field isa Bool
         return _constant_forcing_matrix(field, (ncol, ntime))
     end
-    data = collect(field)
+    data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
         return TimeForcingMatrix(Bool.(data), ncol)
     elseif ndims(data) == 2
         size(data) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime).")
-        return Matrix{Bool}(Bool.(data))
+        return Matrix{Bool}(data)
     end
     error("`$name` must be a Bool, a vector of length $ntime, or a matrix of size ($ncol, $ntime).")
 end
@@ -119,7 +122,7 @@ end
     if field isa Number
         return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
-    data = collect(field)
+    data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ncol || error("`$name` vector input must have length $ncol.")
         return ColumnForcingMatrix(Float64.(data), ntime)
@@ -322,6 +325,7 @@ const _FORCING_OPTIONAL_FIELD_NAMES = (
     :dust_deposition,
     :z_sur_std,
     :prescribed_ice_albedo,
+    :prescribed_melt,
 )
 const _FORCING_AVAILABILITY_TO_FIELD = (
     has_q_sw_net=:q_sw_net,
@@ -335,6 +339,7 @@ const _FORCING_AVAILABILITY_TO_FIELD = (
     has_dust_deposition=:dust_deposition,
     has_z_sur_std=:z_sur_std,
     has_prescribed_ice_albedo=:prescribed_ice_albedo,
+    has_prescribed_melt=:prescribed_melt,
 )
 
 @generated function _forcing_field_property(fields::NamedTuple, ::Val{Name}) where {Name}
@@ -394,6 +399,8 @@ const _FORCING_MATRIX_FIELD_NAMES = (
     :has_z_sur_std,
     :prescribed_ice_albedo,
     :has_prescribed_ice_albedo,
+    :prescribed_melt,
+    :has_prescribed_melt,
 )
 
 const _FORCING_COPY_FIELD_NAMES = (
@@ -451,10 +458,24 @@ struct SnowpackStepForcing{NF <: AbstractFloat}
     has_z_sur_std::Bool
     prescribed_ice_albedo::NF
     has_prescribed_ice_albedo::Bool
+    prescribed_melt::NF
+    has_prescribed_melt::Bool
     latitude_deg::NF
     surface_height::NF
     day_of_year::NF
     solar_longitude_deg::NF
+end
+
+"""
+    _with_step_forcing(forcing, updates::NamedTuple)
+
+Copy `forcing` with the fields named in `updates` replaced. Generated per field
+set, so it stays type-stable inside GPU kernels.
+"""
+@generated function _with_step_forcing(forcing::SnowpackStepForcing{NF}, updates::NamedTuple{Names}) where {NF, Names}
+    args = [name in Names ? :(updates.$name) : :(getfield(forcing, $(QuoteNode(name))))
+            for name in fieldnames(SnowpackStepForcing{NF})]
+    return :(SnowpackStepForcing{NF}($(args...)))
 end
 
 function SnowpackStepForcing(
@@ -482,6 +503,7 @@ function SnowpackStepForcing(
     dust_deposition=zero(air_temperature), has_dust_deposition::Bool=false,
     z_sur_std=zero(air_temperature), has_z_sur_std::Bool=false,
     prescribed_ice_albedo=zero(air_temperature), has_prescribed_ice_albedo::Bool=false,
+    prescribed_melt=zero(air_temperature), has_prescribed_melt::Bool=false,
     latitude_deg=zero(air_temperature),
     surface_height=zero(air_temperature),
     day_of_year=zero(air_temperature),
@@ -509,6 +531,7 @@ function SnowpackStepForcing(
         has_prescribed_albedo,
         coszm, has_coszm, cloud, has_cloud, dust_deposition, has_dust_deposition,
         z_sur_std, has_z_sur_std, prescribed_ice_albedo, has_prescribed_ice_albedo,
+        prescribed_melt, has_prescribed_melt,
         latitude_deg,
         surface_height,
         day_of_year,
@@ -550,6 +573,7 @@ Base.@propagate_inbounds function _step_forcing_at(forcing, idx::Int, time_index
             dust_deposition=forcing.dust_deposition[idx, time_index], has_dust_deposition=forcing.has_dust_deposition[idx, time_index],
             z_sur_std=forcing.z_sur_std[idx, time_index], has_z_sur_std=forcing.has_z_sur_std[idx, time_index],
             prescribed_ice_albedo=forcing.prescribed_ice_albedo[idx, time_index], has_prescribed_ice_albedo=forcing.has_prescribed_ice_albedo[idx, time_index],
+            prescribed_melt=forcing.prescribed_melt[idx, time_index], has_prescribed_melt=forcing.has_prescribed_melt[idx, time_index],
             latitude_deg=forcing.latitude_deg[idx, time_index],
             surface_height=forcing.surface_height[idx, time_index],
             day_of_year=forcing.day_of_year[time_index],
@@ -604,6 +628,7 @@ function SnowpackForcing(;
     dust_deposition=nothing, has_dust_deposition=nothing,
     z_sur_std=nothing, has_z_sur_std=nothing,
     prescribed_ice_albedo=nothing, has_prescribed_ice_albedo=nothing,
+    prescribed_melt=nothing, has_prescribed_melt=nothing,
     time_values=nothing,
 )
     has_native = !isnothing(air_temperature) || !isnothing(snowfall_rate) || !isnothing(rainfall_rate)
@@ -722,6 +747,7 @@ function SnowpackForcing(;
     dust_deposition_m, has_dust_deposition_m = _optional_forcing_field(dust_deposition, has_dust_deposition, 0.0, dims, column_count, ntime, "dust_deposition")
     z_sur_std_m, has_z_sur_std_m = _optional_forcing_field(z_sur_std, has_z_sur_std, 0.0, dims, column_count, ntime, "z_sur_std")
     prescribed_ice_albedo_m, has_prescribed_ice_albedo_m = _optional_forcing_field(prescribed_ice_albedo, has_prescribed_ice_albedo, 0.0, dims, column_count, ntime, "prescribed_ice_albedo")
+    prescribed_melt_m, has_prescribed_melt_m = _optional_forcing_field(prescribed_melt, has_prescribed_melt, 0.0, dims, column_count, ntime, "prescribed_melt")
 
     for (name, field) in (
         ("snowfall_rate", snowfall_rate),
@@ -750,6 +776,7 @@ function SnowpackForcing(;
         ("dust_deposition", dust_deposition_m), ("has_dust_deposition", has_dust_deposition_m),
         ("z_sur_std", z_sur_std_m), ("has_z_sur_std", has_z_sur_std_m),
         ("prescribed_ice_albedo", prescribed_ice_albedo_m), ("has_prescribed_ice_albedo", has_prescribed_ice_albedo_m),
+        ("prescribed_melt", prescribed_melt_m), ("has_prescribed_melt", has_prescribed_melt_m),
     )
         _ensure_matching_field_sizes(dims, name, field)
     end
@@ -785,6 +812,7 @@ function SnowpackForcing(;
         dust_deposition=OptionalForcingField(dust_deposition_m, has_dust_deposition_m),
         z_sur_std=OptionalForcingField(z_sur_std_m, has_z_sur_std_m),
         prescribed_ice_albedo=OptionalForcingField(prescribed_ice_albedo_m, has_prescribed_ice_albedo_m),
+        prescribed_melt=OptionalForcingField(prescribed_melt_m, has_prescribed_melt_m),
     )
     return SnowpackForcing(calendar, fields)
 end

@@ -55,9 +55,9 @@ end
 
 function _normalize_model_name(model)
     name = lowercase(strip(String(model)))
-    name in ("bessi", "bessimodel") && return :bessi
-    name in ("pdd", "pddmodel") && return :pdd
-    name in ("itm", "itmmodel") && return :itm
+    name == "bessi" && return :bessi
+    name == "pdd" && return :pdd
+    name == "itm" && return :itm
     error("Unsupported model '$model'. Use `:bessi`, `:pdd`, or `:itm`.")
 end
 
@@ -315,7 +315,13 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
                 k = integrator.time_index
                 _step_scheduled!(integrator)
                 if monthly_mode
-                    accumulate_monthly!(monthly_state, backend_state, sim.forcing.dt_days[Int(k)])
+                    accumulate_monthly!(
+                        monthly_state,
+                        backend_state,
+                        runtime.step_fields,
+                        Int(k),
+                        sim.forcing.dt_days[Int(k)],
+                    )
                     if _is_month_boundary(sim.forcing.time_values, Int(k))
                         time_block!(timings, :write_netcdf) do
                             finalize_monthly!(monthly_state, backend_state)

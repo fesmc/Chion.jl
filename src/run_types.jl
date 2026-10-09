@@ -34,8 +34,7 @@ end
 
 @inline function normalize_backend(backend)
     value = lowercase(strip(String(backend)))
-    value == "cpu" && return :threads
-    value in ("threads", "gpu") || error("Unsupported backend '$backend'. Use `threads`, `cpu`, or `gpu`.")
+    value in ("threads", "gpu") || error("Unsupported backend '$backend'. Use `threads` or `gpu`.")
     return Symbol(value)
 end
 
@@ -54,7 +53,7 @@ function RunOptions(;
     output_dir::AbstractString="",
     netcdf_path::AbstractString="",
     write_netcdf::Bool=true,
-    netcdf_variables=copy(NETCDF_VARIABLES),
+    netcdf_variables=collect(NETCDF_VARIABLES),
     years::Integer=10,
     backend=:threads,
     history_year_stride::Integer=1,

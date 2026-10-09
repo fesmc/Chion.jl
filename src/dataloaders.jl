@@ -164,34 +164,60 @@ end
 
 _column_vector_y_x(field::AbstractMatrix{<:Real}) = vec(permutedims(Float64.(field), (2, 1)))
 
-function _wind_matrix(ds::NCDataset, wind_speed_name, ntime::Int, ny::Int, nx::Int, wind_default::Float64)
-    isnothing(wind_speed_name) && return fill(wind_default, nx * ny, ntime)
-    haskey(ds, wind_speed_name) || return fill(wind_default, nx * ny, ntime)
-    data, dim_names = _read_variable_data(ds, wind_speed_name)
-    # MAR UVZ is available at 10, 50, and 100 m. SEMIX uses the lowest,
-    # 10 m wind level, which is the appropriate near-surface wind input.
-    if ndims(data) == 4
-        lower_names = lowercase.(String.(dim_names))
-        wind_level_dim = findfirst(name -> occursin("zuv", name), lower_names)
-        if !isnothing(wind_level_dim)
-            data = Array(selectdim(data, wind_level_dim, 1))
-            dim_names = ntuple(i -> i < wind_level_dim ? dim_names[i] : dim_names[i + 1], 3)
-        end
+"""
+    read_forcing_columns(ds, name, rows, ntime, ny, nx; x_name="x", y_name="y")
+
+Read the gridded variable `name` from the open dataset `ds` as a
+`(length(rows), ntime)` `Float64` matrix in one pass. `rows` are flat column
+indices `i + (j - 1) * nx`. The x and y dimensions are found by the names
+`x_name`/`y_name` (or `x`/`y`) and the time dimension by name; any other
+dimension (vertical level, sector) is read at its first index only. Variables
+without recognisable x/y/time dimensions fall back to shape matching.
+"""
+function read_forcing_columns(ds::NCDataset, name::AbstractString, rows::AbstractVector{<:Integer},
+        ntime::Int, ny::Int, nx::Int; x_name::AbstractString="x", y_name::AbstractString="y")
+    haskey(ds, name) || error("Variable '$name' not found in forcing file.")
+    var = ds[name].var
+    names = lowercase.(String.(dimnames(var)))
+    tdim = findfirst(n -> n == "time" || n == "t" || occursin("time", n), names)
+    ydim = findfirst(n -> n == "y" || n == lowercase(y_name), names)
+    xdim = findfirst(n -> n == "x" || n == lowercase(x_name), names)
+    if isnothing(tdim) || isnothing(ydim) || isnothing(xdim)
+        return _column_matrix(_read_time_y_x(ds, name, ntime, ny, nx))[rows, :]
     end
-    raw = _as_time_y_x(data, dim_names, ntime, ny, nx, wind_speed_name)
-    return _column_matrix(raw)
+    sizes = size(var)
+    (sizes[tdim], sizes[ydim], sizes[xdim]) == (ntime, ny, nx) ||
+        error("`$name` must have time, y and x lengths ($ntime, $ny, $nx); got $(sizes).")
+    raw = var[ntuple(d -> d in (tdim, ydim, xdim) ? Colon() : 1, ndims(var))...]
+    kept = [d for d in 1:ndims(var) if d in (tdim, ydim, xdim)]
+    order = (findfirst(==(xdim), kept), findfirst(==(ydim), kept), findfirst(==(tdim), kept))
+    columns = reshape(order == (1, 2, 3) ? raw : permutedims(raw, order), nx * ny, ntime)
+    return _gather_rows(columns, rows)
 end
 
-function _read_optional_finite_field(ds::NCDataset, name, ntime::Int, ny::Int, nx::Int)
-    values = zeros(Float64, nx * ny, ntime)
-    available = fill(false, nx * ny, ntime)
-    (isnothing(name) || !haskey(ds, name)) && return values, available
+# Function barrier: the raw element type is only known at run time.
+function _gather_rows(columns::AbstractMatrix, rows::AbstractVector{<:Integer})
+    out = Matrix{Float64}(undef, length(rows), size(columns, 2))
+    @inbounds for t in axes(columns, 2), (k, row) in enumerate(rows)
+        out[k, t] = columns[row, t]
+    end
+    return out
+end
 
-    raw = _column_matrix(_read_time_y_x(ds, name, ntime, ny, nx))
-    available .= isfinite.(raw)
-    values .= raw
+"""Optional field as `(values, available)`: non-finite values are zero and unavailable.
+An absent field is `(nothing, nothing)`, which `SnowpackForcing` stores as a constant."""
+function _read_optional_columns(ds::NCDataset, name, rows, ntime::Int, ny::Int, nx::Int; kwargs...)
+    (isnothing(name) || !haskey(ds, name)) && return nothing, nothing
+    values = read_forcing_columns(ds, name, rows, ntime, ny, nx; kwargs...)
+    available = isfinite.(values)
     values[.!available] .= 0.0
     return values, available
+end
+
+"""Static `(y, x)` field as a vector over the flat column indices `rows`."""
+function _read_static_columns(ds::NCDataset, name::AbstractString, rows, ny::Int, nx::Int)
+    data, dim_names = _read_variable_data(ds, name)
+    return _column_vector_y_x(_as_y_x(data, dim_names, ny, nx, name))[rows]
 end
 
 """
@@ -242,50 +268,56 @@ function load_forcing_file(
         y = Float64.(vec(ds[y_name][:]))
         nx, ny = length(x), length(y)
 
-        tair_raw, tair_names = _read_variable_data(ds, air_temperature_name)
-        ntime = _infer_time_length(ds, time_name, tair_raw, ny, nx, air_temperature_name)
-        tair = _as_time_y_x(tair_raw, tair_names, ntime, ny, nx, air_temperature_name)
-        snow = _read_time_y_x(ds, snowfall_name, ntime, ny, nx)
-        rain = _read_time_y_x(ds, rainfall_name, ntime, ny, nx)
-        sw = _read_time_y_x(ds, shortwave_name, ntime, ny, nx)
+        # Select the columns first so that every field is read straight into them.
+        mask = ones(Float64, ny, nx)
+        rows = collect(1:(nx * ny))
+        if !isnothing(mask_name)
+            mask_data, mask_dims = _read_variable_data(ds, mask_name)
+            mask = _as_y_x(mask_data, mask_dims, ny, nx, mask_name)
+            mask_columns = _column_vector_y_x(mask)
+            rows = findall(isfinite.(mask_columns) .& (mask_columns .>= mask_threshold))
+            isempty(rows) && error("`$mask_name` selected no columns.")
+        end
+        ncol = length(rows)
 
+        ntime = if any(name -> haskey(ds, name), (time_name, "TIME", "YYYY"))
+            _infer_time_length(ds, time_name, nothing, ny, nx, air_temperature_name)
+        else
+            _infer_time_length(ds, time_name, first(_read_variable_data(ds, air_temperature_name)), ny, nx, air_temperature_name)
+        end
         time_values = _read_time_values(ds, time_name, ntime)
         dt_days = infer_dt_days(time_values)
+        columns(name) = read_forcing_columns(ds, name, rows, ntime, ny, nx; x_name, y_name)
+        optional(name) = _read_optional_columns(ds, name, rows, ntime, ny, nx; x_name, y_name)
 
-        tair_m = _column_matrix(tair)
-        snow_m = _column_matrix(snow)
-        rain_m = _column_matrix(rain)
-        sw_m = _column_matrix(sw)
-        wind_m = _wind_matrix(ds, wind_speed_name, ntime, ny, nx, wind_default)
-        latitude_deg = if !isnothing(latitude_name) && haskey(ds, latitude_name)
-            latitude_data, latitude_dims = _read_variable_data(ds, latitude_name)
-            _column_vector_y_x(_as_y_x(latitude_data, latitude_dims, ny, nx, latitude_name))
-        else
-            nothing
+        air_temperature = columns(air_temperature_name)
+        air_temperature_in_celsius && (air_temperature .+= 273.15)
+        snowfall_rate = columns(snowfall_name)
+        rainfall_rate = columns(rainfall_name)
+        if precipitation_in_mmwe_day
+            snowfall_rate ./= 86_400.0
+            rainfall_rate ./= 86_400.0
         end
+        shortwave_down = columns(shortwave_name)
+        wind_speed = isnothing(wind_speed_name) || !haskey(ds, wind_speed_name) ?
+            fill(wind_default, ncol, ntime) : columns(wind_speed_name)
+        latitude_deg = !isnothing(latitude_name) && haskey(ds, latitude_name) ?
+            _read_static_columns(ds, latitude_name, rows, ny, nx) : nothing
 
-        q_lw_m, has_q_lw_m = _read_optional_finite_field(
-            ds, q_lw_down_name, ntime, ny, nx,
-        )
-        q_sh_m, has_q_sh_m = _read_optional_finite_field(ds, q_sh_name, ntime, ny, nx)
-        q_lh_m, has_q_lh_m = _read_optional_finite_field(ds, q_lh_name, ntime, ny, nx)
-        relative_humidity_m, has_relative_humidity_m = _read_optional_finite_field(
-            ds, relative_humidity_name, ntime, ny, nx,
-        )
+        q_lw_m, has_q_lw_m = optional(q_lw_down_name)
+        q_sh_m, has_q_sh_m = optional(q_sh_name)
+        q_lh_m, has_q_lh_m = optional(q_lh_name)
+        relative_humidity_m, has_relative_humidity_m = optional(relative_humidity_name)
 
-        air_temperature = air_temperature_in_celsius ? tair_m .+ 273.15 : tair_m
-        air_pressure_m = fill(air_pressure_default, nx * ny, ntime)
-        surface_height_m = fill(NaN, nx * ny, ntime)
-        if !isnothing(surface_height_name) && haskey(ds, surface_height_name)
-            surface_height_data, surface_height_dims = _read_variable_data(ds, surface_height_name)
-            surface_height_v = _column_vector_y_x(_as_y_x(surface_height_data, surface_height_dims, ny, nx, surface_height_name))
-            surface_height_m .= surface_height_v
-        end
+        has_surface_height = !isnothing(surface_height_name) && haskey(ds, surface_height_name)
+        surface_height_m = fill(NaN, ncol, ntime)
+        has_surface_height && (surface_height_m .= _read_static_columns(ds, surface_height_name, rows, ny, nx))
+        air_pressure_m = fill(air_pressure_default, ncol, ntime)
         if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
-            pressure_raw = _column_matrix(_read_time_y_x(ds, air_pressure_name, ntime, ny, nx))
+            pressure_raw = columns(air_pressure_name)
             finite_pressure = isfinite.(pressure_raw)
             air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
-        elseif !isnothing(surface_height_name) && haskey(ds, surface_height_name)
+        elseif has_surface_height
             air_pressure_m .= air_pressure_from_surface_height(
                 surface_height_m,
                 air_temperature;
@@ -296,61 +328,42 @@ function load_forcing_file(
             )
         end
 
-        prescribed_albedo_m, has_prescribed_albedo_m = _read_optional_finite_field(
-            ds, prescribed_albedo_name, ntime, ny, nx,
-        )
-        coszm_m, has_coszm_m = _read_optional_finite_field(ds, coszm_name, ntime, ny, nx)
-        cloud_m, has_cloud_m = _read_optional_finite_field(ds, cloud_name, ntime, ny, nx)
-        dust_deposition_m, has_dust_deposition_m = _read_optional_finite_field(ds, dust_deposition_name, ntime, ny, nx)
-        z_sur_std_m, has_z_sur_std_m = _read_optional_finite_field(ds, z_sur_std_name, ntime, ny, nx)
-        prescribed_ice_albedo_m, has_prescribed_ice_albedo_m = _read_optional_finite_field(ds, prescribed_ice_albedo_name, ntime, ny, nx)
-
-        snowfall_rate = precipitation_in_mmwe_day ? snow_m ./ 86_400.0 : snow_m
-        rainfall_rate = precipitation_in_mmwe_day ? rain_m ./ 86_400.0 : rain_m
-
-        mask = ones(Float64, ny, nx)
-        rows = collect(1:(nx * ny))
-        if !isnothing(mask_name)
-            mask_data, mask_dims = _read_variable_data(ds, mask_name)
-            mask = _as_y_x(mask_data, mask_dims, ny, nx, mask_name)
-            mask_columns = _column_vector_y_x(mask)
-            rows = findall(
-                isfinite.(mask_columns) .&
-                (mask_columns .>= mask_threshold),
-            )
-            isempty(rows) && error("`$mask_name` selected no columns.")
-        end
+        prescribed_albedo_m, has_prescribed_albedo_m = optional(prescribed_albedo_name)
+        coszm_m, has_coszm_m = optional(coszm_name)
+        cloud_m, has_cloud_m = optional(cloud_name)
+        dust_deposition_m, has_dust_deposition_m = optional(dust_deposition_name)
+        z_sur_std_m, has_z_sur_std_m = optional(z_sur_std_name)
+        prescribed_ice_albedo_m, has_prescribed_ice_albedo_m = optional(prescribed_ice_albedo_name)
 
         js = repeat(collect(1:ny), inner=nx)[rows]
         is = repeat(collect(1:nx), outer=ny)[rows]
-        grid = SnowpackGrid(length(rows); x=x, y=y, js=js, is=is, mask=mask)
-        select_columns(field) = isnothing(mask_name) ? field : field[rows, :]
+        grid = SnowpackGrid(ncol; x=x, y=y, js=js, is=is, mask=mask)
         forcing = SnowpackForcing(
             time_values=time_values,
             dt_days=dt_days,
-            air_temperature=select_columns(air_temperature),
-            snowfall_rate=select_columns(snowfall_rate),
-            rainfall_rate=select_columns(rainfall_rate),
-            shortwave_down=select_columns(sw_m),
-            wind_speed=select_columns(wind_m),
-            q_lw_down=select_columns(q_lw_m),
-            has_q_lw_down=select_columns(has_q_lw_m),
-            q_sh=select_columns(q_sh_m),
-            has_q_sh=select_columns(has_q_sh_m),
-            q_lh=select_columns(q_lh_m),
-            has_q_lh=select_columns(has_q_lh_m),
-            relative_humidity=select_columns(relative_humidity_m),
-            has_relative_humidity=select_columns(has_relative_humidity_m),
-            surface_height=select_columns(surface_height_m),
-            air_pressure=select_columns(air_pressure_m),
-            prescribed_albedo=select_columns(prescribed_albedo_m),
-            has_prescribed_albedo=select_columns(has_prescribed_albedo_m),
-            coszm=select_columns(coszm_m), has_coszm=select_columns(has_coszm_m),
-            cloud=select_columns(cloud_m), has_cloud=select_columns(has_cloud_m),
-            dust_deposition=select_columns(dust_deposition_m), has_dust_deposition=select_columns(has_dust_deposition_m),
-            z_sur_std=select_columns(z_sur_std_m), has_z_sur_std=select_columns(has_z_sur_std_m),
-            prescribed_ice_albedo=select_columns(prescribed_ice_albedo_m), has_prescribed_ice_albedo=select_columns(has_prescribed_ice_albedo_m),
-            latitude_deg=isnothing(latitude_deg) || isnothing(mask_name) ? latitude_deg : latitude_deg[rows],
+            air_temperature=air_temperature,
+            snowfall_rate=snowfall_rate,
+            rainfall_rate=rainfall_rate,
+            shortwave_down=shortwave_down,
+            wind_speed=wind_speed,
+            q_lw_down=q_lw_m,
+            has_q_lw_down=has_q_lw_m,
+            q_sh=q_sh_m,
+            has_q_sh=has_q_sh_m,
+            q_lh=q_lh_m,
+            has_q_lh=has_q_lh_m,
+            relative_humidity=relative_humidity_m,
+            has_relative_humidity=has_relative_humidity_m,
+            surface_height=surface_height_m,
+            air_pressure=air_pressure_m,
+            prescribed_albedo=prescribed_albedo_m,
+            has_prescribed_albedo=has_prescribed_albedo_m,
+            coszm=coszm_m, has_coszm=has_coszm_m,
+            cloud=cloud_m, has_cloud=has_cloud_m,
+            dust_deposition=dust_deposition_m, has_dust_deposition=has_dust_deposition_m,
+            z_sur_std=z_sur_std_m, has_z_sur_std=has_z_sur_std_m,
+            prescribed_ice_albedo=prescribed_ice_albedo_m, has_prescribed_ice_albedo=has_prescribed_ice_albedo_m,
+            latitude_deg=latitude_deg,
         )
         return (grid=grid, forcing=forcing)
     finally

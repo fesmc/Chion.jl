@@ -2,29 +2,6 @@
 State access helpers shared across column, state, and array-backed kernels.
 """
 
-"""
-    _resolve_keyword_alias(preferred_value, legacy_value, preferred_name, legacy_name)
-
-Resolve a preferred keyword value against a legacy alias. Returns the preferred
-value when present, the legacy value otherwise, and throws if both are
-provided with different values.
-"""
-@inline function _resolve_keyword_alias(
-    preferred_value,
-    legacy_value,
-    preferred_name::AbstractString,
-    legacy_name::AbstractString,
-)
-    if !isnothing(preferred_value) && !isnothing(legacy_value) &&
-       !isequal(preferred_value, legacy_value)
-        error(
-            "Received both `$preferred_name` and `$legacy_name` with different values. " *
-            "Use one or provide matching values.",
-        )
-    end
-    return isnothing(preferred_value) ? legacy_value : preferred_value
-end
-
 @inline _n_active(N::Base.RefValue{<:Integer}, ::Int) = Int(N[])
 @inline _n_active(N::AbstractVector{<:Integer}, idx::Int) = @inbounds Int(N[idx])
 

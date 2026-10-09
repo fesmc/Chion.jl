@@ -47,6 +47,13 @@ T_s^{n+1}
 For multi-layer columns, the same surface forcing enters the top row of the
 implicit tridiagonal diffusion system.
 
+`BESSIModel` uses `turbulent_flux_scheme=:semix` by default for sensible and
+latent heat. Set `turbulent_flux_scheme=:bessi` to recover the BESSI bulk
+formulation. This choice is independent of `seb_scheme`, which defaults to
+`:semix` for consistent graybody longwave exchange, including incident absorption.
+Set `seb_scheme=:bessi` for the legacy longwave treatment. Prescribed
+`q_sh` or `q_lh` forcing always takes precedence over either parameterization.
+
 ### Shortwave Radiation
 
 If `q_sw_net` is not prescribed, absorbed shortwave is
@@ -60,12 +67,32 @@ where ``\alpha`` is the already diagnosed surface albedo stored in
 
 ### Longwave Radiation
 
-If `q_lw_down` is not prescribed, the code uses
+If `q_lw_down` is not prescribed, the default `longwave_scheme=:cloud_proxy`
+derives it once per daily forcing step as
+``q_{\mathrm{lw,down}} = \epsilon_{\mathrm{eff}}\,\sigma T_{\mathrm{air}}^4`` with
+
+```math
+\epsilon_{\mathrm{eff}} = \epsilon_0 + \epsilon_T (T_{\mathrm{air}} - T_0) + \epsilon_n n,
+\qquad
+n = 1 - \frac{\tau}{\tau_{\mathrm{clear}}(z)},
+\qquad
+\tau = \frac{Q_{\mathrm{sw,down}}}{Q_{\mathrm{sw,TOA}}},
+```
+
+where the daily top-of-atmosphere shortwave follows from latitude and season
+and ``\tau_{\mathrm{clear}} = 0.85 + 0.075\,z/\mathrm{km}``. The defaults
+(``\epsilon_0 = 0.624``, ``\epsilon_T = 0.0032\,\mathrm{K^{-1}}``,
+``\epsilon_n = 0.613``) were fitted to daily MAR longwave over Greenland;
+``\epsilon_{\mathrm{eff}}`` is relative to the near-surface air temperature and
+can exceed one under warm overcast skies. In the polar night, or for sub-daily
+forcing whose shortwave is not a daily mean, ``n`` is the constant
+`lw_night_cloud_fraction` (0.389). No forcing beyond the standard shortwave
+is needed. `longwave_scheme=:graybody` uses ``\epsilon_{\mathrm{air}}`` instead:
 
 ```math
 Q_{\mathrm{lw}} =
-\sigma\left(\epsilon_{\mathrm{air}} T_{\mathrm{air}}^{4}
-- \epsilon_{\mathrm{snow}} T_{s}^{4}\right).
+\epsilon_{\mathrm{snow}}\sigma\left(\epsilon_{\mathrm{air}} T_{\mathrm{air}}^{4}
+- T_{s}^{4}\right).
 ```
 
 The emitted longwave term is nonlinear in surface temperature, so the solver
@@ -79,9 +106,9 @@ This gives the implemented constant and linear parts
 
 ```math
 Q_{\mathrm{lw,const}} =
-\sigma\left(
+\epsilon_{\mathrm{snow}}\sigma\left(
 \epsilon_{\mathrm{air}}T_{\mathrm{air}}^4
-+ 3\epsilon_{\mathrm{snow}}(T_s^n)^4
++ 3(T_s^n)^4
 \right),
 ```
 
@@ -90,13 +117,27 @@ Q_{\mathrm{lw,lin}} =
 4\sigma\epsilon_{\mathrm{snow}}(T_s^n)^3.
 ```
 
-If `q_lw_down` is prescribed, the incoming longwave term is replaced by that
-value and only the outgoing ``\epsilon_{\mathrm{snow}} T_s^4`` term is
-linearized.
+If `q_lw_down` is prescribed, incident longwave is replaced by that value;
+its absorbed contribution is ``\epsilon_{\mathrm{snow}} q_{\mathrm{lw,down}}``.
+Only outgoing longwave is linearized. The legacy `seb_scheme=:bessi` uses
+unit incident absorption instead.
 
 ### Sensible Heat
 
-If `q_sh` is not prescribed, the code uses
+If `q_sh` is not prescribed, the default SEMIX scheme uses an aerodynamic
+resistance corrected for atmospheric stability:
+
+```math
+Q_{\mathrm{sh}} = \frac{\rho_{\mathrm{air}}c_{p,\mathrm{air}}}{r_a}
+(T_{\mathrm{air}}-T_s).
+```
+
+The resistance is based on wind speed, measurement height, snow or ice
+roughness, and a bulk-Richardson stability correction, ``1/(1 + b\,Ri_b)`` for
+stable stratification with `semix_stable_coefficient` ``b`` (default 40). The
+configured `semix_sensible_exchange_factor` (default 2.5) scales this exchange.
+
+With `turbulent_flux_scheme=:bessi`, the code instead uses
 
 ```math
 Q_{\mathrm{sh}}= D_{\mathrm{sh}}(T_{\mathrm{air}}-T_{s}),
@@ -144,8 +185,18 @@ P_{\mathrm{rain}} c_w (T_{\mathrm{air}} - T_0).
 If `q_lh` is prescribed, the code treats it as an additional turbulent latent
 heat flux. It is added to these snowfall/rain heat-term diagnoses rather than
 replacing them. If `q_lh` is not prescribed and relative humidity is
-available in the forcing, Chion falls back to a vapor-pressure
-parameterization:
+available, the default SEMIX parameterization diagnoses humidity exchange
+using the same stability-corrected aerodynamic resistance as sensible heat:
+
+```math
+Q_{\mathrm{vap}} =
+\frac{L\,\rho_{\mathrm{air}}}{r_a}(q_{\mathrm{air}}-q_s).
+```
+
+The latent heat ``L`` follows the surface phase, and
+`semix_latent_exchange_factor` scales the exchange. With
+`turbulent_flux_scheme=:bessi`, Chion instead uses the vapor-pressure
+parameterization
 
 ```math
 Q_{\mathrm{vap}} =
@@ -202,9 +253,9 @@ c_i \rho_s \frac{\partial T}{\partial t}
 
 ### Thermal Conductivity
 
-```math
-K(\rho) = K_i \left(\frac{\rho}{1000}\right)^{1.88}
-```
+The implementation uses the temperature-scaled, smooth snow/firn blend from
+Calonne et al. (2019), Eq. (5); it transitions between the snow and firn
+regressions around 450 kg m⁻³.
 
 ### Interface Conductance
 
@@ -220,14 +271,19 @@ For the interface between neighboring layers ``i`` and ``i+1``, the helper
 ```math
 G_{i+1/2}
 =
-\frac{K_i \Delta z_i + K_{i+1}\Delta z_{i+1}}
-{(\Delta z_i + \Delta z_{i+1})^2}.
+\left(
+\frac{\Delta z_i}{2K_i}
++ \frac{\Delta z_{i+1}}{2K_{i+1}}
+\right)^{-1}
+=
+\frac{2K_iK_{i+1}}
+{K_{i+1}\Delta z_i + K_i\Delta z_{i+1}}.
 ```
 
 and we have
 
 ```math
-\beta_i = -\frac{2\Delta t}{c_i m_i},
+\beta_i = -\frac{\Delta t}{c_i m_i},
 ```
 
 so the off-diagonal coefficients are proportional to ``\beta_i G_{i\pm1/2}``.

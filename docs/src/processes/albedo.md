@@ -47,9 +47,19 @@ The surface liquid-water content is diagnosed from the current pore volume:
 \frac{m_w / \rho_w}{m/\rho - m/\rho_i}.
 ```
 
-When `LWC_surf > 0` and `max_lwc_albedo > 0`, the code linearly relaxes the
-current albedo toward `alpha_wet` in proportion to
-`LWC_surf / max_lwc_albedo`.
+When `LWC_surf > 0` and `max_lwc_albedo > 0`, define
+`r = clamp(LWC_surf / max_lwc_albedo, 0, 1)`. The wetness adjustment is
+
+```math
+\alpha^{n+1} = \alpha_{\mathrm{wet}} +
+(\alpha^\star - \alpha_{\mathrm{wet}})(1-r)^{\Delta t_{\mathrm{days}}}.
+```
+
+This preserves the original one-day adjustment and makes wetness relaxation
+independent of subdivision at fixed wetness, in isolation from temperature
+aging. Zero elapsed time applies no wetness adjustment; `r = 1` reaches
+`alpha_wet` for any positive elapsed time. Combined aging, snowfall, and
+evolving column conditions can still introduce timestep dependence.
 
 ### Snowfall Refresh
 

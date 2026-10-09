@@ -67,6 +67,9 @@ struct BESSIState{
     wet_mass::VT
     bulk_density::VT
     liquid_water::VT
+    # Temperatures of the optional fixed-geometry ice substrate below the
+    # snow/firn column, `(ice_substrate_layers, column)`.
+    ice_temperature::MT
 end
 
 const _BESSI_STATE_PARAMETER_NAMES = (
@@ -86,6 +89,8 @@ function Base.propertynames(state::BESSIState, private::Bool=false)
 end
 
 const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature)
+# Layer-first matrices that share the layer storage conversions.
+@inline _is_bessi_layer_field(name::Symbol) = name in _BESSI_LAYER_FIELD_NAMES || name === :ice_temperature
 const _BESSI_ARRAY_FIELD_NAMES = (
     :N,
     _BESSI_LAYER_FIELD_NAMES...,
@@ -105,6 +110,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     :wet_mass,
     :bulk_density,
     :liquid_water,
+    :ice_temperature,
 )
 
 @inline get_fields(state::BESSIState) = NamedTuple{_BESSI_ARRAY_FIELD_NAMES}(
@@ -143,6 +149,9 @@ const _BESSI_ARRAY_FIELD_NAMES = (
             fields.mass_w[layer_index, idx] = zero(density_init)
             fields.density[layer_index, idx] = density_init
             fields.temperature[layer_index, idx] = temperature_init
+        end
+        for layer_index in 1:size(fields.ice_temperature, 1)
+            fields.ice_temperature[layer_index, idx] = temperature_init
         end
     end
 end
@@ -197,6 +206,7 @@ function BESSIState(model::BESSIModel)
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
+        Matrix{NF}(undef, model.ice_substrate_layers, ncol),
     )
     return _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
 end
@@ -204,7 +214,7 @@ end
 @inline _cpu_layer_matrix(matrix::TransposedLayerMatrix) = Array(matrix)
 @inline _cpu_layer_matrix(matrix) = Array(matrix)
 @inline _cpu_state_array(state::BESSIState, name::Symbol) =
-    name in _BESSI_LAYER_FIELD_NAMES ?
+    _is_bessi_layer_field(name) ?
     _cpu_layer_matrix(getfield(state, name)) :
     Array(getfield(state, name))
 
@@ -219,7 +229,7 @@ end
 @inline _gpu_layer_matrix(matrix, storage_type) =
     TransposedLayerMatrix(adapt(storage_type, permutedims(Array(matrix), (2, 1))))
 @inline _gpu_state_array(state::BESSIState, name::Symbol, storage_type) =
-    name in _BESSI_LAYER_FIELD_NAMES ?
+    _is_bessi_layer_field(name) ?
     _gpu_layer_matrix(getfield(state, name), storage_type) :
     adapt(storage_type, getfield(state, name))
 

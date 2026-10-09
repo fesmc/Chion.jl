@@ -9,36 +9,35 @@ shortwave peak. The scheme reconstructs an idealized solar cycle whose
 full-day mean equals the supplied shortwave forcing. An optional sinusoidal
 air-temperature cycle can be applied over the same substeps.
 
-The feature is disabled by default and applies only to `BESSIModel`.
+The feature is enabled by default (calibrated for daily GrIS forcing) and applies only to `BESSIModel`.
 
 ## Configuration
 
-Enable it when constructing the model:
+The defaults correspond to:
 
 ```julia
 model = BESSIModel(grid;
     diurnal_shortwave_substeps=true,
     diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps=3,
+    diurnal_shortwave_max_substeps=8,
     diurnal_shortwave_min_air_temperature_c=-8.0,
-    diurnal_temperature_cycle=false,
-    diurnal_temperature_amplitude_c=5.0,
+    diurnal_temperature_cycle=true,
+    diurnal_temperature_amplitude_c=1.0,
 )
 ```
 
-`diurnal_shortwave=true` is an alias that also enables
-`diurnal_shortwave_substeps`.
+Set `diurnal_shortwave_substeps=false` for forcing that is already sub-daily.
 
 The options mean:
 
 | Option | Default | Meaning |
 | --- | ---: | --- |
-| `diurnal_shortwave_substeps` | `false` | enable adaptive subdivision |
+| `diurnal_shortwave_substeps` | `true` | enable adaptive subdivision |
 | `diurnal_shortwave_threshold` | `0 W m^-2` | required peak-minus-mean shortwave excess |
-| `diurnal_shortwave_max_substeps` | `3` | number of substeps when subdivision activates; valid range 1–24 |
+| `diurnal_shortwave_max_substeps` | `8` | number of substeps when subdivision activates; valid range 1–24 |
 | `diurnal_shortwave_min_air_temperature_c` | `-8 degC` | subdivision requires daily mean air temperature above this value |
-| `diurnal_temperature_cycle` | `false` | reconstruct a diurnal air-temperature cycle |
-| `diurnal_temperature_amplitude_c` | `5 degC` | half-amplitude of that temperature cycle |
+| `diurnal_temperature_cycle` | `true` | reconstruct a diurnal air-temperature cycle |
+| `diurnal_temperature_amplitude_c` | `1 degC` | half-amplitude of that temperature cycle |
 
 Finite `latitude_deg` forcing is required when diurnal shortwave substeps are
 enabled. Solar longitude is derived from each forcing timestamp.

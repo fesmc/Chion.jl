@@ -5,23 +5,28 @@ Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
 using Chion
 
+env_bool(name, default) = lowercase(get(ENV, name, string(default))) in ("1", "true", "yes")
+
 # Edit this block to configure the run.
 const CONFIG = (
-    forcing_file="/Users/niboch001/Downloads/MARv3.14.3-10km-daily-ERA5-1940-1980_daily_climatology.nc",
+    forcing_file="/p/projects/ou/labs/ai/Nils/MAR3.14/MARv3.14.3-10km-daily-ERA5-1940-1980_daily_climatology.nc",
     model=:bessi,
-    output_file=joinpath(@__DIR__, "..", "plots", "gris_itm_monthly.nc"),
+    output_file=get(ENV, "CHION_OUTPUT_FILE", joinpath(@__DIR__, "..", "plots", "gris_itm_monthly.nc")),
     mask_threshold=50.0,
-    years=100,
-    backend=:threads,
-    write_netcdf=true,
+    years=parse(Int, get(ENV, "CHION_YEARS", "100")),
+    backend=:gpu,
+    write_netcdf=env_bool("CHION_WRITE_NETCDF", true),
     netcdf_variables=:monthly,
 )
 
 const MODEL_OPTIONS = (
     Ntot=20,
-    albedo=:dynamic,
+    albedo=:aging,
     densification=:bessi,
     fresh_snow_density=:constant,
+    diurnal_shortwave_substeps=true,
+    diurnal_shortwave_threshold=0.0,
+    diurnal_shortwave_max_substeps=4,
 )
 
 function main()
@@ -71,6 +76,9 @@ function main()
         write_netcdf=CONFIG.write_netcdf,
         netcdf_variables=CONFIG.netcdf_variables,
         netcdf_path=CONFIG.output_file,
+        # GPU year-summary reduction currently faults on this full spatial
+        # domain. Monthly output is independent of these optional summaries.
+        compute_year_metrics=false,
         name="gris_example",
     )
 

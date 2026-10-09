@@ -90,8 +90,8 @@ Seasonal snow retained in `snowpack_swe` is not credited to the ice sheet.
 
 NetCDF output requires a `SnowpackGrid` with spatial coordinates.
 
-`backend=:cpu` is an alias for `backend=:threads`; `backend=:gpu` requires a
-functional CUDA environment.
+Use `backend=:threads` for the CPU and `backend=:gpu` with a functional CUDA
+environment.
 
 ## Reference
 

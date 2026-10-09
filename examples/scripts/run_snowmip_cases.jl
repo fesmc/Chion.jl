@@ -128,8 +128,13 @@ end
 
 function run_case(met; ntot=60)
     forcing = forcing_from_met(met)
-    model = BESSIModel(SnowpackGrid(1); Ntot=ntot, densification=:htessel, fresh_snow_density=:htessel)
-    simulation = Simulation(model; forcing, backend=:cpu, write_netcdf=false)
+    model = BESSIModel(
+        SnowpackGrid(1);
+        Ntot=ntot,
+        densification=:htessel,
+        fresh_snow_density=:parameterized,
+    )
+    simulation = Simulation(model; forcing, backend=:threads, write_netcdf=false)
     workspace = Chion.ColumnarStepWorkspace(simulation.now)
     n = length(met.dates)
     depth, swe, density, albedo = fill(NaN, n), fill(NaN, n), fill(NaN, n), fill(NaN, n)

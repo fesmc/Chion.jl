@@ -126,46 +126,6 @@ end
     return max_substeps
 end
 
-@inline function _diurnal_substep_forcing(
-    forcing::SnowpackStepForcing,
-    fraction,
-    air_temperature,
-    shortwave_down,
-    q_sw_net,
-)
-    return SnowpackStepForcing(
-        air_temperature,
-        forcing.dt_days * fraction,
-        forcing.snowfall_rate,
-        forcing.rainfall_rate,
-        shortwave_down,
-        forcing.wind_speed;
-        q_sw_net=q_sw_net,
-        q_lw_down=forcing.q_lw_down,
-        q_sh=forcing.q_sh,
-        q_lh=forcing.q_lh,
-        has_q_sw_net=forcing.has_q_sw_net,
-        has_q_lw_down=forcing.has_q_lw_down,
-        has_q_sh=forcing.has_q_sh,
-        has_q_lh=forcing.has_q_lh,
-        relative_humidity=forcing.relative_humidity,
-        has_relative_humidity=forcing.has_relative_humidity,
-        air_pressure=forcing.air_pressure,
-        prescribed_albedo=forcing.prescribed_albedo,
-        has_prescribed_albedo=forcing.has_prescribed_albedo,
-        coszm=forcing.coszm,
-        has_coszm=forcing.has_coszm,
-        cloud=forcing.cloud,
-        has_cloud=forcing.has_cloud,
-        dust_deposition=forcing.dust_deposition,
-        has_dust_deposition=forcing.has_dust_deposition,
-        z_sur_std=forcing.z_sur_std,
-        has_z_sur_std=forcing.has_z_sur_std,
-        prescribed_ice_albedo=forcing.prescribed_ice_albedo,
-        has_prescribed_ice_albedo=forcing.has_prescribed_ice_albedo,
-        latitude_deg=forcing.latitude_deg,
-        surface_height=forcing.surface_height,
-        day_of_year=forcing.day_of_year,
-        solar_longitude_deg=forcing.solar_longitude_deg,
-    )
-end
+@inline _diurnal_substep_forcing(forcing::SnowpackStepForcing, fraction, air_temperature,
+    shortwave_down, q_sw_net, prescribed_melt) = _with_step_forcing(forcing, (;
+        air_temperature, dt_days=forcing.dt_days * fraction, shortwave_down, q_sw_net, prescribed_melt))
