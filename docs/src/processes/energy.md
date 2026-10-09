@@ -4,48 +4,58 @@ CurrentModule = Chion
 
 # Energy Balance
 
-`go_energy_flux!` solves the snow temperature profile with an implicit 1D
-conductive step plus linearized surface forcing. This page keeps the more
-extensive derivation-style description, but the formulas below have been
-checked against the current Julia implementation in `src/processes/energy_flux.jl`
-and `src/processes/surface_fluxes.jl`.
+`go_energy_flux!` solves the temperature profile of the snow/firn column and
+the optional ice substrate below it with one implicit conductive step and a
+linearized surface energy balance. The surface temperature `Tsrf` is the
+temperature of the snow–air interface; it carries no heat capacity of its own
+(Robin boundary). The formulas below follow `src/processes/energy_flux.jl` and
+`src/processes/surface_fluxes.jl`.
 
-For daily forcing, the optional
-[Diurnal Shortwave Cycle](diurnal_cycle.md) can subdivide a forcing step
-before this energy solve is applied.
+For daily forcing, the default [Diurnal Shortwave Cycle](diurnal_cycle.md)
+subdivides a forcing step before this energy solve is applied.
 
 ## Surface Flux Parameterization
 
 At the surface, the model combines absorbed shortwave radiation, longwave
-radiation, sensible heat exchange, and precipitation / latent-heat terms into a
-single surface forcing. In continuous form this can be written as
+radiation, sensible heat exchange, and precipitation / latent-heat terms into
+the surface energy balance ``Q(T_s) = Q_{sw} + Q_{lw} + Q_{sh} + Q_{p} + Q_{lh}``.
+The terms are linearized about the previous surface temperature,
 
 ```math
-c_i\, m_s \,\frac{\partial T_s}{\partial t}
-= Q_{sw} + Q_{lw} + Q_{sh} + Q_{p} + Q_{lh},
+Q(T_s) \approx Q_{\mathrm{const}} - Q_{\mathrm{lin}} T_s,
 ```
 
-with ice heat capacity ``c_i`` and surface-layer mass per area ``m_s``.
+and stored as `surface_flux_constant` and `surface_flux_linear`.
 
-In the implementation, these terms are rewritten into a linearized form
+### Robin Surface Boundary
 
-```math
-Q(T_s^{n+1}) \approx Q_{\mathrm{const}} - Q_{\mathrm{lin}} T_s^{n+1},
-```
-
-so that the single-layer update becomes
+The interface temperature balances the surface energy balance against the
+conductive flux into the first layer,
 
 ```math
-T_s^{n+1}
-=
-\frac{T_s^n + \lambda Q_{\mathrm{const}}}
-{1 + \lambda Q_{\mathrm{lin}}},
+Q(T_s) = G_s\,(T_s - T_1),
 \qquad
-\lambda = \frac{\Delta t}{c_i m_s}.
+G_s = \frac{2K_1}{\Delta z_1},
 ```
 
-For multi-layer columns, the same surface forcing enters the top row of the
-implicit tridiagonal diffusion system.
+where ``T_1``, ``K_1`` and ``\Delta z_1`` are the temperature, conductivity and
+thickness of the first layer (its centre lies ``\Delta z_1/2`` below the
+surface). Solving for the interface temperature,
+
+```math
+T_s = \frac{Q_{\mathrm{const}} + G_s T_1}{Q_{\mathrm{lin}} + G_s},
+```
+
+and eliminating it leaves the first layer as a regular finite-volume cell,
+
+```math
+c_i m_1 \frac{\partial T_1}{\partial t}
+= G_s\,(T_s - T_1) + G_{3/2}\,(T_2 - T_1),
+```
+
+so the surface forcing enters only the top row of the implicit tridiagonal
+system. A thin top layer therefore responds quickly without an artificial
+surface heat capacity.
 
 `BESSIModel` uses `turbulent_flux_scheme=:semix` by default for sensible and
 latent heat. Set `turbulent_flux_scheme=:bessi` to recover the BESSI bulk
@@ -106,21 +116,21 @@ This gives the implemented constant and linear parts
 
 ```math
 Q_{\mathrm{lw,const}} =
-\epsilon_{\mathrm{snow}}\sigma\left(
-\epsilon_{\mathrm{air}}T_{\mathrm{air}}^4
-+ 3(T_s^n)^4
+\epsilon_{\mathrm{s}}\left(
+q_{\mathrm{lw,down}}
++ 3\sigma(T_s^n)^4
 \right),
-```
-
-```math
+\qquad
 Q_{\mathrm{lw,lin}} =
-4\sigma\epsilon_{\mathrm{snow}}(T_s^n)^3.
+4\sigma\epsilon_{\mathrm{s}}(T_s^n)^3,
 ```
 
-If `q_lw_down` is prescribed, incident longwave is replaced by that value;
-its absorbed contribution is ``\epsilon_{\mathrm{snow}} q_{\mathrm{lw,down}}``.
-Only outgoing longwave is linearized. The legacy `seb_scheme=:bessi` uses
-unit incident absorption instead.
+where ``q_{\mathrm{lw,down}}`` is the prescribed, cloud-proxy or graybody
+incident longwave and ``\epsilon_{\mathrm{s}}`` is the surface emissivity:
+`ϵ_snow` over snow and `eps_ice` over bare ice. Only outgoing longwave is
+linearized; the energy diagnostics record the nonlinear flux at the resolved
+surface temperature. `seb_scheme=:bessi` uses unit incident absorption
+instead.
 
 ### Sensible Heat
 
@@ -133,7 +143,8 @@ Q_{\mathrm{sh}} = \frac{\rho_{\mathrm{air}}c_{p,\mathrm{air}}}{r_a}
 ```
 
 The resistance is based on wind speed, measurement height, snow or ice
-roughness, and a bulk-Richardson stability correction, ``1/(1 + b\,Ri_b)`` for
+roughness (`semix_z0m_snow`, or `semix_z0m_ice` over bare ice), and a
+bulk-Richardson stability correction, ``1/(1 + b\,Ri_b)`` for
 stable stratification with `semix_stable_coefficient` ``b`` (default 40). The
 configured `semix_sensible_exchange_factor` (default 2.5) scales this exchange.
 
@@ -230,17 +241,12 @@ Q_{sw}
 + Q_{\mathrm{lw,const}}
 + Q_{\mathrm{sh,const}}
 + K_{\mathrm{snow/rain/latent}},
-```
-
-```math
+\qquad
 Q_{\mathrm{lin}} =
 Q_{\mathrm{lw,lin}}
 + Q_{\mathrm{sh,lin}}
 + H_{\mathrm{snow/latent}}.
 ```
-
-In code, these are stored as `surface_flux_constant` and
-`surface_flux_linear`.
 
 ## Diffusion
 
@@ -288,6 +294,25 @@ and we have
 
 so the off-diagonal coefficients are proportional to ``\beta_i G_{i\pm1/2}``.
 
+### Ice Substrate
+
+With `ice_substrate_layers > 0` (default 5), the solve continues below the
+snow/firn layers into a fixed-geometry layer of glacier ice. Substrate layer
+``k`` has density ``\rho_i`` and thickness
+``\Delta z_k = 2^{k-1}\,\Delta z_{\mathrm{top}}`` with
+`ice_substrate_top_thickness_m` ``= \Delta z_{\mathrm{top}}`` (default 0.05 m,
+1.55 m in total for five layers). Its temperatures are stored in
+`state.ice_temperature` and are solved in the same tridiagonal system as the
+snow, with the usual interface conductance between the deepest snow layer and
+the top of the substrate. The base of the substrate is insulated.
+
+When a column has no snow, the top substrate layer forms the surface and the
+same Robin boundary applies, with ice emissivity and roughness. Bare ice
+therefore cools when the surface energy balance is negative and has to be
+re-warmed to the melting point before it melts. Melt and rain on bare ice run
+off. With `ice_substrate_layers=0`, bare ice is instead held at the melting
+point and only positive surface energy is used.
+
 ### Discrete System
 
 For interior layers, the implemented stencil can still be understood in the
@@ -298,24 +323,33 @@ a_i T_{i-1}^{n+1} + b_i T_i^{n+1} + c_i T_{i+1}^{n+1} = r_i,
 ```
 
 with coefficients assembled from the layer masses, conductivities, and
-thicknesses. The surface row additionally includes the linearized surface
-forcing, while the bottom row only sees conductive exchange with the layer
-above.
+thicknesses. The surface row additionally includes the eliminated Robin
+boundary term, while the bottom row (the deepest snow layer or the base of the
+ice substrate) only sees conductive exchange with the layer above.
 
 The multi-layer system is solved with the Thomas algorithm. 
 
 ## Melt-Point Constraint
 
-If the solved surface temperature exceeds `T0`, the code:
+If the interface temperature from the first solve exceeds `T0`, the code:
 
 1. marks the step as needing melt
-2. diagnoses the energy required to bring the surface to `T0`
-3. reruns the solve with the surface fixed at `T0`
-4. clamps the final profile to `T <= T0`
-5. returns any remaining positive surface energy as `melt_energy_available`
+2. fixes the interface at ``T_s = T_0`` and solves the system again, keeping
+   the conduction from the surface into the first layer,
+   ``G_s (T_0 - T_1)``
+3. clamps the final profile to `T <= T0`
+4. returns the remaining surface energy as melt energy,
 
-This two-pass handling avoids unphysical conductive fluxes from an
-above-melting-point surface into deeper cold snow.
+```math
+E_{\mathrm{melt}} =
+\max\!\left(0,\;
+\left[Q_{\mathrm{const}} - Q_{\mathrm{lin}} T_0 - G_s (T_0 - T_1)\right]\Delta t
+\right).
+```
+
+The energy that warms the snow below a melting surface is thus conducted into
+the column instead of being melted, and no conductive flux leaves an
+above-melting-point surface.
 
 ## API
 

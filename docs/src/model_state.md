@@ -14,7 +14,7 @@ in `src/step.jl`.
 - `sim.ref` is a deep copy of the initial state.
 - `sim.now` is the state advanced by `step!` and `run!`.
 
-`BESSIModel` and `PDDModel` are configuration objects. Use
+`BESSIModel`, `PDDModel`, and `ITMModel` are configuration objects. Use
 `initial_state(model)` when a workflow needs to seed or mutate state before
 constructing a `Simulation`.
 
@@ -34,8 +34,9 @@ with layer-wise arrays for:
 | `refreezing` | cumulative refrozen liquid mass | `kg m^-2` |
 | `sublimation` | cumulative sublimated mass | `kg m^-2` |
 | `latent_heat_flux_sum` | time-integrated latent heat-flux diagnostic | `W m^-2 day` |
-| `Tsrf` | diagnosed surface temperature | `K` |
+| `Tsrf` | snow–air (or ice–air) interface temperature | `K` |
 | `albedo` | surface albedo used by the energy solver | `1` |
+| `ice_temperature` | temperatures of the ice-substrate layers, `(ice_substrate_layers, column)` | `K` |
 
 `PDDState` stores `snowpack_swe`, `smb_ice`, `runoff`, and `pdd_sum` as
 column vectors. Its snow reservoir is capped by `PDDModel.H_snow_max`.
@@ -62,21 +63,31 @@ sets are handled and validated on the host before launch.
 
 ## Step Ordering
 
-For a snow-covered column, `step!` currently executes the processes in this
-order:
+With the default diurnal substeps, a daily forcing step is first split into
+substeps (see [Diurnal Shortwave Cycle](processes/diurnal_cycle.md)); with the
+default `longwave_scheme=:cloud_proxy`, the incident longwave is derived once
+from the daily forcing before that split. Each substep then executes, for a
+snow-covered column:
 
-1. accumulation and rainfall input
-2. albedo update
-3. densification
-4. energy solve
-5. melt, when the energy solve diagnoses melt energy
-6. percolation
-7. HTESSEL liquid-water compaction, when that scheme is active and liquid water remains
-8. refreezing
+1. accumulation and rainfall input; snow falling on a previously bare surface
+   takes the air temperature
+2. near-surface remeshing to the `near_surface_layer_max_thicknesses_m` profile
+3. albedo update
+4. densification
+5. energy solve of the snow column and the ice substrate
+6. melt, when the energy solve diagnoses melt energy
+7. percolation
+8. HTESSEL liquid-water compaction, when that scheme is active and liquid water remains
+9. refreezing
+10. near-surface remeshing again, so that the next energy solve sees the
+    prescribed thin top layers
 
-If a column starts the step without snow, `step!` takes the bare-ice branch:
-surface albedo is set to `alpha_ice`, positive bare-ice surface energy is
-converted directly into SMB loss, and the snow-column process chain is skipped.
+If a column has no snow after accumulation, `step!` takes the bare-ice branch
+and skips the snow-column process chain. With an ice substrate (the default),
+the energy solve runs on the substrate with the top substrate layer as the
+surface; bare ice cools and must re-warm before melting, and melt and rain run
+off. Without a substrate (`ice_substrate_layers=0`), bare ice is held at the
+melting point and positive surface energy is converted directly into SMB loss.
 
 For BESSI, `smb_ice` is the cumulative mass transferred to the ice-sheet
 reservoir through basal export and bare-ice surface mass changes. Monthly
@@ -88,8 +99,16 @@ NetCDF `smb_ice` is the change in that cumulative field during the month.
 - `mass_max = 500 kg m^-2`
 - `mass_split = 300 kg m^-2`
 - `mass_min = 100 kg m^-2`
+- `near_surface_layer_max_thicknesses_m = (0.02, 0.05, 0.10, 0.30)`
+- `ice_substrate_layers = 5`, `ice_substrate_top_thickness_m = 0.05`
 - `rho_s = 315 kg m^-3` for the constant fresh-snow-density scheme
 - `T0 = 273.15 K`
+
+The surface-energy defaults (`seb_scheme=:semix`, `albedo=:dynamic` with
+`alpha_dry, alpha_wet, alpha_ice = 0.81, 0.70, 0.40`,
+`longwave_scheme=:cloud_proxy`, SEMIX sensible heat factor 2.5 and stable
+coefficient 40, 8 diurnal substeps with a 1 K temperature cycle) were
+calibrated against MAR v3.14.3 over Greenland with daily forcing.
 
 ## Advanced Entry Points
 

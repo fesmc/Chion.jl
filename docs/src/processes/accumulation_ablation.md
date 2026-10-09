@@ -22,7 +22,8 @@ With snowfall rate ``P_{\mathrm{snow}}`` and rainfall rate
 ```
 
 If the column is empty, a new surface layer is created only when snowfall is
-positive. Rain alone does not create a snow layer.
+positive. Rain alone does not create a snow layer. Snow falling on a
+previously bare surface takes the air temperature in every new layer.
 
 ### Fresh-Snow Density
 
@@ -58,9 +59,13 @@ After mass addition, the code:
 
 1. splits the surface layer when `mass[1] > mass_max`
 2. frees space at the bottom when all `Ntot` layers are already active
-3. merges or rebalances the surface when `mass[1] < mass_min`
+3. merges or rebalances the surface when `mass[1] < mass_min`; with
+   near-surface layer limits (the default) this minimum is not applied,
+   because the remeshing controls the surface layers
 4. applies the snow-depth cap described on the
    [Layer Structure And Basal Transfer](layer_structure.md) page
+5. remeshes the four uppermost layers to `near_surface_layer_max_thicknesses_m`
+   (see [Near-Surface Layers](layer_structure.md#Near-Surface-Layers))
 
 ## Melt
 
@@ -83,13 +88,15 @@ Given a requested melt amount ``m_{\mathrm{melt}}``:
 
 The accumulation-and-melt-related ordering in one call to [`step!`](@ref) is:
 
-1. `_apply_accumulation!`
+1. `_apply_accumulation!` and near-surface remeshing
 2. densification
 3. [`go_energy_flux!`](@ref)
-4. `_apply_melt!` when melt energy is available
+4. `_apply_melt!` when melt energy is available, or the prescribed melt when
+   `prescribed_melt` forcing is supplied
 5. [`go_percolation!`](@ref)
 6. HTESSEL liquid-water compaction when enabled
 7. [`go_refreezing!`](@ref)
+8. near-surface remeshing
 
 ## Internal Reference
 

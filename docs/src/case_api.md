@@ -31,7 +31,12 @@ result = finalize!(integrator)
 `run!(sim)` is a wrapper over `init_integrator`, `run!(integrator)`, and
 `finalize!(integrator)`.
 
-`BESSIModel` resolves the layered mass and energy balance. `PDDModel` uses a
+`BESSIModel` resolves the layered mass and energy balance. Its defaults are
+the setup calibrated against MAR over Greenland for daily forcing (see
+[Model State And Step Flow](model_state.md#Important-Defaults)). The default
+diurnal substeps require `latitude_deg` in the forcing; set
+`diurnal_shortwave_substeps=false` when latitude is unavailable or the forcing
+is already sub-daily. `PDDModel` uses a
 bulk snow reservoir with configurable `ddf_snow`, `ddf_ice`,
 `refreezing_fraction`, `temperature_sigma`, `H_snow_max`, and
 `pdd_method`. The default `pdd_method=:simple` uses positive mean
@@ -41,7 +46,11 @@ at every timestep.
 `ITMModel` ports the Fortran insolation-temperature-melt scheme. It requires
 explicit `latitude_deg`, `surface_height`, `ice_thickness` (m), and
 `annual_pdd` (K day) in `SnowpackForcing`. `q_sw_net`, when supplied, is its
-insolation driver; otherwise ITM uses `shortwave_down`. It preserves the
+insolation driver; otherwise ITM uses `shortwave_down`. As in the original
+ITM, this insolation is top-of-atmosphere radiation that the model attenuates
+with its elevation-dependent transmissivity; supplying surface shortwave (for
+example MAR `SWD`) attenuates it twice and strongly underestimates melt. It
+preserves the
 Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
 `runoff`, `refreezing`) and cumulative `mmWE` fields.
 
@@ -59,7 +68,11 @@ Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
 - scalar and time-vector forcing values are broadcast over columns.
 
 `load_forcing_file` can select spatial columns directly with `mask_name` and
-`mask_threshold`. Selection depends only on that mask variable.
+`mask_threshold`. Selection depends only on that mask variable. Each field is
+read once straight into the selected columns; dimensions are recognised by the
+names given as `x_name`/`y_name` (or `x`/`y`) and a time dimension, and any
+other dimension (vertical level, sector) is read at its first index.
+`read_forcing_columns` exposes the same reader for additional variables.
 
 ## Outputs
 
@@ -67,7 +80,8 @@ Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
 `netcdf_variables` to request a state field such as `:thickness`, `:all`, or
 `:monthly`.
 
-For `BESSIModel`, `:monthly` writes monthly `smb_ice`, runoff, melt,
+For `BESSIModel`, `:monthly` writes monthly surface SMB (`surface_smb`:
+precipitation − runoff + vapour exchange), `smb_ice`, runoff, melt,
 refreezing and sublimation changes, plus monthly mean latent heat flux and
 albedo.
 
@@ -115,4 +129,5 @@ finished
 finalize!
 run!
 load_forcing_file
+read_forcing_columns
 ```
