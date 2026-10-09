@@ -1,6 +1,7 @@
 """BESSI monthly aggregation and buffered NetCDF output."""
 
 mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}}
+    surface_smb::VT
     smb_ice::VT
     runoff::VT
     melt::VT
@@ -11,6 +12,7 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}}
     count::Int
     days::Float64
     prev_smb_ice::VT
+    prev_vapor_mass::VT
     prev_runoff::VT
     prev_melt::VT
     prev_refreezing::VT
@@ -19,6 +21,7 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}}
 end
 
 mutable struct MonthlyOutputBuffer{MT <: AbstractMatrix{<:AbstractFloat}}
+    surface_smb::MT
     smb_ice::MT
     runoff::MT
     melt::MT
@@ -34,6 +37,7 @@ _zero_like(v) = fill!(similar(v), zero(eltype(v)))
 function MonthlyState(state::BESSIState)
     return MonthlyState(
         _zero_like(state.smb_ice),
+        _zero_like(state.smb_ice),
         _zero_like(state.runoff),
         _zero_like(state.melt),
         _zero_like(state.refreezing),
@@ -43,6 +47,7 @@ function MonthlyState(state::BESSIState)
         0,
         0.0,
         copy(state.smb_ice),
+        copy(state.vapor_mass),
         copy(state.runoff),
         copy(state.melt),
         copy(state.refreezing),
@@ -60,11 +65,27 @@ function MonthlyOutputBuffer(state::BESSIState; nmonth::Integer=12)
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
         similar(state.runoff, Float32, Int(nmonth), state.ncol),
+        similar(state.runoff, Float32, Int(nmonth), state.ncol),
         0,
     )
 end
 
-function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, dt_days::Real=1.0)
+@kernel function _accumulate_monthly_precipitation!(surface_smb, snowfall_rate, rainfall_rate, time_index::Int, dt_seconds)
+    idx = @index(Global)
+    @inbounds surface_smb[idx] += (snowfall_rate[idx, time_index] + rainfall_rate[idx, time_index]) * dt_seconds
+end
+
+function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, forcing_fields, time_index::Int, dt_days::Real=1.0)
+    kernel! = _accumulate_monthly_precipitation!(_ka_backend(monthly.surface_smb))
+    event = kernel!(
+        monthly.surface_smb,
+        forcing_fields.snowfall_rate,
+        forcing_fields.rainfall_rate,
+        time_index,
+        Float64(dt_days) * state.c.seconds_per_day;
+        ndrange=length(monthly.surface_smb),
+    )
+    _wait_kernel(event)
     monthly.albedo .+= state.albedo
     monthly.count += 1
     monthly.days += Float64(dt_days)
@@ -72,6 +93,8 @@ function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, dt_days::
 end
 
 function finalize_monthly!(monthly::MonthlyState, state::BESSIState)
+    monthly.surface_smb .-= state.runoff .- monthly.prev_runoff
+    monthly.surface_smb .+= state.vapor_mass .- monthly.prev_vapor_mass
     monthly.smb_ice .= state.smb_ice .- monthly.prev_smb_ice
     monthly.runoff .= state.runoff .- monthly.prev_runoff
     monthly.melt .= state.melt .- monthly.prev_melt
@@ -89,6 +112,7 @@ function finalize_monthly!(monthly::MonthlyState, state::BESSIState)
         monthly.albedo .= state.albedo
     end
     monthly.prev_smb_ice .= state.smb_ice
+    monthly.prev_vapor_mass .= state.vapor_mass
     monthly.prev_runoff .= state.runoff
     monthly.prev_melt .= state.melt
     monthly.prev_refreezing .= state.refreezing
@@ -98,7 +122,7 @@ function finalize_monthly!(monthly::MonthlyState, state::BESSIState)
 end
 
 function reset_monthly!(monthly::MonthlyState)
-    for field in (:smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
+    for field in (:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
         values = getfield(monthly, field)
         fill!(values, zero(eltype(values)))
     end

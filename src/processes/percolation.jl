@@ -32,7 +32,7 @@ function _go_percolation!(
     idx::Int,
     ice_density,
     water_density;
-    max_lwc=oftype(water_density, 0.05),
+    max_lwc=oftype(water_density, 0.1),
 )
     runoff = zero(water_density)
     n_layers = _n_active(N_storage, idx)

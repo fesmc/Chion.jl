@@ -14,7 +14,8 @@ end
 
 function _validate_model_forcing!(model::BESSIModel, forcing::SnowpackForcing)
     if model.diurnal_shortwave_substeps
-        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` when BESSI diurnal shortwave options are enabled.")
+        all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` for the default BESSI diurnal substeps; " *
+            "provide it or set `diurnal_shortwave_substeps=false` (e.g. for sub-daily forcing).")
     end
     if _uses_prescribed_albedo(model.c)
         all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")

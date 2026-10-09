@@ -57,7 +57,7 @@ function _apply_melt!(
         end
     end
 
-    _set_scalar!(Tsrf, idx, _n_active(N_storage, idx) > 0 ? _get_layer(temperature, 1, idx) : c.T0)
+    _set_scalar!(Tsrf, idx, c.T0)
     if _n_active(N_storage, idx) == 0
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end

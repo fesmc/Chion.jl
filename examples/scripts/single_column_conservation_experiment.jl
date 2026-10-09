@@ -65,7 +65,7 @@ function audited_step!(s, forcing, step, workspace, records)
             f.air_temperature, f.shortwave_down, linear, constant, dt,
             f.has_q_sw_net, f.q_sw_net, f.has_q_lw_down, f.q_lw_down,
             f.has_q_sh, f.q_sh, f.has_q_lh, f.q_lh,
-            f.has_relative_humidity, f.relative_humidity, f.air_pressure)
+            f.has_relative_humidity, f.relative_humidity, f.air_pressure, f.wind_speed)
         (result.heating, result)
     end
 

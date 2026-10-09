@@ -64,7 +64,7 @@ export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_acti
 export update_air_pressure!, sync_forcing!
 
 # Data loading
-export load_forcing_file
+export load_forcing_file, read_forcing_columns
 
 # Low-level / power-user exports
 export update_diagnostics!

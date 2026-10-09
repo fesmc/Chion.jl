@@ -35,7 +35,7 @@ function simulation(columns, ntot, years, steps, backend)
 end
 
 function worker()
-    backend = Symbol(arg("backend", "threads"))
+    backend = Symbol(arg("backend", "gpu"))
     columns = list("columns", "128,1024,10000")
     ntots = list("ntots", "4,8,12")
     years = parse(Int, arg("years", "1"))

@@ -3,11 +3,13 @@ Liquid-water refreezing for array-backed snowpack states.
 """
 
 """
-    _go_refreezing!(N_storage, mass_w, mass, density, temperature, idx, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density)
+    _go_refreezing!(N_storage, mass_w, mass, density, temperature, idx, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density, refreezing_correction=1)
 
 Refreeze liquid water in subfreezing layers of column `idx` until either cold
 content or liquid water is exhausted. Mutates liquid water, solid mass,
 density, and temperature in-place and returns the refrozen mass.
+`refreezing_correction` scales the cold-content-limited refreezing capacity;
+values above one represent an empirical unresolved heat sink.
 """
 function _go_refreezing!(
     N_storage,
@@ -20,6 +22,7 @@ function _go_refreezing!(
     ice_heat_capacity,
     latent_heat_of_melting,
     ice_density,
+    refreezing_correction=one(latent_heat_of_melting),
 )
     refrozen_mass = zero(latent_heat_of_melting)
     n_active = _n_active(N_storage, idx)
@@ -32,7 +35,9 @@ function _go_refreezing!(
            solid_mass > zero(solid_mass) &&
            liquid_water_mass > zero(liquid_water_mass) &&
            layer_temperature < melting_temperature
-            cold_content = (melting_temperature - layer_temperature) * ice_heat_capacity * solid_mass
+            cold_content = refreezing_correction *
+                           (melting_temperature - layer_temperature) *
+                           ice_heat_capacity * solid_mass
             available_latent_heat = liquid_water_mass * latent_heat_of_melting
 
             if cold_content < available_latent_heat
@@ -48,11 +53,11 @@ function _go_refreezing!(
                 _set_layer!(mass_w, layer_index, idx, liquid_water_mass - newly_refrozen_mass)
                 refrozen_mass += newly_refrozen_mass
             else
-                updated_temperature = (
+                updated_temperature = min(melting_temperature, (
                     liquid_water_mass * latent_heat_of_melting / ice_heat_capacity +
                     liquid_water_mass * melting_temperature +
                     layer_temperature * solid_mass
-                ) / (liquid_water_mass + solid_mass)
+                ) / (liquid_water_mass + solid_mass))
                 _set_layer!(temperature, layer_index, idx, updated_temperature)
                 _set_layer!(
                     density,
@@ -71,7 +76,7 @@ function _go_refreezing!(
 end
 
 """
-    go_refreezing!(liquid_water_mass, solid_mass, snow_density, layer_temperature, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density)
+    go_refreezing!(liquid_water_mass, solid_mass, snow_density, layer_temperature, melting_temperature, ice_heat_capacity, latent_heat_of_melting, ice_density; refreezing_correction=1)
 
 Run the refreezing scheme on vector-backed column data. Mutates the supplied
 arrays in-place and returns the refrozen mass together with released latent
@@ -86,6 +91,8 @@ function go_refreezing!(
     ice_heat_capacity,
     latent_heat_of_melting,
     ice_density,
+    ;
+    refreezing_correction=one(latent_heat_of_melting),
 )
     N_ref = Ref(length(solid_mass))
     refrozen_mass = _go_refreezing!(
@@ -99,6 +106,7 @@ function go_refreezing!(
         ice_heat_capacity,
         latent_heat_of_melting,
         ice_density,
+        refreezing_correction,
     )
     return (
         refrozen_mass=refrozen_mass,
@@ -131,6 +139,7 @@ function go_refreezing!(state, idx::Int)
         state.c.ci,
         state.c.Lm,
         state.c.rho_i,
+        state.refreezing_correction,
     )
     return (
         refrozen_mass=refrozen_mass,

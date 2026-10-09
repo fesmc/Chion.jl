@@ -26,7 +26,7 @@ ice density.
 end
 
 """
-    _apply_accumulation!(..., snowfall_rate, rainfall_rate, dt_seconds; air_temperature=nothing, T_air=nothing, wind_speed=...)
+    _apply_accumulation!(..., snowfall_rate, rainfall_rate, dt_seconds; air_temperature=nothing, wind_speed=...)
 
 Apply snowfall and rainfall to column `idx`, update the surface layer, and
 maintain layer-structure constraints such as split and merge thresholds.
@@ -172,11 +172,9 @@ function _apply_accumulation!(
     rainfall_rate,
     dt_seconds;
     air_temperature=nothing,
-    T_air=nothing,
     wind_speed=oftype(dt_seconds, 5),
 )
-    resolved_air_temperature = _resolve_keyword_alias(air_temperature, T_air, "air_temperature", "T_air")
-    resolved_air_temperature = isnothing(resolved_air_temperature) ? c.T0 : resolved_air_temperature
+    resolved_air_temperature = isnothing(air_temperature) ? c.T0 : air_temperature
     return _apply_accumulation_resolved!(
         N_storage,
         mass,

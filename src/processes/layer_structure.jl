@@ -435,6 +435,138 @@ function _free_slot_for_surface_split!(
 end
 
 """
+    _cap_near_surface_layer_thicknesses!(..., maximum_thicknesses_m, c)
+
+Enforce density-dependent geometric thickness limits on the first four active
+layers.  Excess material is conservatively transferred into the layer below,
+so this represents a vertical discretisation rather than a new physical
+reservoir or process parameter.  Infinite limits leave the standard adaptive
+mass-layer structure unchanged.
+"""
+function _cap_near_surface_layer_thicknesses!(
+    N_storage, mass, mass_w, density, temperature,
+    idx::Int, Ntot::Int, maximum_thicknesses_m::NTuple{4, Float64},
+    c::SnowpackPhysicalConstants,
+)
+    all(isinf, maximum_thicknesses_m) && return nothing
+    n = _n_active(N_storage, idx)
+    for layer_index in 1:4
+        layer_index > n && break
+        max_thickness = maximum_thicknesses_m[layer_index]
+        isfinite(max_thickness) || continue
+        layer_mass = _get_layer(mass, layer_index, idx)
+        max_mass = _get_layer(density, layer_index, idx) * oftype(layer_mass, max_thickness)
+        layer_mass <= max_mass && continue
+
+        if layer_index == n
+            # A full column keeps its deepest near-surface layer as it is.
+            layer_index == Ntot && break
+            n += 1
+            _set_n_active!(N_storage, idx, n)
+            _reset_layer_at_index!(mass, mass_w, density, temperature, idx, n, c)
+        end
+
+        excess_mass = layer_mass - max_mass
+        excess_water = _get_layer(mass_w, layer_index, idx) * excess_mass / _safe_positive(layer_mass)
+        layer_density = _get_layer(density, layer_index, idx)
+        layer_temperature = _get_layer(temperature, layer_index, idx)
+        below_mass = _get_layer(mass, layer_index + 1, idx)
+        below_density = _get_layer(density, layer_index + 1, idx)
+        below_temperature = _get_layer(temperature, layer_index + 1, idx)
+        combined_mass = excess_mass + below_mass
+        _set_layer!(mass, layer_index, idx, max_mass)
+        _set_layer!(mass_w, layer_index, idx, _get_layer(mass_w, layer_index, idx) - excess_water)
+        _set_layer!(mass, layer_index + 1, idx, combined_mass)
+        _set_layer!(mass_w, layer_index + 1, idx, _get_layer(mass_w, layer_index + 1, idx) + excess_water)
+        _set_layer!(density, layer_index + 1, idx,
+            combined_mass / _safe_positive(excess_mass / _safe_positive(layer_density) + below_mass / _safe_positive(below_density)))
+        _set_layer!(temperature, layer_index + 1, idx,
+            _mass_weighted_mean(excess_mass, layer_temperature, below_mass, below_temperature))
+    end
+    return nothing
+end
+
+"""
+    _fill_near_surface_layer_thicknesses!(..., target_thicknesses_m, c)
+
+Refill under-thickness near-surface layers from the material immediately
+below.  This is the upward half of conservative remeshing: solid mass, liquid
+water, volume, and sensible enthalpy are preserved.  A shallow column is not
+padded; its deepest active layer may remain thinner than its target.
+"""
+function _fill_near_surface_layer_thicknesses!(
+    N_storage, mass, mass_w, density, temperature, idx::Int,
+    target_thicknesses_m::NTuple{4, Float64}, c::SnowpackPhysicalConstants,
+)
+    all(isinf, target_thicknesses_m) && return nothing
+    n = _n_active(N_storage, idx)
+    for layer_index in 1:4
+        layer_index >= n && break
+        target_thickness = target_thicknesses_m[layer_index]
+        isfinite(target_thickness) || continue
+
+        while layer_index < n
+            receiver_mass = _get_layer(mass, layer_index, idx)
+            receiver_density = _get_layer(density, layer_index, idx)
+            receiver_volume = receiver_mass / _safe_positive(receiver_density)
+            missing_volume = oftype(receiver_volume, target_thickness) - receiver_volume
+            missing_volume <= EPS_TINY && break
+
+            donor_index = layer_index + 1
+            donor_mass = _get_layer(mass, donor_index, idx)
+            donor_density = _get_layer(density, donor_index, idx)
+            transferred_mass = min(donor_mass, missing_volume * donor_density)
+            transferred_mass <= EPS_TINY && break
+            donor_water = _get_layer(mass_w, donor_index, idx)
+            transferred_water = donor_water * transferred_mass / _safe_positive(donor_mass)
+            receiver_water = _get_layer(mass_w, layer_index, idx)
+            receiver_temperature = _get_layer(temperature, layer_index, idx)
+            donor_temperature = _get_layer(temperature, donor_index, idx)
+            combined_mass = receiver_mass + transferred_mass
+            combined_volume = receiver_volume + transferred_mass / _safe_positive(donor_density)
+
+            _set_layer!(mass, layer_index, idx, combined_mass)
+            _set_layer!(mass_w, layer_index, idx, receiver_water + transferred_water)
+            _set_layer!(density, layer_index, idx, combined_mass / _safe_positive(combined_volume))
+            _set_layer!(temperature, layer_index, idx,
+                _mass_weighted_mean(receiver_mass, receiver_temperature, transferred_mass, donor_temperature))
+            remaining_donor_mass = donor_mass - transferred_mass
+            _set_layer!(mass, donor_index, idx, remaining_donor_mass)
+            _set_layer!(mass_w, donor_index, idx, donor_water - transferred_water)
+
+            if remaining_donor_mass <= EPS_EMPTY_LAYER
+                @inbounds for k in donor_index:(n - 1)
+                    _set_layer!(mass, k, idx, _get_layer(mass, k + 1, idx))
+                    _set_layer!(mass_w, k, idx, _get_layer(mass_w, k + 1, idx))
+                    _set_layer!(density, k, idx, _get_layer(density, k + 1, idx))
+                    _set_layer!(temperature, k, idx, _get_layer(temperature, k + 1, idx))
+                end
+                _reset_layer_at_index!(mass, mass_w, density, temperature, idx, n, c)
+                n -= 1
+                _set_n_active!(N_storage, idx, n)
+            end
+        end
+    end
+    return nothing
+end
+
+@inline function _remesh_near_surface_layers!(
+    N_storage, mass, mass_w, density, temperature,
+    idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, Float64},
+    c::SnowpackPhysicalConstants,
+)
+    _cap_near_surface_layer_thicknesses!(
+        N_storage, mass, mass_w, density, temperature,
+        idx, Ntot, target_thicknesses_m, c,
+    )
+    _fill_near_surface_layer_thicknesses!(
+        N_storage, mass, mass_w, density, temperature, idx,
+        target_thicknesses_m, c,
+    )
+    return nothing
+end
+
+"""
     _enforce_snow_depth_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, dt_seconds, c)
 
 Apply the column depth-cap rule after accumulation, removing excess basal mass
@@ -466,10 +598,7 @@ function _enforce_snow_depth_cap!(
         end
     end
 
-    reference_depth = BESSI_REFERENCE_LAYER_COUNT *
-                      mass_split *
-                      oftype(mass_split, 1.5) /
-                      oftype(mass_split, BESSI_REFERENCE_DEPTH_DENSITY)
+    reference_depth = oftype(mass_split, BESSI_REFERENCE_SNOW_DEPTH_M)
     excess_depth = total_active_snow_depth - reference_depth
     if excess_depth > zero(excess_depth)
         excess_basal_mass = zero(eltype(mass))

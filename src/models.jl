@@ -5,7 +5,7 @@ Model definitions exposed by Chion's simulation-first API.
 abstract type AbstractSnowModel end
 
 """Immutable BESSI configuration shared by the model and its state containers.
-Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, and `:aging`.
+Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, `:aging`, and `:semix`.
 """
 struct BESSIParameters{C <: SnowpackPhysicalConstants}
     c::C
@@ -15,19 +15,35 @@ struct BESSIParameters{C <: SnowpackPhysicalConstants}
     mass_min::Float64
     density_init::Float64
     temperature_init::Float64
+    refreezing_correction::Float64
     diurnal_shortwave_threshold::Float64
     diurnal_shortwave_max_substeps::Int
     diurnal_shortwave_min_air_temperature::Float64
     diurnal_temperature_amplitude::Float64
+    diurnal_temperature_amplitude_gradient::Float64
+    diurnal_temperature_amplitude_reference_height::Float64
+    diurnal_temperature_amplitude_max::Float64
+    near_surface_layer_max_thicknesses_m::NTuple{4, Float64}
+    ice_substrate_layers::Int
+    ice_substrate_top_thickness_m::Float64
 end
 
 const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_temperature_cycle)
 
 """
-    BESSIModel(grid; albedo=:dynamic, densification=:bessi, ...)
+    BESSIModel(grid; albedo=:dynamic, seb_scheme=:semix,
+               turbulent_flux_scheme=:semix, densification=:bessi, ...)
 
 Configuration for the layered BESSI snowpack model. Evolving state is stored in
-`BESSIState` and owned by `Simulation.now`.
+`BESSIState` and owned by `Simulation.now`. Turbulent sensible and latent heat
+use the SEMIX formulation by default; set `turbulent_flux_scheme=:bessi` to use
+the BESSI formulation. `seb_scheme` independently controls the remaining
+surface-energy-balance details and defaults to `:semix` for consistent graybody
+longwave exchange. Set `seb_scheme=:bessi` for the original BESSI formulation.
+
+The defaults are the GrIS-calibrated setup for daily forcing: dynamic albedo,
+cloud-proxy longwave, a 5-layer thermal ice substrate, fine near-surface layers
+and up to 8 diurnal substeps with a 1 K air-temperature cycle.
 """
 struct BESSIModel{
         DiurnalShortwave,
@@ -58,6 +74,8 @@ end
 function BESSIModel(
     grid::SnowpackGrid;
     albedo::Symbol=:dynamic,
+    seb_scheme::Symbol=:semix,
+    turbulent_flux_scheme::Symbol=:semix,
     densification::Symbol=:bessi,
     fresh_snow_density::Symbol=:constant,
     Ntot::Int=DEFAULT_NTOT,
@@ -66,23 +84,40 @@ function BESSIModel(
     mass_min::Real=DEFAULT_MASS_MIN,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
-    diurnal_shortwave::Bool=false,
-    diurnal_shortwave_substeps::Bool=false,
+    refreezing_correction::Real=1.0,
+    diurnal_shortwave_substeps::Bool=true,
     diurnal_shortwave_threshold::Real=0.0,
-    diurnal_shortwave_max_substeps::Integer=3,
+    diurnal_shortwave_max_substeps::Integer=8,
     diurnal_shortwave_min_air_temperature_c::Real=-8.0,
-    diurnal_temperature_cycle::Bool=false,
-    diurnal_temperature_amplitude_c::Real=5.0,
+    diurnal_temperature_cycle::Bool=true,
+    diurnal_temperature_amplitude_c::Real=1.0,
+    diurnal_temperature_amplitude_gradient_c_per_km::Real=0.0,
+    diurnal_temperature_amplitude_reference_height_m::Real=0.0,
+    diurnal_temperature_amplitude_max_c::Real=1.0,
+    near_surface_layer_max_thicknesses_m::NTuple{4, <:Real}=(0.02, 0.05, 0.10, 0.30),
+    ice_substrate_layers::Integer=5,
+    ice_substrate_top_thickness_m::Real=0.05,
     kwargs...,
 )
+    isfinite(refreezing_correction) && refreezing_correction > 0 ||
+        error("`refreezing_correction` must be finite and positive.")
     diurnal_shortwave_threshold >= 0 || error("`diurnal_shortwave_threshold` must be non-negative.")
     1 <= diurnal_shortwave_max_substeps <= 24 || error("`diurnal_shortwave_max_substeps` must be between 1 and 24.")
     isfinite(diurnal_shortwave_min_air_temperature_c) || error("`diurnal_shortwave_min_air_temperature_c` must be finite.")
     diurnal_temperature_amplitude_c >= 0 || error("`diurnal_temperature_amplitude_c` must be non-negative.")
-    resolved_diurnal_shortwave_substeps = diurnal_shortwave_substeps || diurnal_shortwave
+    isfinite(diurnal_temperature_amplitude_gradient_c_per_km) ||
+        error("`diurnal_temperature_amplitude_gradient_c_per_km` must be finite.")
+    diurnal_temperature_amplitude_max_c >= diurnal_temperature_amplitude_c ||
+        error("`diurnal_temperature_amplitude_max_c` must be at least the base amplitude.")
+    all(thickness -> thickness > 0, near_surface_layer_max_thicknesses_m) ||
+        error("`near_surface_layer_max_thicknesses_m` must contain positive values.")
+    ice_substrate_layers >= 0 || error("`ice_substrate_layers` must be non-negative.")
+    ice_substrate_top_thickness_m > 0 || error("`ice_substrate_top_thickness_m` must be positive.")
     c = SnowpackPhysicalConstants(
         Float64;
         albedo_scheme=albedo,
+        seb_scheme=seb_scheme,
+        turbulent_flux_scheme=turbulent_flux_scheme,
         low_density_densification=densification,
         fresh_snow_density_scheme=fresh_snow_density,
         kwargs...,
@@ -97,13 +132,20 @@ function BESSIModel(
         mass_min,
         Float64(density_init),
         Float64(temperature_init),
+        Float64(refreezing_correction),
         Float64(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),
         Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
         Float64(diurnal_temperature_amplitude_c),
+        Float64(diurnal_temperature_amplitude_gradient_c_per_km) / 1000,
+        Float64(diurnal_temperature_amplitude_reference_height_m),
+        Float64(diurnal_temperature_amplitude_max_c),
+        ntuple(i -> Float64(near_surface_layer_max_thicknesses_m[i]), 4),
+        Int(ice_substrate_layers),
+        Float64(ice_substrate_top_thickness_m),
     )
     return BESSIModel{
-        resolved_diurnal_shortwave_substeps,
+        diurnal_shortwave_substeps,
         diurnal_temperature_cycle,
         typeof(grid),
         typeof(parameters),
@@ -118,7 +160,7 @@ const PDD_METHOD_PISM = UInt8(2)
 
 @inline function _normalize_pdd_method(method::Symbol)
     method == :simple && return PDD_METHOD_SIMPLE
-    method in (:pism, :calov_greve) && return PDD_METHOD_PISM
+    method == :pism && return PDD_METHOD_PISM
     error("Unsupported PDD method '$method'. Use :simple or :pism.")
 end
 
