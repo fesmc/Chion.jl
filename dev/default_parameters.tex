@@ -1,0 +1,80 @@
+% Auto-generated reference table for Chion constructor defaults.
+% Source: src/models.jl (BESSIModel) and src/constants.jl (SnowpackPhysicalConstants).
+\begin{longtable}{@{}lllp{5.3cm}@{}}
+\caption{Default BESSI model and physical parameters in Chion.}\label{tab:chion-default-parameters}\\
+\toprule
+Group & Parameter & Default & Description \\
+\midrule
+\endfirsthead
+\toprule
+Group & Parameter & Default & Description \\
+\midrule
+\endhead
+\bottomrule
+\endfoot
+Model & \texttt{albedo} & \texttt{:dynamic} & Surface-albedo scheme. \\
+Model & \texttt{seb\_scheme} & \texttt{:semix} & Surface-energy-balance scheme. \\
+Model & \texttt{turbulent\_flux\_scheme} & \texttt{:semix} & Turbulent-flux scheme. \\
+Model & \texttt{densification} & \texttt{:bessi} & Low-density densification scheme. \\
+Model & \texttt{fresh\_snow\_density} & \texttt{:constant} & Fresh-snow density scheme. \\
+Model & \texttt{Ntot} & 15 & Maximum number of snow/firn layers. \\
+Model & \texttt{mass\_max} & 500 kg m$^{-2}$ & Maximum mass of a layer. \\
+Model & \texttt{mass\_split} & 300 kg m$^{-2}$ & Mass threshold used for layer splitting. \\
+Model & \texttt{mass\_min} & 100 kg m$^{-2}$ & Minimum mass retained in a layer. \\
+Model & \texttt{density\_init} & 300 kg m$^{-3}$ & Initial snow density. \\
+Model & \texttt{temperature\_init} & 273 K & Initial snow temperature. \\
+Model & \texttt{refreezing\_correction} & 1.0 & Multiplier on cold-content-limited refreezing capacity. \\
+Model & \texttt{diurnal\_shortwave\_substeps} & true & Enable diurnal shortwave substeps. \\
+Model & \texttt{diurnal\_shortwave\_threshold} & 0 W m$^{-2}$ & Net-shortwave threshold for substepping. \\
+Model & \texttt{diurnal\_shortwave\_max\_substeps} & 8 & Maximum daily shortwave substeps. \\
+Model & \texttt{diurnal\_shortwave\_min\_air\_temperature\_c} & $-8\,^\circ$C & Minimum air temperature for substepping. \\
+Model & \texttt{diurnal\_temperature\_cycle} & true & Enable diurnal air-temperature cycle. \\
+Model & \texttt{diurnal\_temperature\_amplitude\_c} & $1\,^\circ$C & Base diurnal temperature amplitude. \\
+Model & \texttt{diurnal\_temperature\_amplitude\_gradient\_c\_per\_km} & $0\,^\circ$C km$^{-1}$ & Elevation gradient of the amplitude. \\
+Model & \texttt{diurnal\_temperature\_amplitude\_reference\_height\_m} & 0 m & Reference elevation for the amplitude. \\
+Model & \texttt{diurnal\_temperature\_amplitude\_max\_c} & $1\,^\circ$C & Maximum diurnal temperature amplitude. \\
+Model & \texttt{near\_surface\_layer\_max\_thicknesses\_m} & 0.02, 0.05, 0.10, 0.30 m & Maximum thicknesses of the four uppermost layers. \\
+Model & \texttt{ice\_substrate\_layers} & 5 & Thermal ice-substrate layers below the snow/firn column. \\
+Model & \texttt{ice\_substrate\_top\_thickness\_m} & 0.05 m & Top substrate layer thickness (doubling downward). \\
+\midrule
+Material & \texttt{rho\_s}, \texttt{rho\_i}, \texttt{rho\_w} & 315, 917, 1000 kg m$^{-3}$ & Snow, ice, and water densities. \\
+Material & \texttt{rho\_s\_a}, \texttt{rho\_s\_b}, \texttt{rho\_s\_c} & 109, 6, 26 & BESSI fresh-snow-density coefficients. \\
+Material & \texttt{Ki} & 2.1 W m$^{-1}$ K$^{-1}$ & Ice thermal conductivity. \\
+Material & \texttt{ci}, \texttt{cw} & 2110, 4181 J kg$^{-1}$ K$^{-1}$ & Ice and water heat capacities. \\
+Material & \texttt{Lm}, \texttt{Lv} & $3.34\times10^5$, $2.501\times10^6$ J kg$^{-1}$ & Latent heats of melting and vaporization. \\
+Material & \texttt{cp\_air} & 1003 J kg$^{-1}$ K$^{-1}$ & Specific heat capacity of air. \\
+Material & \texttt{seconds\_per\_day} & 86400 s & Length of a model day. \\
+Material & \texttt{T0} & 273.15 K & Melting temperature. \\
+\midrule
+Albedo & \texttt{alpha\_dry}, \texttt{alpha\_wet}, \texttt{alpha\_ice} & 0.81, 0.70, 0.40 & Dry snow, wet snow, and bare-ice albedos. \\
+Albedo & \texttt{max\_lwc\_albedo} & 0.1 & Liquid-water-content scale for dynamic albedo. \\
+Albedo & \texttt{aging\_cold\_timescale\_days} & 20 d & Cold-surface aging e-folding time. \\
+Albedo & \texttt{aging\_melting\_timescale\_days} & 2 d & Melting-surface aging e-folding time. \\
+SEMIX albedo & \texttt{semix\_snow\_albedo} & \texttt{:dang} & Spectral snow-albedo parameterization. \\
+SEMIX albedo & \texttt{semix\_frac\_vu} & 0.45 & Visible-band fraction of incoming shortwave radiation. \\
+SEMIX albedo & \texttt{semix\_alb\_snow\_vis\_new}, \texttt{semix\_alb\_snow\_nir\_new} & 0.99, 0.65 & Fresh-snow visible and near-IR albedos. \\
+SEMIX albedo & \texttt{semix\_snow\_grain\_fresh}, \texttt{semix\_snow\_grain\_old} & 50, 1000 $\mu$m & Fresh and old snow grain radii. \\
+SEMIX albedo & \texttt{semix\_d\_alb\_age\_vis}, \texttt{semix\_d\_alb\_age\_nir} & 0.05, 0.25 & Aging albedo decrements. \\
+SEMIX albedo & \texttt{semix\_f\_age\_t}, \texttt{semix\_dT\_age} & 0.1, 0 K & Temperature-aging controls. \\
+SEMIX albedo & \texttt{semix\_snow\_0}, \texttt{semix\_snow\_1} & 1.0, 0.5 & SEMIX snow-cover transition parameters. \\
+SEMIX albedo & \texttt{semix\_w\_snow\_dust}, \texttt{semix\_dust\_con\_scale} & 10, 1.0 & Dust–snow mixing and dust-concentration scale. \\
+SEMIX albedo & \texttt{semix\_dalb\_snow\_vis}, \texttt{semix\_dalb\_snow\_nir} & 0, 0 & Additional visible/near-IR snow-albedo offsets. \\
+SEMIX albedo & \texttt{semix\_k\_sigma\_orog}, \texttt{semix\_sigma\_orog\_crit} & 0, 1000 m & Orographic albedo adjustment controls. \\
+\midrule
+Radiation & \texttt{epsilon\_air}, \texttt{epsilon\_snow}, \texttt{eps\_ice} & 0.80, 0.98, 0.98 & Air, snow, and ice emissivities. \\
+Radiation & \texttt{longwave\_scheme} & \texttt{:cloud\_proxy} & Longwave-down parameterization (\texttt{:graybody} uses \texttt{epsilon\_air}). \\
+Radiation & \texttt{lw\_emissivity\_base}, \texttt{lw\_emissivity\_temperature\_slope}, \texttt{lw\_emissivity\_cloud\_slope} & 0.624, 0.0032 K$^{-1}$, 0.613 & Cloud-proxy emissivity coefficients. \\
+Radiation & \texttt{lw\_clear\_sky\_transmissivity}, \texttt{lw\_clear\_sky\_transmissivity\_per\_km} & 0.85, 0.075 km$^{-1}$ & Clear-sky shortwave transmissivity and its elevation gradient. \\
+Radiation & \texttt{lw\_night\_cloud\_fraction} & 0.389 & Cloudiness without a daily shortwave proxy. \\
+Radiation & \texttt{sigma} & $5.670373\times10^{-8}$ W m$^{-2}$ K$^{-4}$ & Stefan--Boltzmann constant. \\
+Turbulence & \texttt{D\_sh} & 10 m & Sensible-heat exchange height/scale. \\
+Turbulence & \texttt{latent\_heat\_flux\_ratio} & 1.0 & Latent-flux multiplier. \\
+Turbulence & \texttt{semix\_karman} & 0.4 & von Kármán constant. \\
+Turbulence & \texttt{semix\_surface\_height} & 10 m & Reference atmospheric height. \\
+Turbulence & \texttt{semix\_z0m\_snow}, \texttt{semix\_z0m\_ice} & 0.001, 0.01 m & Snow and ice momentum roughness lengths. \\
+Turbulence & \texttt{semix\_zm\_to\_zh} & 10 & Momentum-to-heat roughness ratio. \\
+Turbulence & \texttt{semix\_sensible\_exchange\_factor} & 2.5 & Sensible-heat-flux multiplier. \\
+Turbulence & \texttt{semix\_stable\_coefficient} & 40 & Stable-stratification damping, $1/(1+b\,Ri_b)$. \\
+Turbulence & \texttt{semix\_latent\_exchange\_factor} & 1.0 & Latent-heat-flux multiplier. \\
+\end{longtable}
+
