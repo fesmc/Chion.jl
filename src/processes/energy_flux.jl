@@ -388,7 +388,7 @@ function _go_energy_flux_resolved!(
     ice_top_thickness=one(dt_seconds),
 )
     n_active = _n_active(N_storage, idx)
-    n_snow = n_active > 0 && _get_layer(mass, 1, idx) > zero(eltype(mass)) ? n_active : 0
+    n_snow = n_active > 0 && _get_layer(mass, 1, idx) > EPS_EMPTY_LAYER ? n_active : 0
     n_layers = n_snow + n_ice
     if n_layers <= 0
         return _energy_flux_result(;

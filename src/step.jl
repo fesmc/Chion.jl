@@ -426,6 +426,12 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.air_temperature,
         forcing.wind_speed,
     )
+    # A sub-threshold surface layer (e.g. from a trace of snowfall on bare ice)
+    # is not snow: remove it and route its contents to runoff, so that the
+    # bare-ice branch below cannot leave water stored in it unseen.
+    while _n_active(N_storage, idx) > 0 && _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
+        _remove_depleted_surface_and_route_water!(N_storage, mass, mass_w, density, temperature, runoff, idx, c)
+    end
     # Snow on a previously bare surface takes the air temperature. Set it on
     # every new layer before remeshing splits the fresh snow.
     if forcing.snowfall_rate > zero(dt_seconds) && started_without_surface_snow
@@ -434,8 +440,9 @@ Base.@propagate_inbounds function column_step_core!(
         end
     end
     _remesh_near_surface_layers!(
-        N_storage, mass, mass_w, density, temperature,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m, c,
+        N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
+        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
+        parameters.mass_max, parameters.mass_split, c,
     )
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
@@ -687,8 +694,9 @@ Base.@propagate_inbounds function column_step_core!(
     # thin surface cell. Restore the prescribed near-surface geometry before
     # the next energy solve without changing any column-integrated reservoir.
     _remesh_near_surface_layers!(
-        N_storage, mass, mass_w, density, temperature,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m, c,
+        N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
+        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
+        parameters.mass_max, parameters.mass_split, c,
     )
 
     final_has_snow = _surface_has_snow(N_storage, mass, idx)
@@ -767,6 +775,26 @@ range and return the KernelAbstractions event.
 @inline _step_kernel_workgroupsize(backend) =
     backend isa KernelAbstractions.CPU ? 16 : 256
 
+const _GPU_MULTIPROCESSORS = Ref(0)
+@inline function _gpu_multiprocessor_count()
+    _GPU_MULTIPROCESSORS[] > 0 && return _GPU_MULTIPROCESSORS[]
+    _GPU_MULTIPROCESSORS[] = CUDA.attribute(CUDA.device(), CUDA.DEVICE_ATTRIBUTE_MULTIPROCESSOR_COUNT)
+    return _GPU_MULTIPROCESSORS[]
+end
+
+"""GPU block size for `ncolumns` columns: the step kernel uses ~255 registers per thread, so each
+multiprocessor holds only one 256-thread block. Small domains (e.g. Greenland, 18,620 columns,
+73 blocks on 132 multiprocessors) therefore use smaller blocks: the largest of 256/128/64/32
+that still gives at least four blocks per multiprocessor (1.35x faster for Greenland)."""
+@inline function _step_kernel_workgroupsize(backend, ncolumns::Int)
+    backend isa KernelAbstractions.CPU && return 16
+    target = 4 * _gpu_multiprocessor_count()
+    for threads in (256, 128, 64)
+        cld(ncolumns, threads) >= target && return threads
+    end
+    return 32
+end
+
 @inline function _step_time_block_steps(backend)
     name = backend isa KernelAbstractions.CPU ? "CHION_CPU_TIME_BLOCK_STEPS" : "CHION_GPU_TIME_BLOCK_STEPS"
     value = get(ENV, name, "1")
@@ -785,8 +813,17 @@ end
 )
     time_stop >= time_start || return nothing
     backend = _ka_backend(state.mass)
+    if backend isa KernelAbstractions.CPU
+        # Plain threaded loop on the CPU, compiled before the threads start (see
+        # `_cpu_step_columns!`); concurrent compilation inside KernelAbstractions'
+        # task closures made the column step allocate at every process call
+        # (up to ~80 GB per Greenland year, 4-25x slower with several threads).
+        _cpu_step_columns!(get_fields(state), state.parameters, workspace, active_indices,
+            _device_forcing_fields(forcing), config, time_start, time_stop)
+        return nothing
+    end
     if time_start == time_stop
-        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend))
+        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
         return kernel!(
             get_fields(state),
             state.parameters,
@@ -798,7 +835,7 @@ end
             ndrange=length(active_indices),
         )
     end
-    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend))
+    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
     return kernel!(
         get_fields(state),
         state.parameters,
@@ -810,6 +847,38 @@ end
         time_stop,
         ndrange=length(active_indices),
     )
+end
+
+"""Advance the columns of `active_indices` over `time_start:time_stop` on CPU threads."""
+function _cpu_step_columns!(fields, parameters, workspace, active_indices, forcing_fields, config,
+        time_start::Int, time_stop::Int)
+    # Compile the whole column step on this thread before the threads start: when
+    # several threads compile the call tree concurrently, callers can be compiled
+    # against callees that are not finished yet and then call them through the
+    # boxed generic ABI for good (heap allocation at every process call).
+    precompile(_cpu_step_column!, map(typeof, (fields, parameters, workspace, first(active_indices),
+        forcing_fields, config, time_start, time_stop)))
+    if Threads.nthreads() == 1 || length(active_indices) < 2 * Threads.nthreads()
+        for idx in active_indices
+            _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config, time_start, time_stop)
+        end
+    else
+        # :dynamic (not :static) so that the step can run inside other threaded code.
+        Threads.@threads :dynamic for active_idx in eachindex(active_indices)
+            _cpu_step_column!(fields, parameters, workspace, active_indices[active_idx], forcing_fields,
+                config, time_start, time_stop)
+        end
+    end
+    return nothing
+end
+
+@inline function _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config,
+        time_start::Int, time_stop::Int)
+    @inbounds for time_index in time_start:time_stop
+        step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+        column_step!(fields, parameters, idx, step_forcing, config, workspace)
+    end
+    return nothing
 end
 
 @inline function _time_range_bounds(time_range)

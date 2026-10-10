@@ -270,8 +270,9 @@ end
 """
     _remove_depleted_surface_and_route_water!(N_storage, mass, mass_w, density, temperature, runoff, idx, c)
 
-Remove an empty surface layer and route any residual liquid water either into
-the next layer or directly to runoff.
+Remove an empty surface layer and route any residual liquid water (and the
+negligible remaining solid mass) either into the next layer or directly to
+runoff.
 """
 @inline function _remove_depleted_surface_and_route_water!(
     N_storage,
@@ -284,10 +285,11 @@ the next layer or directly to runoff.
     c::SnowpackPhysicalConstants,
 )
     n = _n_active(N_storage, idx)
+    residual = _get_layer(mass_w, 1, idx) + max(_get_layer(mass, 1, idx), zero(eltype(mass)))
     if n > 1
-        _set_layer!(mass_w, 2, idx, _get_layer(mass_w, 2, idx) + _get_layer(mass_w, 1, idx))
+        _set_layer!(mass_w, 2, idx, _get_layer(mass_w, 2, idx) + residual)
     else
-        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + _get_layer(mass_w, 1, idx))
+        _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + residual)
     end
     _set_layer!(mass_w, 1, idx, zero(eltype(mass_w)))
     _remove_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, c)
@@ -550,10 +552,57 @@ function _fill_near_surface_layer_thicknesses!(
     return nothing
 end
 
-@inline function _remesh_near_surface_layers!(
-    N_storage, mass, mass_w, density, temperature,
-    idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, Float64},
+"""
+    _split_deep_layers!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, Ntot, first_deep, mass_max, mass_split, c)
+
+Keep the firn below the geometrically capped near-surface layers resolved. The
+near-surface remeshing passes all excess material into layer `first_deep`; any
+layer from `first_deep` on that exceeds `mass_max` is split into an upper part
+and a lower part of `mass_split` (the standard BESSI layer mass). A full column
+first merges its two deepest layers, as accumulation does. The two deepest
+layers of a full column are never split, so the deep bulk layer may grow.
+"""
+function _split_deep_layers!(
+    N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
+    idx::Int, Ntot::Int, first_deep::Int, mass_max, mass_split,
     c::SnowpackPhysicalConstants,
+)
+    k = first_deep
+    while k <= _n_active(N_storage, idx)
+        n = _n_active(N_storage, idx)
+        layer_mass = _get_layer(mass, k, idx)
+        if layer_mass > mass_max
+            if n == Ntot
+                k >= n - 1 && break
+                _merge_bottom_layer!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c)
+                n = _n_active(N_storage, idx)
+            end
+            layer_water = _get_layer(mass_w, k, idx)
+            @inbounds for layer_index in n:-1:(k + 1)
+                _set_layer!(mass, layer_index + 1, idx, _get_layer(mass, layer_index, idx))
+                _set_layer!(mass_w, layer_index + 1, idx, _get_layer(mass_w, layer_index, idx))
+                _set_layer!(density, layer_index + 1, idx, _get_layer(density, layer_index, idx))
+                _set_layer!(temperature, layer_index + 1, idx, _get_layer(temperature, layer_index, idx))
+            end
+            lower_fraction = mass_split / layer_mass
+            _set_layer!(mass, k + 1, idx, mass_split)
+            _set_layer!(mass_w, k + 1, idx, layer_water * lower_fraction)
+            _set_layer!(density, k + 1, idx, _get_layer(density, k, idx))
+            _set_layer!(temperature, k + 1, idx, _get_layer(temperature, k, idx))
+            _set_layer!(mass, k, idx, layer_mass - mass_split)
+            _set_layer!(mass_w, k, idx, layer_water * (one(lower_fraction) - lower_fraction))
+            _set_n_active!(N_storage, idx, n + 1)
+            continue                       # the upper part may still exceed mass_max
+        end
+        k += 1
+    end
+    return nothing
+end
+
+@inline function _remesh_near_surface_layers!(
+    N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
+    idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, Float64},
+    mass_max, mass_split, c::SnowpackPhysicalConstants,
 )
     _cap_near_surface_layer_thicknesses!(
         N_storage, mass, mass_w, density, temperature,
@@ -562,6 +611,11 @@ end
     _fill_near_surface_layer_thicknesses!(
         N_storage, mass, mass_w, density, temperature, idx,
         target_thicknesses_m, c,
+    )
+    n_capped = count(isfinite, target_thicknesses_m)
+    n_capped > 0 && _split_deep_layers!(
+        N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
+        idx, Ntot, n_capped + 1, mass_max, mass_split, c,
     )
     return nothing
 end

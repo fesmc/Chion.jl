@@ -245,6 +245,7 @@ function load_forcing_file(
     q_sh_name::Union{Nothing, AbstractString}="SHF",
     q_lh_name::Union{Nothing, AbstractString}="LHF",
     relative_humidity_name::Union{Nothing, AbstractString}="RHZ",
+    relative_humidity_fallback_name::Union{Nothing, AbstractString}="RH",
     air_pressure_name::Union{Nothing, AbstractString}=nothing,
     surface_height_name::Union{Nothing, AbstractString}="SH",
     air_pressure_temperature_mode=:annual_mean,
@@ -307,7 +308,11 @@ function load_forcing_file(
         q_lw_m, has_q_lw_m = optional(q_lw_down_name)
         q_sh_m, has_q_sh_m = optional(q_sh_name)
         q_lh_m, has_q_lh_m = optional(q_lh_name)
-        relative_humidity_m, has_relative_humidity_m = optional(relative_humidity_name)
+        # Recent MAR files (e.g. Antarctica from 2025) have no near-surface RHZ; their daily-mean
+        # relative humidity of the lowest atmospheric layer (RH) is the consistent substitute.
+        rh_name = !isnothing(relative_humidity_name) && haskey(ds, relative_humidity_name) ? relative_humidity_name :
+            relative_humidity_fallback_name
+        relative_humidity_m, has_relative_humidity_m = optional(rh_name)
 
         has_surface_height = !isnothing(surface_height_name) && haskey(ds, surface_height_name)
         surface_height_m = fill(NaN, ncol, ntime)

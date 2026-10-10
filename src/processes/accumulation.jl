@@ -83,7 +83,9 @@ function _apply_accumulation_resolved!(
         _refresh_dynamic_albedo_from_snowfall!(albedo_dynamic, idx, c, added_snow_mass)
     end
 
-    if _get_layer(mass, 1, idx) > zero(eltype(mass)) && rainfall_rate > zero(rainfall_rate)
+    # Same threshold as `_surface_has_snow`: rain on a sub-threshold remnant is
+    # not retained, because the step treats that column as bare ice.
+    if _get_layer(mass, 1, idx) > EPS_EMPTY_LAYER && rainfall_rate > zero(rainfall_rate)
         _set_layer!(mass_w, 1, idx, _get_layer(mass_w, 1, idx) + rainfall_rate * dt_seconds)
     end
 

@@ -5,7 +5,12 @@
 
 @inline function _ka_backend(array)
     backend = KernelAbstractions.get_backend(array)
-    return backend isa KernelAbstractions.CPU ? KernelAbstractions.CPU(; static=true) : backend
+    backend isa KernelAbstractions.CPU && return KernelAbstractions.CPU(; static=true)
+    # Inline the whole column step into the CUDA kernel: without it, every non-inlined call
+    # passes large structs (e.g. the 0.5 kB physical constants) through local memory, which
+    # spilled 2.4 kB per thread; inlining cuts the spills to 0.95 kB and is ~1.3x faster.
+    backend isa CUDA.CUDABackend && return CUDA.CUDABackend(; always_inline=true)
+    return backend
 end
 
 @inline function _wait_kernel(event)

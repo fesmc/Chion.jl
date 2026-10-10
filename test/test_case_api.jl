@@ -264,6 +264,27 @@ end
         @test maximum(state.temperature[1:state.N[1], 1]) <= 250.0 + 1e-9
     end
 
+    @testset "Trace snowfall on bare ice cannot store rain unseen" begin
+        model = BESSIModel(SnowpackGrid(1); diurnal_shortwave_substeps=false)
+        state = BESSIState(model)
+        config = Chion._step_config_from_keywords(; Chion._bessi_step_kwargs(model)...)
+        workspace = Chion.ColumnarStepWorkspace(state)
+        storage() = sum(state.mass[k, 1] + state.mass_w[k, 1] for k in 1:state.N[1]; init=0.0)
+        fluxes(sf, rf) = (; q_sw_net=0.0, has_q_sw_net=true, q_lw_down=300.0, has_q_lw_down=true,
+            q_sh=0.0, has_q_sh=true, q_lh=0.0, has_q_lh=true)
+        # A trace of snowfall (far below the snow threshold), then a rainy day.
+        for (snow, rain) in ((1e-24, 0.0), (0.0, 20.0 / 86_400))
+            before = (S=storage(), smb=state.smb_ice[1], R=state.runoff[1], V=state.vapor_mass[1])
+            forcing = Chion.SnowpackStepForcing(277.15, 1.0, snow, rain, 0.0, 5.0; fluxes(snow, rain)...)
+            Chion.column_step!(state, 1, forcing, config, workspace)
+            precipitation = (snow + rain) * 86_400
+            budget = (storage() - before.S) + (state.smb_ice[1] - before.smb) -
+                     (precipitation - (state.runoff[1] - before.R) + (state.vapor_mass[1] - before.V))
+            @test abs(budget) < 1e-9
+            @test state.N[1] == 0
+        end
+    end
+
     @testset "Public energy solve couples the ice substrate on bare ice" begin
         model = BESSIModel(SnowpackGrid(1))
         state = BESSIState(model)
