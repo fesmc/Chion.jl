@@ -7,25 +7,25 @@ abstract type AbstractSnowModel end
 """Immutable BESSI configuration shared by the model and its state containers.
 Albedo schemes include `:constant`, `:dynamic`, `:prescribed`, `:aging`, and `:semix`.
 """
-struct BESSIParameters{C <: SnowpackPhysicalConstants}
+struct BESSIParameters{C <: SnowpackPhysicalConstants, NF <: AbstractFloat}
     c::C
     Ntot::Int
-    mass_max::Float64
-    mass_split::Float64
-    mass_min::Float64
-    density_init::Float64
-    temperature_init::Float64
-    refreezing_correction::Float64
-    diurnal_shortwave_threshold::Float64
+    mass_max::NF
+    mass_split::NF
+    mass_min::NF
+    density_init::NF
+    temperature_init::NF
+    refreezing_correction::NF
+    diurnal_shortwave_threshold::NF
     diurnal_shortwave_max_substeps::Int
-    diurnal_shortwave_min_air_temperature::Float64
-    diurnal_temperature_amplitude::Float64
-    diurnal_temperature_amplitude_gradient::Float64
-    diurnal_temperature_amplitude_reference_height::Float64
-    diurnal_temperature_amplitude_max::Float64
-    near_surface_layer_max_thicknesses_m::NTuple{4, Float64}
+    diurnal_shortwave_min_air_temperature::NF
+    diurnal_temperature_amplitude::NF
+    diurnal_temperature_amplitude_gradient::NF
+    diurnal_temperature_amplitude_reference_height::NF
+    diurnal_temperature_amplitude_max::NF
+    near_surface_layer_max_thicknesses_m::NTuple{4, NF}
     ice_substrate_layers::Int
-    ice_substrate_top_thickness_m::Float64
+    ice_substrate_top_thickness_m::NF
 end
 
 const _BESSI_MODEL_TAG_PROPERTIES = (:diurnal_shortwave_substeps, :diurnal_temperature_cycle)
@@ -73,11 +73,11 @@ end
 
 function BESSIModel(
     grid::SnowpackGrid;
-    albedo::Symbol=:dynamic,
+    albedo::Union{Symbol, AbstractAlbedoScheme}=:dynamic,
     seb_scheme::Symbol=:semix,
     turbulent_flux_scheme::Symbol=:semix,
-    densification::Symbol=:bessi,
-    fresh_snow_density::Symbol=:constant,
+    densification::Union{Symbol, AbstractDensificationScheme}=:bessi,
+    fresh_snow_density::Union{Symbol, AbstractFreshSnowDensityScheme}=:constant,
     Ntot::Int=DEFAULT_NTOT,
     mass_max::Real=DEFAULT_MASS_MAX,
     mass_split::Real=DEFAULT_MASS_SPLIT,
@@ -97,6 +97,7 @@ function BESSIModel(
     near_surface_layer_max_thicknesses_m::NTuple{4, <:Real}=(0.02, 0.05, 0.10, 0.30),
     ice_substrate_layers::Integer=5,
     ice_substrate_top_thickness_m::Real=0.05,
+    number_type::Type{<:AbstractFloat}=Float64,
     kwargs...,
 )
     isfinite(refreezing_correction) && refreezing_correction > 0 ||
@@ -114,7 +115,7 @@ function BESSIModel(
     ice_substrate_layers >= 0 || error("`ice_substrate_layers` must be non-negative.")
     ice_substrate_top_thickness_m > 0 || error("`ice_substrate_top_thickness_m` must be positive.")
     c = SnowpackPhysicalConstants(
-        Float64;
+        number_type;
         albedo_scheme=albedo,
         seb_scheme=seb_scheme,
         turbulent_flux_scheme=turbulent_flux_scheme,
@@ -123,26 +124,26 @@ function BESSIModel(
         kwargs...,
     )
     mass_max, mass_split, mass_min =
-        _domain_thresholds(Float64, mass_max, mass_split, mass_min)
+        _domain_thresholds(number_type, mass_max, mass_split, mass_min)
     parameters = BESSIParameters(
         c,
         Ntot,
         mass_max,
         mass_split,
         mass_min,
-        Float64(density_init),
-        Float64(temperature_init),
-        Float64(refreezing_correction),
-        Float64(diurnal_shortwave_threshold),
+        number_type(density_init),
+        number_type(temperature_init),
+        number_type(refreezing_correction),
+        number_type(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),
-        Float64(diurnal_shortwave_min_air_temperature_c) + 273.15,
-        Float64(diurnal_temperature_amplitude_c),
-        Float64(diurnal_temperature_amplitude_gradient_c_per_km) / 1000,
-        Float64(diurnal_temperature_amplitude_reference_height_m),
-        Float64(diurnal_temperature_amplitude_max_c),
-        ntuple(i -> Float64(near_surface_layer_max_thicknesses_m[i]), 4),
+        number_type(diurnal_shortwave_min_air_temperature_c + 273.15),
+        number_type(diurnal_temperature_amplitude_c),
+        number_type(diurnal_temperature_amplitude_gradient_c_per_km / 1000),
+        number_type(diurnal_temperature_amplitude_reference_height_m),
+        number_type(diurnal_temperature_amplitude_max_c),
+        ntuple(i -> number_type(near_surface_layer_max_thicknesses_m[i]), 4),
         Int(ice_substrate_layers),
-        Float64(ice_substrate_top_thickness_m),
+        number_type(ice_substrate_top_thickness_m),
     )
     return BESSIModel{
         diurnal_shortwave_substeps,
@@ -155,39 +156,51 @@ function BESSIModel(
     )
 end
 
-const PDD_METHOD_SIMPLE = UInt8(1)
-const PDD_METHOD_PISM = UInt8(2)
+abstract type AbstractPDDMethod end
+"""Positive degree days from the positive part of the mean temperature."""
+struct SimplePDD <: AbstractPDDMethod end
+"""Calov-Greve expectation integral of a normally distributed temperature (as in PISM)."""
+struct PISMPDD <: AbstractPDDMethod end
 
+const _PDD_METHODS = (simple=SimplePDD(), pism=PISMPDD())
+
+@inline _normalize_pdd_method(method::AbstractPDDMethod) = method
 @inline function _normalize_pdd_method(method::Symbol)
-    method == :simple && return PDD_METHOD_SIMPLE
-    method == :pism && return PDD_METHOD_PISM
-    error("Unsupported PDD method '$method'. Use :simple or :pism.")
+    haskey(_PDD_METHODS, method) || error("Unsupported PDD method '$method'. Use :simple or :pism.")
+    return _PDD_METHODS[method]
 end
 
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6,
-             temperature_sigma=5.0, H_snow_max=5000.0, pdd_method=:simple)
+             temperature_sigma=5.0, H_snow_max=5000.0, pdd_method=:simple,
+             number_type=Float64)
 
 Bulk positive-degree-day surface mass-balance model configuration. The model
 uses a capped one-layer snow reservoir: refrozen water and snow above
 `H_snow_max` become ice, while `smb_ice` records only ice-facing mass changes.
 Set `pdd_method=:pism` to use the Calov-Greve expectation integral for every
 timestep; `:simple` uses positive mean temperature directly.
+`number_type` sets the floating-point type of the parameters and state.
 """
-struct PDDModel{Method, G <: SnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel
+struct PDDModel{
+        Method <: AbstractPDDMethod,
+        NF <: AbstractFloat,
+        G <: SnowpackGrid,
+        C <: SnowpackPhysicalConstants{NF},
+    } <: AbstractSnowModel
     grid::G
     c::C
-    ddf_snow::Float64
-    ddf_ice::Float64
-    refreezing_fraction::Float64
-    temperature_sigma::Float64
-    H_snow_max::Float64
+    ddf_snow::NF
+    ddf_ice::NF
+    refreezing_fraction::NF
+    temperature_sigma::NF
+    H_snow_max::NF
 end
-@inline _pdd_method_flag(::PDDModel{:simple}) = PDD_METHOD_SIMPLE
-@inline _pdd_method_flag(::PDDModel{:pism}) = PDD_METHOD_PISM
+"""PDD method of `model` (an `AbstractPDDMethod` instance)."""
+@inline pdd_method(::PDDModel{Method}) where {Method} = Method()
 
 @inline function Base.getproperty(model::PDDModel, name::Symbol)
-    name === :pdd_method && return _pdd_method_flag(model)
+    name === :pdd_method && return pdd_method(model)
     return getfield(model, name)
 end
 
@@ -203,28 +216,32 @@ Fortran `fesmc/chion`/smbpal implementation. ITM requires explicit
 `SnowpackForcing`; `q_sw_net` is used as its insolation driver when supplied,
 otherwise `shortwave_down` is used.
 """
-struct ITMModel{G <: SnowpackGrid, C <: SnowpackPhysicalConstants} <: AbstractSnowModel
+struct ITMModel{
+        NF <: AbstractFloat,
+        G <: SnowpackGrid,
+        C <: SnowpackPhysicalConstants{NF},
+    } <: AbstractSnowModel
     grid::G
     c::C
-    trans_a::Float64
-    trans_b::Float64
-    trans_c::Float64
-    itm_c::Float64
-    itm_t::Float64
-    itm_b::Float64
-    itm_lat0::Float64
-    H_snow_max::Float64
-    Pmaxfrac::Float64
-    H_snow_crit_desert::Float64
-    H_snow_crit_forest::Float64
-    melt_crit::Float64
-    alb_ocean::Float64
-    alb_land::Float64
-    alb_forest::Float64
-    alb_ice::Float64
-    alb_snow_dry::Float64
-    alb_snow_wet::Float64
-    firn_fac::Float64
+    trans_a::NF
+    trans_b::NF
+    trans_c::NF
+    itm_c::NF
+    itm_t::NF
+    itm_b::NF
+    itm_lat0::NF
+    H_snow_max::NF
+    Pmaxfrac::NF
+    H_snow_crit_desert::NF
+    H_snow_crit_forest::NF
+    melt_crit::NF
+    alb_ocean::NF
+    alb_land::NF
+    alb_forest::NF
+    alb_ice::NF
+    alb_snow_dry::NF
+    alb_snow_wet::NF
+    firn_fac::NF
 end
 
 function ITMModel(
@@ -248,6 +265,7 @@ function ITMModel(
     alb_snow_dry::Real=0.8,
     alb_snow_wet::Real=0.65,
     firn_fac::Real=0.0266,
+    number_type::Type{<:AbstractFloat}=Float64,
     kwargs...,
 )
     H_snow_max > 0 || error("`H_snow_max` must be positive.")
@@ -256,12 +274,13 @@ function ITMModel(
     0 <= Pmaxfrac <= 1 || error("`Pmaxfrac` must be between 0 and 1.")
     all(value -> 0 <= value <= 1, (alb_ocean, alb_land, alb_forest, alb_ice, alb_snow_dry, alb_snow_wet)) ||
         error("ITM albedos must be between 0 and 1.")
-    return ITMModel(grid, SnowpackPhysicalConstants(Float64; kwargs...), Float64(trans_a),
-        Float64(trans_b), Float64(trans_c), Float64(itm_c), Float64(itm_t), Float64(itm_b),
-        Float64(itm_lat0), Float64(H_snow_max), Float64(Pmaxfrac),
-        Float64(H_snow_crit_desert), Float64(H_snow_crit_forest), Float64(melt_crit),
-        Float64(alb_ocean), Float64(alb_land), Float64(alb_forest), Float64(alb_ice),
-        Float64(alb_snow_dry), Float64(alb_snow_wet), Float64(firn_fac))
+    NF = number_type
+    return ITMModel(grid, SnowpackPhysicalConstants(NF; kwargs...), NF(trans_a),
+        NF(trans_b), NF(trans_c), NF(itm_c), NF(itm_t), NF(itm_b),
+        NF(itm_lat0), NF(H_snow_max), NF(Pmaxfrac),
+        NF(H_snow_crit_desert), NF(H_snow_crit_forest), NF(melt_crit),
+        NF(alb_ocean), NF(alb_land), NF(alb_forest), NF(alb_ice),
+        NF(alb_snow_dry), NF(alb_snow_wet), NF(firn_fac))
 end
 
 function PDDModel(
@@ -271,7 +290,8 @@ function PDDModel(
     refreezing_fraction::Real=0.6,
     temperature_sigma::Real=5.0,
     H_snow_max::Real=5000.0,
-    pdd_method::Symbol=:simple,
+    pdd_method::Union{Symbol, AbstractPDDMethod}=:simple,
+    number_type::Type{<:AbstractFloat}=Float64,
     kwargs...,
 )
     ddf_snow > 0 || error("`ddf_snow` must be positive.")
@@ -280,16 +300,16 @@ function PDDModel(
     temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
     H_snow_max > 0 || error("`H_snow_max` must be positive.")
 
-    method_flag = _normalize_pdd_method(pdd_method)
-    method_tag = method_flag == PDD_METHOD_SIMPLE ? :simple : :pism
-    c = SnowpackPhysicalConstants(Float64; kwargs...)
-    return PDDModel{method_tag, typeof(grid), typeof(c)}(
+    method = _normalize_pdd_method(pdd_method)
+    NF = number_type
+    c = SnowpackPhysicalConstants(NF; kwargs...)
+    return PDDModel{typeof(method), NF, typeof(grid), typeof(c)}(
         grid,
         c,
-        Float64(ddf_snow),
-        Float64(ddf_ice),
-        Float64(refreezing_fraction),
-        Float64(temperature_sigma),
-        Float64(H_snow_max),
+        NF(ddf_snow),
+        NF(ddf_ice),
+        NF(refreezing_fraction),
+        NF(temperature_sigma),
+        NF(H_snow_max),
     )
 end

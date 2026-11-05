@@ -1,22 +1,4 @@
-"""Grid and backend helpers shared across Chion."""
-
-@inline cuda_available() = CUDA.functional()
-@inline gpu_storage_type() = CUDA.CuArray
-
-@inline function _ka_backend(array)
-    backend = KernelAbstractions.get_backend(array)
-    backend isa KernelAbstractions.CPU && return KernelAbstractions.CPU(; static=true)
-    # Inline the whole column step into the CUDA kernel: without it, every non-inlined call
-    # passes large structs (e.g. the 0.5 kB physical constants) through local memory, which
-    # spilled 2.4 kB per thread; inlining cuts the spills to 0.95 kB and is ~1.3x faster.
-    backend isa CUDA.CUDABackend && return CUDA.CUDABackend(; always_inline=true)
-    return backend
-end
-
-@inline function _wait_kernel(event)
-    isnothing(event) || KernelAbstractions.wait(event)
-    return nothing
-end
+"""Grid helpers shared across Chion."""
 
 struct SpatialLayout
     x::Vector{Float64}

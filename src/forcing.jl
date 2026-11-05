@@ -50,6 +50,16 @@ end
 Base.IndexStyle(::Type{<:TimeForcingMatrix}) = IndexCartesian()
 Adapt.@adapt_structure TimeForcingMatrix
 
+"""Adapt.jl adaptor converting floating-point forcing data (arrays and scalars inside the forcing
+wrappers) to the model's number type `NF`; Bool masks and integers are left unchanged."""
+struct NumberTypeAdaptor{NF <: AbstractFloat} end
+Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{<:AbstractFloat}) where {NF} = convert(Array{NF}, x)
+Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractFloat) where {NF} = NF(x)
+
+"""Forcing fields in the number type `NF` (no copy for Float64)."""
+@inline forcing_fields_as(::Type{Float64}, fields) = fields
+@inline forcing_fields_as(::Type{NF}, fields) where {NF <: AbstractFloat} = adapt(NumberTypeAdaptor{NF}(), fields)
+
 @inline _constant_forcing_matrix(value, dims::Tuple{Int, Int}) =
     ConstantForcingMatrix(value, dims)
 
@@ -410,17 +420,10 @@ const _FORCING_COPY_FIELD_NAMES = (
     _FORCING_MATRIX_FIELD_NAMES...,
 )
 
-const _BESSI_DEVICE_FORCING_FIELD_NAMES = (
-    :dt_days,
-    :day_of_year,
-    :solar_longitude_deg,
-    _FORCING_MATRIX_FIELD_NAMES...,
-)
-
 @generated function get_fields(forcing::SnowpackForcing)
     entries = [
         :($(name) = getproperty(forcing, $(QuoteNode(name))))
-        for name in _BESSI_DEVICE_FORCING_FIELD_NAMES
+        for name in _FORCING_COPY_FIELD_NAMES
     ]
     return :((; $(entries...)))
 end

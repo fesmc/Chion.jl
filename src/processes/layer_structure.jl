@@ -10,6 +10,14 @@ Clamp `x` to zero from below.
 @inline _safe_nonnegative(x) = x > zero(x) ? x : zero(x)
 
 """
+    _solid_enthalpy(mass, temperature, c)
+
+Enthalpy (J m⁻²) of solid mass at `temperature`, relative to liquid water at T₀.
+"""
+@inline _solid_enthalpy(mass, temperature, c::SnowpackPhysicalConstants) =
+    mass * (c.ci * (temperature - c.T0) - c.Lm)
+
+"""
     _mass_weighted_mean(m1, x1, m2, x2)
 
 Return the mass-weighted mean of two values, guarding against zero total mass.
@@ -176,7 +184,8 @@ end
     _merge_bottom_layer!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c)
 
 Merge the two deepest active layers of column `idx`, exporting any density
-excess beyond pure ice into basal mass and SMB diagnostics.
+excess beyond pure ice into basal mass and SMB diagnostics. Returns the enthalpy
+of the exported ice.
 """
 function _merge_bottom_layer!(
     N_storage,
@@ -191,11 +200,12 @@ function _merge_bottom_layer!(
 )
     n = _n_active(N_storage, idx)
     if n < 2
-        return nothing
+        return zero(eltype(mass))
     end
 
     _set_n_active!(N_storage, idx, n - 1)
     N_new = n - 1
+    exported_enthalpy = zero(eltype(mass))
 
     combined_mass = _get_layer(mass, N_new, idx) + _get_layer(mass, n, idx)
     combined_mass_w = _get_layer(mass_w, N_new, idx) + _get_layer(mass_w, n, idx)
@@ -215,6 +225,7 @@ function _merge_bottom_layer!(
     if combined_density > c.rho_i
         mass_limited_to_ice_density = combined_mass * (c.rho_i / combined_density)
         exported_excess = combined_mass - mass_limited_to_ice_density
+        exported_enthalpy = _solid_enthalpy(exported_excess, combined_temperature, c)
         _set_scalar!(mass_base, idx, _get_scalar(mass_base, idx) + exported_excess)
         _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) + exported_excess)
         _set_layer!(mass, N_new, idx, mass_limited_to_ice_density)
@@ -229,7 +240,7 @@ function _merge_bottom_layer!(
     end
 
     _reset_layer_at_index!(mass, mass_w, density, temperature, idx, n, c)
-    return nothing
+    return exported_enthalpy
 end
 
 """
@@ -320,6 +331,7 @@ function _continuous_bottom_deplete!(
     d_m = _safe_nonnegative(d_m_in)
     ice_to_base = zero(d_m)
     runoff_total = zero(d_m)
+    exported_enthalpy = zero(d_m)
 
     while d_m > EPS_TINY && _n_active(N_storage, idx) > 0
         nn = _n_active(N_storage, idx)
@@ -334,6 +346,7 @@ function _continuous_bottom_deplete!(
         if d_m > layer_mass
             d_m -= layer_mass
             ice_to_base += layer_mass
+            exported_enthalpy += _solid_enthalpy(layer_mass, _get_layer(temperature, nn, idx), c)
             runoff_mass = _get_layer(mass_w, nn, idx)
             runoff_total += runoff_mass
             _set_scalar!(mass_base, idx, _get_scalar(mass_base, idx) + layer_mass)
@@ -343,6 +356,7 @@ function _continuous_bottom_deplete!(
             _set_n_active!(N_storage, idx, nn - 1)
         else
             d_lw = d_m * _get_layer(mass_w, nn, idx) / layer_mass
+            exported_enthalpy += _solid_enthalpy(d_m, _get_layer(temperature, nn, idx), c)
             _set_layer!(mass, nn, idx, layer_mass - d_m)
             _set_layer!(mass_w, nn, idx, _get_layer(mass_w, nn, idx) - d_lw)
             ice_to_base += d_m
@@ -360,19 +374,22 @@ function _continuous_bottom_deplete!(
         _set_n_active!(N_storage, idx, tail - 1)
     end
 
-    _set_scalar!(Tsrf, idx, _n_active(N_storage, idx) > 0 ? _get_layer(temperature, 1, idx) : c.T0)
+    # An emptied column keeps its surface temperature (at most T₀) rather than jumping to T₀.
+    _set_scalar!(Tsrf, idx, _n_active(N_storage, idx) > 0 ? _get_layer(temperature, 1, idx) :
+        min(_get_scalar(Tsrf, idx), c.T0))
     if _n_active(N_storage, idx) == 0
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
 
-    return (ice_to_base=ice_to_base, runoff=runoff_total)
+    return (ice_to_base=ice_to_base, runoff=runoff_total, enthalpy=exported_enthalpy)
 end
 
 """
     _free_slot_for_surface_split!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_max, c)
 
 Create room for a new surface-layer split by removing or depleting the deepest
-layer when the column is already at its maximum layer count.
+layer when the column is already at its maximum layer count. Returns the enthalpy
+of the ice exported to the ice reservoir.
 """
 function _free_slot_for_surface_split!(
     N_storage,
@@ -393,7 +410,7 @@ function _free_slot_for_surface_split!(
     if Ntot == 1
         overflow = max(_get_layer(mass, 1, idx) - mass_max, zero(eltype(mass)))
         if overflow > zero(overflow)
-            _continuous_bottom_deplete!(
+            return _continuous_bottom_deplete!(
                 N_storage,
                 mass,
                 mass_w,
@@ -407,14 +424,14 @@ function _free_slot_for_surface_split!(
                 idx,
                 overflow,
                 c,
-            )
+            ).enthalpy
         end
-        return nothing
+        return zero(eltype(mass))
     end
 
     bottom_mass = _get_layer(mass, _n_active(N_storage, idx), idx)
     if bottom_mass > zero(bottom_mass)
-        _continuous_bottom_deplete!(
+        return _continuous_bottom_deplete!(
             N_storage,
             mass,
             mass_w,
@@ -428,12 +445,12 @@ function _free_slot_for_surface_split!(
             idx,
             bottom_mass,
             c,
-        )
+        ).enthalpy
     else
         _reset_layer_at_index!(mass, mass_w, density, temperature, idx, _n_active(N_storage, idx), c)
         _set_n_active!(N_storage, idx, _n_active(N_storage, idx) - 1)
     end
-    return nothing
+    return zero(eltype(mass))
 end
 
 """
@@ -447,7 +464,7 @@ mass-layer structure unchanged.
 """
 function _cap_near_surface_layer_thicknesses!(
     N_storage, mass, mass_w, density, temperature,
-    idx::Int, Ntot::Int, maximum_thicknesses_m::NTuple{4, Float64},
+    idx::Int, Ntot::Int, maximum_thicknesses_m::NTuple{4, <:Real},
     c::SnowpackPhysicalConstants,
 )
     all(isinf, maximum_thicknesses_m) && return nothing
@@ -488,6 +505,9 @@ function _cap_near_surface_layer_thicknesses!(
     return nothing
 end
 
+# Amount below which adding to `x` is lost to rounding in the number type of `y`.
+@inline _roundoff_floor(x, y) = 16 * eps(typeof(y)) * abs(oftype(y, x))
+
 """
     _fill_near_surface_layer_thicknesses!(..., target_thicknesses_m, c)
 
@@ -498,7 +518,7 @@ padded; its deepest active layer may remain thinner than its target.
 """
 function _fill_near_surface_layer_thicknesses!(
     N_storage, mass, mass_w, density, temperature, idx::Int,
-    target_thicknesses_m::NTuple{4, Float64}, c::SnowpackPhysicalConstants,
+    target_thicknesses_m::NTuple{4, <:Real}, c::SnowpackPhysicalConstants,
 )
     all(isinf, target_thicknesses_m) && return nothing
     n = _n_active(N_storage, idx)
@@ -512,13 +532,14 @@ function _fill_near_surface_layer_thicknesses!(
             receiver_density = _get_layer(density, layer_index, idx)
             receiver_volume = receiver_mass / _safe_positive(receiver_density)
             missing_volume = oftype(receiver_volume, target_thickness) - receiver_volume
-            missing_volume <= EPS_TINY && break
+            # Relative floors keep Float32 from looping on transfers below one ulp.
+            missing_volume <= max(EPS_TINY, _roundoff_floor(target_thickness, missing_volume)) && break
 
             donor_index = layer_index + 1
             donor_mass = _get_layer(mass, donor_index, idx)
             donor_density = _get_layer(density, donor_index, idx)
             transferred_mass = min(donor_mass, missing_volume * donor_density)
-            transferred_mass <= EPS_TINY && break
+            transferred_mass <= max(EPS_TINY, _roundoff_floor(receiver_mass, transferred_mass)) && break
             donor_water = _get_layer(mass_w, donor_index, idx)
             transferred_water = donor_water * transferred_mass / _safe_positive(donor_mass)
             receiver_water = _get_layer(mass_w, layer_index, idx)
@@ -568,13 +589,14 @@ function _split_deep_layers!(
     c::SnowpackPhysicalConstants,
 )
     k = first_deep
+    exported_enthalpy = zero(eltype(mass))
     while k <= _n_active(N_storage, idx)
         n = _n_active(N_storage, idx)
         layer_mass = _get_layer(mass, k, idx)
         if layer_mass > mass_max
             if n == Ntot
                 k >= n - 1 && break
-                _merge_bottom_layer!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c)
+                exported_enthalpy += _merge_bottom_layer!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c)
                 n = _n_active(N_storage, idx)
             end
             layer_water = _get_layer(mass_w, k, idx)
@@ -596,12 +618,12 @@ function _split_deep_layers!(
         end
         k += 1
     end
-    return nothing
+    return exported_enthalpy
 end
 
 @inline function _remesh_near_surface_layers!(
     N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
-    idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, Float64},
+    idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, <:Real},
     mass_max, mass_split, c::SnowpackPhysicalConstants,
 )
     _cap_near_surface_layer_thicknesses!(
@@ -613,18 +635,20 @@ end
         target_thicknesses_m, c,
     )
     n_capped = count(isfinite, target_thicknesses_m)
-    n_capped > 0 && _split_deep_layers!(
+    n_capped > 0 || return zero(eltype(mass))
+    # Returns the enthalpy of ice exported to the ice reservoir.
+    return _split_deep_layers!(
         N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
         idx, Ntot, n_capped + 1, mass_max, mass_split, c,
     )
-    return nothing
 end
 
 """
     _enforce_snow_depth_cap!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, runoff, Tsrf, albedo_dynamic, idx, Ntot, mass_split, dt_seconds, c)
 
 Apply the column depth-cap rule after accumulation, removing excess basal mass
-when the active solid snow depth exceeds the configured cap.
+when the active solid snow depth exceeds the configured cap. Returns the enthalpy
+of the ice exported to the ice reservoir.
 """
 function _enforce_snow_depth_cap!(
     N_storage,
@@ -679,7 +703,7 @@ function _enforce_snow_depth_cap!(
             remaining_excess_depth -= layer_depth
         end
 
-        _continuous_bottom_deplete!(
+        return _continuous_bottom_deplete!(
             N_storage,
             mass,
             mass_w,
@@ -693,9 +717,9 @@ function _enforce_snow_depth_cap!(
             idx,
             excess_basal_mass,
             c,
-        )
+        ).enthalpy
     end
-    return nothing
+    return zero(eltype(mass))
 end
 
 """

@@ -4,19 +4,6 @@ Energy-flux temperature solver for array-backed snowpack states.
 
 @inline _safe_positive(x) = x > EPS_TINY ? x : oftype(x, EPS_TINY)
 
-@inline function _copy_column!(dst::AbstractMatrix, src::AbstractMatrix, idx::Int, n::Int)
-    @inbounds for i in 1:n
-        dst[i, idx] = src[i, idx]
-    end
-    return nothing
-end
-@inline function _copy_column!(dst::AbstractVector, src::AbstractVector, ::Int, n::Int)
-    @inbounds @simd for i in 1:n
-        dst[i] = src[i]
-    end
-    return nothing
-end
-
 """
     _clamp_to_melt!(temperature_profile, idx, melting_temperature, n)
 
@@ -44,7 +31,7 @@ end
     reference_air_conductivity = oftype(ρ, 0.024)
     transition = one(ρ) / (one(ρ) + exp(-oftype(ρ, 0.04) * (ρ - oftype(ρ, 450.0))))
     ice_conductivity = oftype(ρ, 9.828) * exp(-oftype(ρ, 5.7e-3) * temperature)
-    air_conductivity = oftype(ρ, 2.334e-3) * temperature^oftype(ρ, 1.5) /
+    air_conductivity = oftype(ρ, 2.334e-3) * temperature * sqrt(temperature) /
                        _safe_positive(oftype(ρ, 164.54) + temperature)
     snow_conductivity = reference_air_conductivity -
                          oftype(ρ, 1.23e-4) * ρ +
@@ -184,87 +171,52 @@ end
 end
 
 """
-    _thomas_forward!(lower_diagonal, main_diagonal, upper_diagonal, right_hand_side, idx, n)
+    _solve_heat_diffusion!(scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, n, β_scale, boundary_diag, boundary_correction, rhs1)
 
-Forward elimination phase of the Thomas algorithm for column `idx` over the
-first `n` rows. Mutates `main_diagonal` and `right_hand_side` in-place.
+Solve the implicit heat-diffusion system of column `idx` over its `n` thermal rows
+with the Thomas algorithm. Row `i` reads `Tᵢ + βᵢ Gᵢ₋₁ (Tᵢ₋₁ - Tᵢ) + βᵢ Gᵢ (Tᵢ₊₁ - Tᵢ) = Tᵢᵒˡᵈ`
+with `βᵢ = -β_scale / mᵢ` and the interface conductances `G` in
+`scratch.interface_conductance`. The surface boundary condition enters row 1 through
+its diagonal, `boundary_diag - β₁G₁ - boundary_correction`, and right-hand side `rhs1`. The off-diagonals are assembled during
+the forward sweep, so only the eliminated diagonal (`scratch.diag`), the upper
+diagonal (`scratch.upper`) and the solution (`scratch.rhs`) are stored.
 """
-function _thomas_forward!(
-    lower_diagonal,
-    main_diagonal,
-    upper_diagonal,
-    right_hand_side,
-    idx::Int,
-    n::Int,
+@inline function _solve_heat_diffusion!(
+    scratch, mass, density, temperature, ice_temperature, n_snow::Int, ice_top_thickness, ice_density,
+    idx::Int, n::Int, β_scale, boundary_diag, boundary_correction, rhs1,
 )
-    @inbounds for row_index in 2:n
-        elimination_factor = _get_layer(lower_diagonal, row_index - 1, idx) / _get_layer(main_diagonal, row_index - 1, idx)
-        _set_layer!(
-            main_diagonal,
-            row_index,
-            idx,
-            _get_layer(main_diagonal, row_index, idx) - elimination_factor * _get_layer(upper_diagonal, row_index - 1, idx),
-        )
-        _set_layer!(
-            right_hand_side,
-            row_index,
-            idx,
-            _get_layer(right_hand_side, row_index, idx) - elimination_factor * _get_layer(right_hand_side, row_index - 1, idx),
-        )
+    G = scratch.interface_conductance
+    diag = scratch.diag
+    upper = scratch.upper
+    x = scratch.rhs
+    surface_mass, _, _ = _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, 1)
+    previous_upper = n > 1 ? β_scale / _safe_positive(surface_mass) * _get_layer(G, 1, idx) : zero(boundary_diag)
+    previous_diag = boundary_diag - previous_upper - boundary_correction
+    previous_x = rhs1
+    _set_layer!(diag, 1, idx, previous_diag)
+    _set_layer!(upper, 1, idx, previous_upper)
+    _set_layer!(x, 1, idx, previous_x)
+    @inbounds for row in 2:n
+        row_mass, _, row_temperature =
+            _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, row)
+        β = β_scale / _safe_positive(row_mass)
+        lower = β * _get_layer(G, row - 1, idx)
+        row_upper = row < n ? β * _get_layer(G, row, idx) : zero(β)
+        factor = lower / previous_diag
+        previous_diag = one(β) - lower - row_upper - factor * previous_upper
+        previous_x = row_temperature - factor * previous_x
+        previous_upper = row_upper
+        _set_layer!(diag, row, idx, previous_diag)
+        _set_layer!(upper, row, idx, row_upper)
+        _set_layer!(x, row, idx, previous_x)
     end
-    return nothing
-end
-
-"""
-    _thomas_backward!(main_diagonal, upper_diagonal, right_hand_side, idx, n)
-
-Back-substitution phase of the Thomas algorithm for column `idx` over the
-first `n` rows. The solution overwrites `right_hand_side`.
-"""
-function _thomas_backward!(
-    main_diagonal,
-    upper_diagonal,
-    right_hand_side,
-    idx::Int,
-    n::Int,
-)
-    _set_layer!(
-        right_hand_side,
-        n,
-        idx,
-        _get_layer(right_hand_side, n, idx) / _get_layer(main_diagonal, n, idx),
-    )
-    @inbounds for offset in Base.OneTo(max(n - 1, 0))
-        row_index = n - offset
-        _set_layer!(
-            right_hand_side,
-            row_index,
-            idx,
-            (
-                _get_layer(right_hand_side, row_index, idx) -
-                _get_layer(upper_diagonal, row_index, idx) * _get_layer(right_hand_side, row_index + 1, idx)
-            ) / _get_layer(main_diagonal, row_index, idx),
-        )
+    previous_x /= previous_diag
+    _set_layer!(x, n, idx, previous_x)
+    @inbounds for row in (n - 1):-1:1
+        previous_x = (_get_layer(x, row, idx) - _get_layer(upper, row, idx) * previous_x) / _get_layer(diag, row, idx)
+        _set_layer!(x, row, idx, previous_x)
     end
-    return right_hand_side
-end
-
-"""
-    _solve_tridiagonal_thomas_prefix!(lower_diagonal, main_diagonal, upper_diagonal, right_hand_side, idx, n)
-
-Solve an in-place tridiagonal system for column `idx` using the Thomas
-algorithm on the first `n` rows. The solution overwrites `right_hand_side`.
-"""
-@inline function _solve_tridiagonal_thomas_prefix!(
-    lower_diagonal,
-    main_diagonal,
-    upper_diagonal,
-    right_hand_side,
-    idx::Int,
-    n::Int,
-)
-    _thomas_forward!(lower_diagonal, main_diagonal, upper_diagonal, right_hand_side, idx, n)
-    return _thomas_backward!(main_diagonal, upper_diagonal, right_hand_side, idx, n)
+    return x
 end
 
 """
@@ -404,12 +356,7 @@ function _go_energy_flux_resolved!(
     emissivity = surface_is_ice ? c.eps_ice : c.ϵ_snow
     z0m = surface_is_ice ? c.semix_z0m_ice : c.semix_z0m_snow
 
-    lower = scratch.lower
-    diag = scratch.diag
-    upper = scratch.upper
-    rhs = scratch.rhs
     interface_terms = scratch.interface_conductance
-    solver_diag = scratch.previous_temperature
     first_mass, first_density, first_temperature =
         _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i, idx, 1)
     surface_mass = _safe_positive(first_mass)
@@ -461,7 +408,6 @@ function _go_energy_flux_resolved!(
     previous_layer_conductivity = _snow_thermal_conductivity(first_density, first_temperature, c.rho_i)
     surface_layer_thickness = previous_layer_thickness
     surface_layer_conductivity = previous_layer_conductivity
-    _set_layer!(rhs, 1, idx, first_temperature)
 
     @inbounds for layer_index in 2:n_layers
         layer_mass, layer_density, layer_temperature =
@@ -479,7 +425,6 @@ function _go_energy_flux_resolved!(
                 layer_thickness,
             ),
         )
-        _set_layer!(rhs, layer_index, idx, layer_temperature)
         previous_layer_thickness = layer_thickness
         previous_layer_conductivity = layer_conductivity
     end
@@ -501,53 +446,25 @@ function _go_energy_flux_resolved!(
     surface_coefficient = surface_conductance / surface_denominator
     β1 = β_scale / surface_mass
     boundary_term = β1 * surface_conductance
-    _set_layer!(rhs, 1, idx, _get_layer(rhs, 1, idx) - boundary_term * surface_constant)
     # Evaluate 1 - boundary_term*(1-surface_coefficient) without subtracting
     # two enormous, nearly equal terms for very thin surface layers. In the
     # zero-flux-derivative limit the diagonal must remain exactly one, not zero.
-    _set_layer!(diag, 1, idx, one(dt_seconds) -
-        boundary_term * (surface_flux_linear / surface_denominator))
-    if n_layers > 1
-        _set_layer!(upper, 1, idx, β1 * _get_layer(interface_terms, 1, idx))
-        _set_layer!(diag, 1, idx, _get_layer(diag, 1, idx) - _get_layer(upper, 1, idx))
-        last_mass, _, _ = _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i, idx, n_layers)
-        βn = β_scale / _safe_positive(last_mass)
-        _set_layer!(lower, n_layers - 1, idx, βn * _get_layer(interface_terms, n_layers - 1, idx))
-        _set_layer!(diag, n_layers, idx, one(dt_seconds) - _get_layer(lower, n_layers - 1, idx))
-    end
-
-    @inbounds for layer_index in 2:(n_layers - 1)
-        layer_mass, _, _ = _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i, idx, layer_index)
-        βi = β_scale / _safe_positive(layer_mass)
-        _set_layer!(lower, layer_index - 1, idx, βi * _get_layer(interface_terms, layer_index - 1, idx))
-        _set_layer!(upper, layer_index, idx, βi * _get_layer(interface_terms, layer_index, idx))
-        _set_layer!(
-            diag,
-            layer_index,
-            idx,
-            one(dt_seconds) - _get_layer(lower, layer_index - 1, idx) - _get_layer(upper, layer_index, idx),
-        )
-    end
-
-    _copy_column!(solver_diag, diag, idx, n_layers)
-    resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
+    boundary_diag = one(dt_seconds) - boundary_term * (surface_flux_linear / surface_denominator)
+    resolved_temperature = _solve_heat_diffusion!(
+        scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i,
+        idx, n_layers, β_scale, boundary_diag, zero(dt_seconds), first_temperature - boundary_term * surface_constant,
+    )
 
     resolved_surface_temperature = surface_constant + surface_coefficient * _get_layer(resolved_temperature, 1, idx)
     if resolved_surface_temperature > c.T0
         needs_melt = true
-
-        @inbounds for layer_index in 1:n_layers
-            _, _, layer_temperature = _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i, idx, layer_index)
-            _set_layer!(rhs, layer_index, idx, layer_temperature)
-        end
-        _set_layer!(rhs, 1, idx, _get_layer(rhs, 1, idx) - boundary_term * c.T0)
-        _copy_column!(solver_diag, diag, idx, n_layers)
         # Retain the first-to-second-layer conductance from the unconstrained
         # matrix. Only the eliminated Robin-temperature contribution is
         # replaced by the fixed melting boundary.
-        _set_layer!(solver_diag, 1, idx, _get_layer(diag, 1, idx) - boundary_term * surface_coefficient)
-
-        resolved_temperature = _solve_tridiagonal_thomas_prefix!(lower, solver_diag, upper, rhs, idx, n_layers)
+        resolved_temperature = _solve_heat_diffusion!(
+            scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i,
+            idx, n_layers, β_scale, boundary_diag, boundary_term * surface_coefficient, first_temperature - boundary_term * c.T0,
+        )
         _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
         resolved_surface_temperature = c.T0
         heating = dt_seconds * (surface_flux_constant - surface_flux_linear * c.T0)
