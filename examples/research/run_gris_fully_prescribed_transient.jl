@@ -14,6 +14,7 @@ PDF so the plotted values remain easy to reuse.
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
+using CUDA  # loads the GPU backend (ChionCUDAExt)
 using Chion
 using Dates: year
 using NCDatasets
@@ -45,7 +46,7 @@ const CONFIG = (
     wind_speed_m_s=5.0,
     spinup_years=parse(Int, get(ENV, "CHION_SPINUP_YEARS", "200")),
     backend=Symbol(get(ENV, "CHION_BACKEND", "gpu")),
-    snow_layers=15,
+    snow_layers=parse(Int, get(ENV, "CHION_SNOW_LAYERS", "15")),
     diurnal_substeps=parse(Int, get(ENV, "CHION_DIURNAL_SUBSTEPS", "8")),
 )
 
@@ -214,14 +215,38 @@ const MODEL_ENV_OVERRIDES = (
     ("CHION_NEAR_SURFACE_LAYER_MAX_THICKNESSES_M", :near_surface_layer_max_thicknesses_m, parse_profile),
 )
 
+# Domain parameter set: the BESSIModel defaults are the GrIS calibration; Antarctica uses its own
+# calibration against MAR v3.14.3 27.5 km (output/antarctica_surface_calibration,
+# output/longwave_fit_antarctica). Environment overrides take precedence;
+# CHION_DOMAIN_PARAMETERS=0 runs Antarctica with the GrIS defaults.
+const DOMAIN_PARAMETERS = DOMAIN == :antarctica ? (
+    # cloud-proxy longwave emissivity, fit_cloud_proxy_longwave_antarctica.jl (stage 3; stages 1–2 from GrIS)
+    lw_clear_sky_emissivity=0.7314, lw_clear_sky_emissivity_temperature_slope=0.003378,
+    lw_overcast_emissivity=0.9877, lw_overcast_emissivity_temperature_slope=0.004171,
+    lw_cloud_emissivity_exponent=2.0, lw_night_cloud_fraction=0.9,
+    # SEMIX turbulent exchange, stage A (CHION_DIAGNOSE_SET=ais_turbulent and ais_turbulent_edge,
+    # MAR albedo, 1980–1989): melt +2.5, SMB −1.4 Gt yr⁻¹; DJF LH < 500 m −0.1 W m⁻² against MAR LHF
+    semix_sensible_exchange_factor=2.5, semix_stable_coefficient=20.0, semix_latent_exchange_factor=3.0,
+    # dynamic albedo, stage B (CHION_DIAGNOSE_SET=ais_albedo, fully parameterized, 1980–1989):
+    # melt −1.5, SMB +11 Gt yr⁻¹; DJF absorbed SW < 500 m +3.8 W m⁻²
+    alpha_dry=0.87, alpha_wet=0.82,
+) : (;)
+
 function model_env_overrides()
     pairs = [key => parser(ENV[name]) for (name, key, parser) in MODEL_ENV_OVERRIDES if !isempty(get(ENV, name, ""))]
+    # Generic numeric overrides of any BESSIModel keyword or physical constant, e.g.
+    # CHION_PARAMETER_OVERRIDES="refreezing_correction=0.9;lw_overcast_emissivity=0.95"
+    for item in split(get(ENV, "CHION_PARAMETER_OVERRIDES", ""), ';'; keepempty=false)
+        name, value = strip.(split(item, '='))
+        push!(pairs, Symbol(name) => parse_float(value))
+    end
     amplitude = get(ENV, "CHION_DIURNAL_TEMPERATURE_CONSTANT_AMPLITUDE_C", "")
     if !isempty(amplitude)
         push!(pairs, :diurnal_temperature_amplitude_c => parse_float(amplitude),
             :diurnal_temperature_amplitude_max_c => parse_float(amplitude))
     end
-    return NamedTuple(pairs)
+    domain = get(ENV, "CHION_DOMAIN_PARAMETERS", "1") == "0" ? (;) : DOMAIN_PARAMETERS
+    return merge(domain, NamedTuple(pairs))
 end
 
 """Chion with every MAR surface flux and albedo prescribed."""
@@ -229,7 +254,7 @@ build_fully_prescribed_model(grid) = BESSIModel(grid; Ntot=CONFIG.snow_layers, a
     diurnal_shortwave_max_substeps=CONFIG.diurnal_substeps, model_env_overrides()...)
 
 """Chion with the parameterized SEB and dynamic albedo used in the GrIS comparison."""
-build_parameterized_model(grid) = BESSIModel(grid; Ntot=CONFIG.snow_layers,
+build_parameterized_model(grid; number_type=Float64) = BESSIModel(grid; Ntot=CONFIG.snow_layers, number_type,
     albedo=Symbol(get(ENV, "CHION_ALBEDO_SCHEME", "dynamic")),
     diurnal_shortwave_max_substeps=CONFIG.diurnal_substeps, model_env_overrides()...)
 

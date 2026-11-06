@@ -368,6 +368,7 @@ end
 function _accumulate_forcing!(rec::OutputRecorder, forcing, ks, seconds_per_day)
     isempty(rec.precip) && return nothing
     sf, rf = forcing.snowfall_rate, forcing.rainfall_rate
+    _is_device_array(sf) && return _accumulate_device_forcing!(rec, forcing, sf, rf, ks, seconds_per_day)
     for k in ks
         dt_seconds = Float64(forcing.dt_days[k]) * seconds_per_day
         for (name, acc) in rec.precip
@@ -376,6 +377,22 @@ function _accumulate_forcing!(rec::OutputRecorder, forcing, ks, seconds_per_day)
                 acc[i] += (name === :snowfall ? s : name === :rainfall ? r : s + r) * dt_seconds
             end
         end
+    end
+    return nothing
+end
+
+_is_device_array(x) = x isa DenseArray && !(x isa Array)
+
+"""Forcing kept on a device (e.g. built there by the caller): sum the steps `ks` there, in Float64,
+and copy one column vector per field to the host."""
+function _accumulate_device_forcing!(rec::OutputRecorder, forcing, sf, rf, ks, seconds_per_day)
+    dt = similar(sf, Float64, 1, length(ks))
+    copyto!(dt, [Float64(forcing.dt_days[k]) * seconds_per_day for k in ks])
+    period_sum(x) = Array(vec(sum(view(x, :, ks) .* dt; dims=2)))[rec.columns]
+    s = any(name -> name !== :rainfall, keys(rec.precip)) ? period_sum(sf) : nothing
+    r = any(name -> name !== :snowfall, keys(rec.precip)) ? period_sum(rf) : nothing
+    for (name, acc) in rec.precip
+        acc .+= name === :snowfall ? s : name === :rainfall ? r : s .+ r
     end
     return nothing
 end

@@ -1,12 +1,29 @@
 #!/usr/bin/env julia
 
-# Run a continuous native-3-hourly MAR transient after shared 200-y spin-up.
+# Run a continuous native-3-hourly MAR transient 1980–2017. Spin-up: CHION_SPINUP_CYCLES (default 5)
+# cycles of the real daily MAR years CHION_SPINUP_FIRST..CHION_SPINUP_LAST (default 1940–1969), then
+# the daily years 1940–1979, both expanded to 3-hourly steps with the diurnal reconstruction
+# (CHION_SPINUP_MODE=climatology restores the earlier 200-year climatology spin-up).
 include(joinpath(@__DIR__, "run_gris_1981_three_hourly_comparison.jl"))
 using Printf
 using Plots
 
 const TRANSIENT_NATIVE_DIR = get(ENV, "CHION_3HOURLY_DIR", "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_3hourly")
 const TRANSIENT_DAILY_DIR = get(ENV, "CHION_DAILY_DIR", "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily")
+const NATIVE_SPINUP_MODE = Symbol(get(ENV, "CHION_SPINUP_MODE", "cycled"))
+const NATIVE_SPINUP_YEARS = parse(Int, get(ENV, "CHION_SPINUP_FIRST", "1940")):parse(Int, get(ENV, "CHION_SPINUP_LAST", "1969"))
+const NATIVE_SPINUP_CYCLES = parse(Int, get(ENV, "CHION_SPINUP_CYCLES", "5"))
+daily_year_path(year) = joinpath(TRANSIENT_DAILY_DIR, "MARv3.14.3-10km-daily-ERA5-$(year).nc")
+
+"""One year of daily MAR, expanded to 3-hourly steps, run from `state`."""
+function run_daily_year(m, grid, state, year, name)
+    f, g = load_daily(daily_year_path(year))
+    g.js == grid.js && g.is == grid.is || error("Grid mismatch in the daily file of $year")
+    sim = Simulation(m; forcing=expand_daily(f), state, years=1, backend=CFG.backend,
+        write_netcdf=false, compute_year_metrics=false, name)
+    run!(sim).status == :complete || error("$name failed")
+    return sim.now
+end
 same_native_grid(a, b) = a.x == b.x && a.y == b.y && a.js == b.js && a.is == b.is
 
 function gt_sum(field_values, area)
@@ -64,10 +81,21 @@ function native_transient_main()
     clim, grid = load_daily(CFG.climatology)
     m = model(grid)
     area = static_field(joinpath(TRANSIENT_DAILY_DIR, "MARv3.14.3-10km-daily-ERA5-1980.nc"), "AREA", grid)
-    spin = Simulation(m; forcing=expand_daily(clim), years=CFG.spinup_years, backend=CFG.backend,
-        write_netcdf=false, compute_year_metrics=false, name="shared_200y_climatology_spinup_native_3h")
-    run!(spin).status == :complete || error("200-year climatology spin-up failed")
-    state = spin.now
+    if NATIVE_SPINUP_MODE == :climatology
+        spin = Simulation(m; forcing=expand_daily(clim), years=CFG.spinup_years, backend=CFG.backend,
+            write_netcdf=false, compute_year_metrics=false, name="shared_200y_climatology_spinup_native_3h")
+        run!(spin).status == :complete || error("200-year climatology spin-up failed")
+        state = spin.now
+    else
+        state = initial_state(m)
+        for cycle in 1:NATIVE_SPINUP_CYCLES, year in NATIVE_SPINUP_YEARS
+            state = run_daily_year(m, grid, state, year, "native_spinup_$(cycle)_$(year)"); GC.gc()
+        end
+        for year in 1940:(first(years) - 1)          # daily bridge to the first native year
+            state = run_daily_year(m, grid, state, year, "native_bridge_$(year)"); GC.gc()
+        end
+        @info "Cycled spin-up and daily bridge complete" cycles=NATIVE_SPINUP_CYCLES
+    end
 
     csv = joinpath(CFG.out, "native_3hourly_transient_1980_2017_budgets.csv")
     rows = NamedTuple[]
@@ -103,7 +131,7 @@ function native_transient_main()
     end
     write_native_transient_plot(joinpath(CFG.out, "native_3hourly_transient_1980_2017_budgets.pdf"), rows)
     open(joinpath(CFG.out, "native_3hourly_transient_configuration.csv"), "w") do io
-        println(io, "setting,value\nforcing,native_3hourly_MAR_1980_2017\nspinup_years,$(CFG.spinup_years)\nbackend,$(CFG.backend)\nseb_scheme,semix\nlayers,15\nnear_surface_profile_m,0.02|0.05|0.10|0.30\nice_substrate_layers,$(m.parameters.ice_substrate_layers)\nice_substrate_top_thickness_m,$(m.parameters.ice_substrate_top_thickness_m)\ntransient_steps,actual_3_hourly\nrefreezing_reference,daily_MAR_RZ\nvapor_reference,daily_MAR_SU")
+        println(io, "setting,value\nforcing,native_3hourly_MAR_1980_2017\nspinup,$(NATIVE_SPINUP_MODE == :cycled ? "$(NATIVE_SPINUP_CYCLES) cycles of daily MAR $(first(NATIVE_SPINUP_YEARS))-$(last(NATIVE_SPINUP_YEARS)), then daily 1940-1979" : "$(CFG.spinup_years) years of the daily climatology")\nbackend,$(CFG.backend)\nseb_scheme,semix\nlayers,15\nnear_surface_profile_m,0.02|0.05|0.10|0.30\nice_substrate_layers,$(m.parameters.ice_substrate_layers)\nice_substrate_top_thickness_m,$(m.parameters.ice_substrate_top_thickness_m)\ntransient_steps,actual_3_hourly\nrefreezing_reference,daily_MAR_RZ\nvapor_reference,daily_MAR_SU")
     end
     @info "Wrote native 3-hourly transient budgets and plot" csv
 end

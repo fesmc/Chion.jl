@@ -14,9 +14,9 @@ fields.
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
+using CUDA  # loads the GPU backend (ChionCUDAExt)
 using Chion
 using Dates: day, month
-import CairoMakie
 using NCDatasets
 using Plots
 using Statistics: cor, mean, quantile
@@ -340,86 +340,45 @@ function comparison_figure(comparison, case)
     )
 end
 
-"""Add one rasterized budget scatter layer to a CairoMakie axis."""
-function budget_scatter_panel!(position, x, y, label, period; unit, panel_label)
+"""One budget scatter panel (Chion against MAR) with r, R² and RMSE."""
+function budget_scatter_panel(x, y, label, period; unit, panel_label)
     valid = isfinite.(x) .& isfinite.(y)
     xmetrics, ymetrics = x[valid], y[valid]
     xplot, yplot = selected_scatter_points(x, y, CONFIG.scatter_max_points)
-    axis = CairoMakie.Axis(
-        position;
-        xlabel="$period $label (MAR) [$unit]",
-        ylabel="$period $label (Chion) [$unit]",
-        title="",
-        aspect=CairoMakie.DataAspect(),
-    )
-    isempty(xplot) && return axis
-
+    p = Plots.plot(; xlabel="$period $label (MAR) [$unit]", ylabel="$period $label (Chion) [$unit]",
+        title=panel_label, titlelocation=:left, legend=false, aspect_ratio=:equal, framestyle=:box)
+    isempty(xplot) && return p
     rmse = sqrt(mean((ymetrics .- xmetrics) .^ 2))
     correlation = length(xmetrics) > 1 ? cor(xmetrics, ymetrics) : NaN
-    lower = min(minimum(xplot), minimum(yplot))
-    upper = max(maximum(xplot), maximum(yplot))
-    pad = max((upper - lower) * 0.04, eps(Float64))
-    limits = (lower - pad, upper + pad)
-    CairoMakie.xlims!(axis, limits...)
-    CairoMakie.ylims!(axis, limits...)
-    # Only the dense marker series is rasterized in the PDF. Axes, labels,
-    # annotations, and the 1:1 reference line remain vector graphics.
-    CairoMakie.scatter!(
-        axis,
-        xplot,
-        yplot;
-        color=(:dodgerblue, 0.16),
-        markersize=3.0,
-        rasterize=2,
-    )
-    CairoMakie.lines!(axis, collect(limits), collect(limits); color=:black, linewidth=1.5, linestyle=:dash)
+    lower = min(minimum(xplot), minimum(yplot)); upper = max(maximum(xplot), maximum(yplot))
+    pad = max((upper - lower) * 0.04, eps(Float64)); limits = (lower - pad, upper + pad)
+    Plots.scatter!(p, xplot, yplot; ms=1.5, msw=0, c=:dodgerblue, alpha=0.16)
+    Plots.plot!(p, collect(limits), collect(limits); c=:black, lw=1.5, ls=:dash)
+    Plots.xlims!(p, limits); Plots.ylims!(p, limits)
     stats = "R²=$(round(correlation^2; digits=3))\nr=$(round(correlation; digits=3))\nRMSE=$(round(rmse; digits=3))"
-    CairoMakie.text!(
-        axis,
-        stats;
-        position=(limits[1] + 0.04 * (limits[2] - limits[1]), limits[2] - 0.04 * (limits[2] - limits[1])),
-        align=(:left, :top),
-        fontsize=14,
-    )
-    return axis
+    Plots.annotate!(p, limits[1] + 0.04 * (limits[2] - limits[1]), limits[2] - 0.04 * (limits[2] - limits[1]),
+        Plots.text(stats, 8, :left, :top))
+    return p
 end
 
-"""Budget scatter figure with rasterized point layers and vector annotations."""
+"""Budget scatter figure: monthly (top) and annual (bottom) per-cell totals."""
 function budget_figure(comparison, area_km2, case)
     # 1 mmWE over 1 km² is 10⁻³ Mt. The monthly panel has 12 × ncell points.
     monthly_cell_total(values) = values .* reshape(area_km2, 1, :) .* 1e-3
-    # Near-square cells preserve the 1:1 scatter aspect without unused
-    # horizontal space; minimal layout gaps keep the 2 × 5 grid compact.
-    figure = CairoMakie.Figure(size=(3000, 1200), fontsize=18, figure_padding=(2, 2, 2, 2))
-    CairoMakie.colgap!(figure.layout, 2)
-    CairoMakie.rowgap!(figure.layout, 4)
+    top, bottom = Any[], Any[]
+    nvar = length(BUDGET_SCATTER_VARIABLES)
     for (index, name) in enumerate(BUDGET_SCATTER_VARIABLES)
         label = BUDGET_VARIABLES[name]
-        monthly_panel_label = "($(Char('a' + index - 1)))"
-        annual_panel_label = "($(Char('a' + length(BUDGET_SCATTER_VARIABLES) + index - 1)))"
         monthly_mar = monthly_cell_total(comparison.truth[name])
         monthly_chion = monthly_cell_total(comparison.configured[name])
-        yearly_mar = vec(sum(monthly_mar; dims=1))
-        yearly_chion = vec(sum(monthly_chion; dims=1))
-        budget_scatter_panel!(
-            figure[1, index], vec(monthly_mar), vec(monthly_chion), label, "Monthly";
-            unit="Mt/month", panel_label=monthly_panel_label,
-        )
-        CairoMakie.Label(
-            figure[1, index, CairoMakie.TopLeft()], monthly_panel_label;
-            fontsize=20, halign=:left, valign=:bottom, padding=(0, 0, 4, 0),
-        )
-        budget_scatter_panel!(
-            figure[2, index], yearly_mar, yearly_chion, label, "Annual";
-            unit="Mt/yr", panel_label=annual_panel_label,
-        )
-        CairoMakie.Label(
-            figure[2, index, CairoMakie.TopLeft()], annual_panel_label;
-            fontsize=20, halign=:left, valign=:bottom, padding=(0, 0, 4, 0),
-        )
+        push!(top, budget_scatter_panel(vec(monthly_mar), vec(monthly_chion), label, "Monthly";
+            unit="Mt/month", panel_label="($(Char('a' + index - 1)))"))
+        push!(bottom, budget_scatter_panel(vec(sum(monthly_mar; dims=1)), vec(sum(monthly_chion; dims=1)), label, "Annual";
+            unit="Mt/yr", panel_label="($(Char('a' + nvar + index - 1)))"))
     end
-    return figure
+    return Plots.plot(top..., bottom...; layout=(2, nvar), size=(600 * nvar, 1200))
 end
+
 
 """Return annual per-grid-cell budget-scatter skill metrics in Mt/yr."""
 function yearly_budget_scatter_metrics(comparison, area_km2, case)
@@ -1274,7 +1233,7 @@ function main()
         )
         if CONFIG.write_figures
             savefig(comparison_figure(result.comparison, case), scatter_path)
-            CairoMakie.save(budget_path, budget_figure(result.budgets, reference.area_km2, case))
+            savefig(budget_figure(result.budgets, reference.area_km2, case), budget_path)
             savefig(monthly_integrated_budget_figure(result.budgets, reference.area_km2, case), integrated_budget_path)
             savefig(monthly_integrated_energy_figure(result.energy, reference.area_km2, case), energy_path)
             save_map_figure(state_path, end_state_figure(grid, result.state, result.annual, case))

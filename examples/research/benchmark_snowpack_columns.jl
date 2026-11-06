@@ -1,5 +1,6 @@
 #!/usr/bin/env julia
 
+using CUDA  # loads the GPU backend (ChionCUDAExt)
 using Chion
 
 const ROOT = normpath(joinpath(@__DIR__, "..", ".."))
@@ -52,7 +53,7 @@ function worker()
         result = nothing
         seconds = @elapsed begin
             result = run!(sim; io=devnull)
-            backend == :gpu && Chion.CUDA.synchronize()
+            backend == :gpu && CUDA.synchronize()
         end
         open(output, "a") do io
             println(io, join((backend, Threads.nthreads(), ncol, ntot, repetition, seconds, result.status), ","))

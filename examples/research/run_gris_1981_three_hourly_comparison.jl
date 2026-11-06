@@ -5,6 +5,7 @@ const COMPARISON_SCRIPT_START_NS = time_ns()
 import Pkg
 Pkg.activate(joinpath(@__DIR__, "..", ".."))
 
+using CUDA  # loads the GPU backend (ChionCUDAExt)
 using Chion
 using Dates
 using NCDatasets

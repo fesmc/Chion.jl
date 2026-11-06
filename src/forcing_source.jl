@@ -318,6 +318,9 @@ function _whole(f::Forcing{WholeSource})
     return f.source.cache
 end
 
+_slice_field(x::ConstantForcingMatrix, r, nt) = ConstantForcingMatrix(x.value, (size(x, 1), length(r)))
+_slice_field(x::ColumnForcingMatrix, r, nt) = ColumnForcingMatrix(copy(x.values), length(r))
+_slice_field(x::TimeForcingMatrix, r, nt) = TimeForcingMatrix(x.values[r], x.ncol)
 _slice_field(x, r, nt) = x isa OptionalForcingField ? OptionalForcingField(_slice_field(x.values, r, nt), _slice_field(x.available, r, nt)) :
     x isa AbstractMatrix && size(x, 2) == nt ? x[:, r] : x isa AbstractVector && length(x) == nt ? x[r] : x
 

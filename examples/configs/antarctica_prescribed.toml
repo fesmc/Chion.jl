@@ -1,0 +1,36 @@
+# Antarctic ice sheet, 1979–2026, forced by daily MAR v3.14.3 (27.5 km, ERA5), with the surface
+# energy fluxes and the albedo prescribed from MAR. The spin-up repeats 1979 for 200 years.
+#
+#   julia --project -m Chion examples/configs/antarctica_prescribed.toml --backend=gpu
+
+name = "antarctica_prescribed"
+backend = "gpu"
+years = [1979, 2026]
+output_dir = "../../output/antarctica_prescribed"
+
+[forcing]
+path = "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily_antarctica/MARv3.14.3-27.5km-daily-ERA5-{year}.nc"
+format = "mar"
+surface_fluxes = "prescribed"
+# Files before 2025 lack the cell area; the grid is the same in every year.
+area_file = "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily_antarctica/MARv3.14.3-27.5km-daily-ERA5-2025.nc"
+
+[model]
+type = "bessi"
+albedo = "prescribed"
+
+[spinup]
+type = "climatology"                 # 200 years of 1979, with the settings of [forcing]
+path = "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily_antarctica/MARv3.14.3-27.5km-daily-ERA5-1979.nc"
+years = 200
+
+[[output]]
+file = "monthly.nc"
+variables = "monthly"
+frequency = "monthly"
+
+[[output]]
+file = "budget_yearly.csv"
+variables = "budget"
+frequency = "yearly"
+aggregate = "area_sum"

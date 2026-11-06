@@ -123,11 +123,11 @@ function main()
 
 All runs: graybody-snow SEMIX SEB, 5-layer ice substrate, fine near-surface layers, 15 snow layers, daily MAR forcing with 1 K reconstructed diurnal temperature cycle. The calibrated parameterized setup adds no forcing variable:
 
-- longwave down `longwave_scheme=:cloud_proxy`: ε = 0.624 + 0.0032 (Tₐ − T₀) + 0.613 n, with cloudiness n = 1 − τ/τ_clear from the daily shortwave transmissivity τ = SW↓/SW_TOA, τ_clear = 0.85 + 0.075 km⁻¹ × elevation; n = 0.389 in the polar night;
-- SEMIX sensible heat: exchange factor 2.5, stable coefficient 40, constant 5 m s⁻¹ wind;
+- longwave down `longwave_scheme=:cloud_proxy`: ε = ε_cs(Tₐ)(1 − n³) + ε_oc(Tₐ) n³ ≤ 1 (Konzelmann et al., 1994), with the cloud fraction n diagnosed from the daily shortwave transmissivity τ = SW↓/SW_TOA by inverting τ/τ_cs = 1 − 0.447 n^2.75 exp(−0.225 z/km); fitted to daily MAR by `fit_cloud_proxy_longwave.jl`; n = 0.85 in the polar night;
+- SEMIX sensible heat: exchange factor 3.0, stable coefficient 40, constant 5 m s⁻¹ wind;
 - dynamic albedo: dry 0.81, wet 0.70, ice 0.40, aging scale 1.0.
 
-Calibrated in free coupled runs 1980–1989 (`calibrate_gris_surface_parameterization.jl`, `CHION_CALIBRATION=diagnose`, sets `sensible`, `sensible_wide`, `albedo`); launcher `run_gris_cloudlw_parameterized_gpu.sh`. Transient metrics exclude the incomplete 2026.
+Calibrated in free coupled runs 1980–1989 (`calibrate_gris_surface_parameterization.jl`, `CHION_CALIBRATION=diagnose`, sets `sensible_physical`, `albedo`, `sensible_physical_fine`); launcher `run_gris_cloudlw_parameterized_gpu.sh`. Transient metrics exclude the incomplete 2026.
 
 ## Transient, mean Chion − MAR (Gt/yr)
 """)

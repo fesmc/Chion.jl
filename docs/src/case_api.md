@@ -105,7 +105,11 @@ Seasonal snow retained in `snowpack_swe` is not credited to the ice sheet.
 NetCDF output requires a `SnowpackGrid` with spatial coordinates.
 
 Use `backend=:threads` for the CPU and `backend=:gpu` with a functional CUDA
-environment.
+environment. CUDA.jl is a weak dependency: `using CUDA` loads the GPU backend
+(the `ChionCUDAExt` package extension).
+
+`PDDModel` and `ITMModel` accept `number_type` like `BESSIModel`
+(`number_type=Float32` for single precision).
 
 ## Reference
 

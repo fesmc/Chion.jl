@@ -79,25 +79,30 @@ where ``\alpha`` is the already diagnosed surface albedo stored in
 
 If `q_lw_down` is not prescribed, the default `longwave_scheme=:cloud_proxy`
 derives it once per daily forcing step as
-``q_{\mathrm{lw,down}} = \epsilon_{\mathrm{eff}}\,\sigma T_{\mathrm{air}}^4`` with
+``q_{\mathrm{lw,down}} = \epsilon_a\,\sigma T_{\mathrm{air}}^4``. The effective
+emissivity weights a clear-sky and an overcast emissivity by a cloud fraction
+``n`` (Konzelmann et al., 1994),
 
 ```math
-\epsilon_{\mathrm{eff}} = \epsilon_0 + \epsilon_T (T_{\mathrm{air}} - T_0) + \epsilon_n n,
+\epsilon_a = \epsilon_{cs}(T_{\mathrm{air}})\,(1 - n^q) + \epsilon_{oc}(T_{\mathrm{air}})\,n^q,
 \qquad
-n = 1 - \frac{\tau}{\tau_{\mathrm{clear}}(z)},
-\qquad
-\tau = \frac{Q_{\mathrm{sw,down}}}{Q_{\mathrm{sw,TOA}}},
+\epsilon_{cs/oc} = \epsilon_{cs/oc,0} + \epsilon_{cs/oc,T}\,(T_{\mathrm{air}} - T_0),
 ```
 
-where the daily top-of-atmosphere shortwave follows from latitude and season
-and ``\tau_{\mathrm{clear}} = 0.85 + 0.075\,z/\mathrm{km}``. The defaults
-(``\epsilon_0 = 0.624``, ``\epsilon_T = 0.0032\,\mathrm{K^{-1}}``,
-``\epsilon_n = 0.613``) were fitted to daily MAR longwave over Greenland;
-``\epsilon_{\mathrm{eff}}`` is relative to the near-surface air temperature and
-can exceed one under warm overcast skies. In the polar night, or for sub-daily
-forcing whose shortwave is not a daily mean, ``n`` is the constant
-`lw_night_cloud_fraction` (0.389). No forcing beyond the standard shortwave
-is needed. `longwave_scheme=:graybody` uses ``\epsilon_{\mathrm{air}}`` instead:
+and is limited to ``0.4 \le \epsilon_a \le 1`` (`lw_emissivity_max`). The cloud
+fraction is diagnosed from the daily shortwave transmissivity
+``\tau = Q_{\mathrm{sw,down}}/Q_{\mathrm{sw,TOA}}`` by inverting the cloud
+transmission ``\tau/\tau_{cs} = 1 - a\,n^p e^{-b z}``, with the clear-sky
+transmissivity ``\tau_{cs} = \tau_0 + \tau_z z + \tau_S \ln(Q_{\mathrm{sw,TOA}}/300\,\mathrm{W\,m^{-2}})``
+(at most one). All coefficients were fitted to daily MAR over the Greenland ice
+sheet (1980–1989) with `examples/research/fit_cloud_proxy_longwave.jl`:
+``\tau_0 = 0.718``, ``\tau_z = 0.0298\,\mathrm{km^{-1}}``, ``\tau_S = 0.0569``,
+``a = 0.447``, ``p = 2.75``, ``b = 0.225\,\mathrm{km^{-1}}``,
+``\epsilon_{cs,0} = 0.716``, ``\epsilon_{cs,T} = 0.00239\,\mathrm{K^{-1}}``,
+``\epsilon_{oc,0} = 0.952``, ``\epsilon_{oc,T} = 0.00362\,\mathrm{K^{-1}}``, and ``q = 3``.
+In the polar night, or for sub-daily forcing whose shortwave is not a daily
+mean, ``n`` is the constant `lw_night_cloud_fraction` (0.85). No forcing beyond
+the standard shortwave is needed. `longwave_scheme=:graybody` uses ``\epsilon_{\mathrm{air}}`` instead:
 
 ```math
 Q_{\mathrm{lw}} =

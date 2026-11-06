@@ -50,10 +50,67 @@ end
 Base.IndexStyle(::Type{<:TimeForcingMatrix}) = IndexCartesian()
 Adapt.@adapt_structure TimeForcingMatrix
 
+const CompactForcingMatrix = Union{ConstantForcingMatrix, ColumnForcingMatrix, TimeForcingMatrix}
+
+# Checks over all entries look at the stored values only (e.g. `all(isfinite, forcing.latitude_deg)`).
+Base.all(f::Function, x::ConstantForcingMatrix) = isempty(x) || f(x.value)
+Base.all(f::Function, x::ColumnForcingMatrix) = x.ntime == 0 || all(f, x.values)
+Base.all(f::Function, x::TimeForcingMatrix) = x.ncol == 0 || all(f, x.values)
+
+# Writing into a column field (`forcing.surface_height .= h`, `forcing.air_pressure .= p`): a column
+# vector, a scalar or a matrix that is constant in time is stored per column; a matrix that varies in
+# time cannot be, and is an error rather than silently keeping one time step.
+# (Base's array and scalar styles only; other packages' styles, e.g. a NetCDF variable, take the
+# generic element-wise path.) A device `ColumnForcingMatrix` receives a host one by copying its values.
+Base.copyto!(dest::ColumnForcingMatrix, bc::Broadcast.Broadcasted{<:Broadcast.DefaultArrayStyle}) =
+    _set_column_values!(dest, _broadcast_source(bc))
+Base.copyto!(dest::ColumnForcingMatrix, bc::Broadcast.Broadcasted{Broadcast.DefaultArrayStyle{0}}) =
+    _set_column_values!(dest, _broadcast_source(bc))
+Base.copyto!(dest::ColumnForcingMatrix, bc::Broadcast.Broadcasted{Nothing}) = _set_column_values!(dest, _broadcast_source(bc))
+# The right-hand side in its own shape (a column vector stays a vector).
+_broadcast_source(bc) = bc.f === identity && length(bc.args) == 1 ? only(bc.args) :
+    Broadcast.materialize(Broadcast.broadcasted(bc.f, bc.args...))
+
+_set_column_values!(dest::ColumnForcingMatrix, src::Number) = (fill!(dest.values, src); dest)
+_set_column_values!(dest::ColumnForcingMatrix, src::Base.RefValue) = _set_column_values!(dest, src[])
+_set_column_values!(dest::ColumnForcingMatrix, src::ColumnForcingMatrix) =
+    (_check_column_count(dest, length(src.values)); copyto!(dest.values, src.values); dest)
+_set_column_values!(dest::ColumnForcingMatrix, src::ConstantForcingMatrix) = _set_column_values!(dest, src.value)
+function _set_column_values!(dest::ColumnForcingMatrix, src::AbstractVector)
+    _check_column_count(dest, length(src))
+    copyto!(dest.values, src)
+    return dest
+end
+function _set_column_values!(dest::ColumnForcingMatrix, src::AbstractMatrix)
+    size(src) == size(dest) || throw(DimensionMismatch("cannot write a $(size(src)) matrix into a $(size(dest)) forcing field"))
+    first_step = view(src, :, 1)
+    all(t -> isequal(view(src, :, t), first_step), 2:size(src, 2)) || error(
+        "This forcing field holds one value per column and cannot take values that vary in time. Build the " *
+        "forcing with that field as a (column, time) matrix (e.g. `air_pressure=...` or " *
+        "`air_pressure_temperature_mode=:instantaneous`).")
+    copyto!(dest.values, first_step)
+    return dest
+end
+_check_column_count(dest::ColumnForcingMatrix, n) =
+    n == length(dest.values) || throw(DimensionMismatch("expected $(length(dest.values)) column values, got $n"))
+
+"""A per-column field with no data: one NaN per column, writable per column."""
+_missing_column_field(ncol::Int, ntime::Int) = ColumnForcingMatrix(fill(NaN, ncol), ntime)
+
+"""A compact forcing matrix passed to the constructor, kept compact in Float64 (or Bool)."""
+function _compact_forcing_field(field::CompactForcingMatrix, ::Type{T}, ncol::Int, ntime::Int, name) where {T}
+    size(field) == (ncol, ntime) || error("`$name` must have size ($ncol, $ntime), got $(size(field)).")
+    field isa ConstantForcingMatrix && return ConstantForcingMatrix(T(field.value), field.dims)
+    field isa ColumnForcingMatrix && return ColumnForcingMatrix(T.(field.values), ntime)
+    return TimeForcingMatrix(T.(field.values), ncol)
+end
+
 """Adapt.jl adaptor converting floating-point forcing data (arrays and scalars inside the forcing
 wrappers) to the model's number type `NF`; Bool masks and integers are left unchanged."""
 struct NumberTypeAdaptor{NF <: AbstractFloat} end
 Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{<:AbstractFloat}) where {NF} = convert(Array{NF}, x)
+# Already in `NF`: kept as is, so forcing built on a device in the model's number type stays there.
+Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{NF}) where {NF <: AbstractFloat} = x
 Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractFloat) where {NF} = NF(x)
 
 """Forcing fields in the number type `NF` (no copy for Float64)."""
@@ -102,6 +159,7 @@ end
     if field isa Number
         return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
+    field isa CompactForcingMatrix && return _compact_forcing_field(field, Float64, ncol, ntime, name)
     data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
@@ -117,6 +175,7 @@ end
     if field isa Bool
         return _constant_forcing_matrix(field, (ncol, ntime))
     end
+    field isa CompactForcingMatrix && return _compact_forcing_field(field, Bool, ncol, ntime, name)
     data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ntime || error("`$name` must have length $ntime.")
@@ -132,6 +191,7 @@ end
     if field isa Number
         return _constant_forcing_matrix(Float64(field), (ncol, ntime))
     end
+    field isa CompactForcingMatrix && return _compact_forcing_field(field, Float64, ncol, ntime, name)
     data = _forcing_array(field)
     if ndims(data) == 1
         length(data) == ncol || error("`$name` vector input must have length $ncol.")
@@ -213,25 +273,8 @@ function air_pressure_from_surface_height(
             stop_idx += 1
         end
         @inbounds for col in 1:ncol
-            t_sum = 0.0
-            valid_weight_sum = 0.0
-            for t in start_idx:stop_idx
-                T = air_temperature[col, t]
-                w = weights[t]
-                if isfinite(T) && isfinite(w) && w > 0.0
-                    t_sum += T * w
-                    valid_weight_sum += w
-                end
-            end
-            Tmean = valid_weight_sum > 0.0 ? t_sum / valid_weight_sum : NaN
-            p = _barometric_air_pressure(
-                height[col, start_idx],
-                Tmean;
-                sea_level_pressure=sea_level_pressure,
-                gravity=gravity,
-                molar_mass_air=molar_mass_air,
-                gas_constant=gas_constant,
-            )
+            p = _annual_mean_air_pressure(height, air_temperature, weights, col, start_idx:stop_idx;
+                sea_level_pressure, gravity, molar_mass_air, gas_constant)
             for t in start_idx:stop_idx
                 pressure[col, t] = p
             end
@@ -239,6 +282,44 @@ function air_pressure_from_surface_height(
         start_idx = stop_idx + 1
     end
     return pressure
+end
+
+"""Barometric pressure of column `col` from its temperature averaged over the steps `r` (weights
+`weights`, non-finite values skipped) and its surface height at the first step."""
+@inline function _annual_mean_air_pressure(height, air_temperature, weights, col::Int, r; kwargs...)
+    t_sum = 0.0
+    valid_weight_sum = 0.0
+    @inbounds for t in r
+        T = air_temperature[col, t]
+        w = weights[t]
+        if isfinite(T) && isfinite(w) && w > 0.0
+            t_sum += T * w
+            valid_weight_sum += w
+        end
+    end
+    Tmean = valid_weight_sum > 0.0 ? t_sum / valid_weight_sum : NaN
+    return _barometric_air_pressure(@inbounds(height[col, first(r)]), Tmean; kwargs...)
+end
+
+"""
+`air_pressure_from_surface_height`, stored as one value per column when that is exact: annual-mean
+temperature, a forcing within one calendar year and a surface height constant in time. Otherwise the
+(column, time) matrix.
+"""
+function _compact_air_pressure(surface_height, air_temperature; dt_days, time_values, temperature_mode, kwargs...)
+    ncol, ntime = size(air_temperature)
+    mode = _normalize_air_pressure_temperature_mode(temperature_mode)
+    height = _forcing_column_metadata_matrix(surface_height, ncol, ntime, "surface_height")
+    per_column = mode == :annual_mean && ntime > 0 && !(height isa Matrix) &&
+        allequal(Dates.year(DateTime(t)) for t in time_values)
+    per_column || return air_pressure_from_surface_height(surface_height, air_temperature;
+        dt_days, time_values, temperature_mode, kwargs...)
+    weights = Float64.(collect(dt_days))
+    values = Vector{Float64}(undef, ncol)
+    Threads.@threads for col in 1:ncol
+        values[col] = _annual_mean_air_pressure(height, air_temperature, weights, col, 1:ntime; kwargs...)
+    end
+    return ColumnForcingMatrix(values, ntime)
 end
 
 @inline function _calendar_day_of_year(t::DateTime)
@@ -691,7 +772,7 @@ function SnowpackForcing(;
         q_sw_net, has_q_sw_net, 0.0, dims, column_count, ntime, "q_sw_net",
     )
     wind_speed_m = isnothing(wind_speed) ? _constant_forcing_matrix(5.0, dims) : _forcing_numeric_matrix(wind_speed, column_count, ntime, "wind_speed")
-    latitude_deg_m = isnothing(latitude_deg) ? fill(NaN, dims) : _forcing_column_metadata_matrix(latitude_deg, column_count, ntime, "latitude_deg")
+    latitude_deg_m = isnothing(latitude_deg) ? _missing_column_field(column_count, ntime) : _forcing_column_metadata_matrix(latitude_deg, column_count, ntime, "latitude_deg")
     q_lw_down_m, has_q_lw_down_m = _optional_forcing_field(
         q_lw_down, has_q_lw_down, 0.0, dims, column_count, ntime, "q_lw_down",
     )
@@ -726,13 +807,13 @@ function SnowpackForcing(;
     end
     time_values_v = isnothing(time_values) ? _synthesized_time_values(dt_days_v) : DateTime.(collect(time_values))
     length(time_values_v) == dims[2] || error("`time_values` must have one entry per forcing timestep.")
-    surface_height_m = isnothing(surface_height) ? fill(NaN, dims) : _forcing_column_metadata_matrix(surface_height, column_count, ntime, "surface_height")
-    ice_thickness_m = isnothing(ice_thickness) ? fill(NaN, dims) : _forcing_column_metadata_matrix(ice_thickness, column_count, ntime, "ice_thickness")
-    annual_pdd_m = isnothing(annual_pdd) ? fill(NaN, dims) : _forcing_column_metadata_matrix(annual_pdd, column_count, ntime, "annual_pdd")
+    surface_height_m = isnothing(surface_height) ? _missing_column_field(column_count, ntime) : _forcing_column_metadata_matrix(surface_height, column_count, ntime, "surface_height")
+    ice_thickness_m = isnothing(ice_thickness) ? _missing_column_field(column_count, ntime) : _forcing_column_metadata_matrix(ice_thickness, column_count, ntime, "ice_thickness")
+    annual_pdd_m = isnothing(annual_pdd) ? _missing_column_field(column_count, ntime) : _forcing_column_metadata_matrix(annual_pdd, column_count, ntime, "annual_pdd")
     air_pressure_m = if !isnothing(air_pressure)
         _forcing_numeric_matrix(air_pressure, column_count, ntime, "air_pressure")
     elseif !isnothing(surface_height)
-        air_pressure_from_surface_height(
+        _compact_air_pressure(
             surface_height_m,
             air_temperature;
             dt_days=dt_days_v,

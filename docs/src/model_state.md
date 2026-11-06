@@ -106,7 +106,7 @@ NetCDF `smb_ice` is the change in that cumulative field during the month.
 
 The surface-energy defaults (`seb_scheme=:semix`, `albedo=:dynamic` with
 `alpha_dry, alpha_wet, alpha_ice = 0.81, 0.70, 0.40`,
-`longwave_scheme=:cloud_proxy`, SEMIX sensible heat factor 2.5 and stable
+`longwave_scheme=:cloud_proxy`, SEMIX sensible heat factor 3.0 and stable
 coefficient 40, 8 diurnal substeps with a 1 K temperature cycle) were
 calibrated against MAR v3.14.3 over Greenland with daily forcing.
 

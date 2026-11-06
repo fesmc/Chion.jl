@@ -308,15 +308,22 @@ end
         m5 = BESSIModel(grid; fresh_snow_density=:parameterized)
         m6 = BESSIModel(grid)
         m7 = BESSIModel(grid; turbulent_flux_scheme=:bessi)
-        @test m1.c.albedo_scheme == Chion.ALBEDO_DYNAMIC
-        @test m2.c.albedo_scheme == Chion.ALBEDO_CONSTANT
-        @test m3.c.albedo_scheme == Chion.ALBEDO_AGING
+        @test m1.c.albedo_scheme isa Chion.DynamicAlbedo
+        @test m2.c.albedo_scheme isa Chion.ConstantAlbedo
+        @test m3.c.albedo_scheme isa Chion.AgingAlbedo
         @test m3.c.alpha_dry == 0.81
         @test m3.c.alpha_wet == 0.70
         @test m3.c.aging_cold_timescale_days == 20.0
         @test m3.c.aging_melting_timescale_days == 2.0
-        @test m4.c.low_density_densification == Chion.LOW_DENSIFICATION_HTESSEL
-        @test m5.c.fresh_snow_density_scheme == Chion.FRESH_SNOW_DENSITY_PARAMETERIZED
+        @test m4.c.low_density_densification isa Chion.HTESSELDensification
+        @test m1.c.low_density_densification isa Chion.BESSIDensification
+        @test m5.c.fresh_snow_density_scheme isa Chion.ParameterizedFreshSnowDensity
+        @test m1.c.fresh_snow_density_scheme isa Chion.ConstantFreshSnowDensity
+        # Scheme instances are accepted in place of symbols.
+        @test BESSIModel(grid; albedo=Chion.SemixAlbedo()).c.albedo_scheme isa Chion.SemixAlbedo
+        @test BESSIModel(grid; densification=Chion.HTESSELDensification()).c.low_density_densification isa
+              Chion.HTESSELDensification
+        @test typeof(m2.c) == typeof(BESSIModel(grid; albedo=Chion.ConstantAlbedo()).c)
         @test m6.c.turbulent_flux_scheme == Chion.SEB_SEMIX
         @test m6.c.seb_scheme == Chion.SEB_SEMIX
         @test m7.c.turbulent_flux_scheme == Chion.SEB_BESSI
@@ -340,12 +347,16 @@ end
         @test build_model(BESSIModel, grid) isa BESSIModel
         @test BESSIModel(grid; diurnal_shortwave_substeps=true).diurnal_shortwave_substeps
         @test_throws MethodError BESSIModel(grid; diurnal_shortwave=true)
-        @test PDDModel(grid; pdd_method=:pism).pdd_method == Chion.PDD_METHOD_PISM
+        @test PDDModel(grid; pdd_method=:pism).pdd_method isa Chion.PISMPDD
+        @test PDDModel(grid).pdd_method isa Chion.SimplePDD
+        @test PDDModel(grid; pdd_method=Chion.PISMPDD()).pdd_method isa Chion.PISMPDD
         @test_throws Exception PDDModel(grid; pdd_method=:calov_greve)
         @test Chion.SnowpackPhysicalConstants(
             Float64; semix_snow_albedo=:warren_wiscombe,
         ).semix_snow_albedo == Chion.SEMIX_ALBEDO_WW
-        @test RunOptions(backend=:threads).backend == :threads
+        @test RunOptions(backend=:threads).backend === Chion.ThreadsBackend()
+        @test RunOptions(backend="GPU").backend === Chion.GPUBackend()
+        @test RunOptions(backend=Chion.GPUBackend()).backend === Chion.GPUBackend()
         @test_throws Exception RunOptions(backend=:cpu)
 
         accumulation_state = BESSIState(m6)
@@ -483,6 +494,55 @@ end
         @test forcing.surface_height isa Chion.ColumnForcingMatrix
         @test Matrix(forcing.q_lw_down) == zeros(3, 2)
         @test Matrix(forcing.latitude_deg) == [60.0 60.0; 70.0 70.0; 80.0 80.0]
+    end
+
+    @testset "missing column fields and annual-mean pressure are stored per column" begin
+        dates = DateTime(2001, 1, 1) .+ Day.(0:3)
+        T = [250.0 252.0 254.0 256.0; 260.0 262.0 264.0 266.0]
+        bare = SnowpackForcing(dt_days=ones(4), air_temperature=T, snowfall_rate=0.0, rainfall_rate=0.0,
+            shortwave_down=0.0, time_values=dates)
+        for name in (:latitude_deg, :surface_height, :ice_thickness, :annual_pdd)
+            field = getproperty(bare, name)
+            @test field isa Chion.ColumnForcingMatrix
+            @test size(field) == (2, 4) && all(isnan, field)
+        end
+        # written per column, as Kryonomos and update_air_pressure! do
+        bare.surface_height .= [100.0, 200.0]
+        @test Matrix(bare.surface_height) == [fill(100.0, 1, 4); fill(200.0, 1, 4)]
+
+        height = [0.0, 1500.0]
+        annual = SnowpackForcing(dt_days=ones(4), air_temperature=T, snowfall_rate=0.0, rainfall_rate=0.0,
+            shortwave_down=0.0, time_values=dates, surface_height=height, air_pressure_temperature_mode=:annual_mean)
+        dense = Chion.air_pressure_from_surface_height(height, T; dt_days=ones(4), time_values=dates,
+            temperature_mode=:annual_mean)
+        @test annual.air_pressure isa Chion.ColumnForcingMatrix
+        @test Matrix(annual.air_pressure) == dense                       # bitwise
+        update_air_pressure!(annual; temperature_mode=:annual_mean)
+        @test Matrix(annual.air_pressure) == dense
+        # a time-varying write into a per-column field is an error, not a silent truncation
+        err = _captured_exception(() -> update_air_pressure!(annual; temperature_mode=:instantaneous))
+        @test err isa ErrorException && occursin("one value per column", sprint(showerror, err))
+        @test Matrix(annual.air_pressure) == dense
+
+        # instantaneous pressure and forcing spanning two years keep the full matrix
+        inst = SnowpackForcing(dt_days=ones(4), air_temperature=T, snowfall_rate=0.0, rainfall_rate=0.0,
+            shortwave_down=0.0, time_values=dates, surface_height=height)
+        @test inst.air_pressure isa Matrix
+        two_years = [DateTime(2001, 12, 30), DateTime(2001, 12, 31), DateTime(2002, 1, 1), DateTime(2002, 1, 2)]
+        split = SnowpackForcing(dt_days=ones(4), air_temperature=T, snowfall_rate=0.0, rainfall_rate=0.0,
+            shortwave_down=0.0, time_values=two_years, surface_height=height, air_pressure_temperature_mode=:annual_mean)
+        @test split.air_pressure isa Matrix
+        @test split.air_pressure == Chion.air_pressure_from_surface_height(height, T; dt_days=ones(4),
+            time_values=two_years, temperature_mode=:annual_mean)
+
+        # rebuilding and slicing keep the compact fields compact
+        rebuilt = SnowpackForcing(dt_days=annual.dt_days, air_temperature=annual.air_temperature, snowfall_rate=0.0,
+            rainfall_rate=0.0, shortwave_down=0.0, time_values=annual.time_values,
+            surface_height=annual.surface_height, air_pressure=annual.air_pressure)
+        @test rebuilt.air_pressure isa Chion.ColumnForcingMatrix && rebuilt.surface_height isa Chion.ColumnForcingMatrix
+        sliced = Chion.slice_forcing(annual, 2:3)
+        @test sliced.air_pressure isa Chion.ColumnForcingMatrix && size(sliced.air_pressure) == (2, 2)
+        @test Matrix(sliced.air_pressure) == dense[:, 2:3]
     end
 
     @testset "transposed layer storage preserves logical indexing" begin
@@ -1174,6 +1234,34 @@ end
 
         albedo = Chion._itm_surface_albedo(model, 1500.0, 1000.0, 0.0, 200.0)
         @test albedo == model.alb_ice
+    end
+
+    @testset "PDD and ITM run in Float32" begin
+        grid = SnowpackGrid(2)
+        forcing() = SnowpackForcing(
+            dt_days=fill(1.0, 4),
+            ncol=2,
+            air_temperature_c=[-3.0 1.0 4.0 2.0; 2.0 5.0 6.0 3.0],
+            snowfall_mm_day=[4.0 1.0 0.0 2.0; 1.0 0.0 0.0 0.5],
+            rainfall_mm_day=[0.0 0.5 1.0 0.0; 0.0 1.0 2.0 0.0],
+            shortwave_down=fill(250.0, 2, 4),
+            latitude_deg=[72.0, 65.0],
+            surface_height=[1500.0, 500.0],
+            ice_thickness=[1000.0, 0.0],
+            annual_pdd=[200.0, 800.0],
+        )
+        for make in ((NF) -> PDDModel(grid; pdd_method=:pism, number_type=NF), (NF) -> ITMModel(grid; number_type=NF))
+            sim64 = Simulation(make(Float64); forcing=forcing(), years=1)
+            sim32 = Simulation(make(Float32); forcing=forcing(), years=1)
+            @test Chion.number_type(sim32.model.c) == Float32
+            run!(sim64; io=devnull)
+            @test run!(sim32; io=devnull).status == :complete
+            for name in fieldnames(typeof(sim32.now))
+                values32 = getfield(sim32.now, name)
+                @test eltype(values32) == Float32
+                @test values32 ≈ getfield(sim64.now, name) rtol=1e-4 atol=1e-3
+            end
+        end
     end
 
     @testset "legacy names are not exported or documented" begin

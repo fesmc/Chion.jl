@@ -301,7 +301,7 @@ function load_forcing_file(
         end
         shortwave_down = columns(shortwave_name)
         wind_speed = isnothing(wind_speed_name) || !haskey(ds, wind_speed_name) ?
-            fill(wind_default, ncol, ntime) : columns(wind_speed_name)
+            wind_default : columns(wind_speed_name)
         latitude_deg = !isnothing(latitude_name) && haskey(ds, latitude_name) ?
             _read_static_columns(ds, latitude_name, rows, ny, nx) : nothing
 
@@ -315,15 +315,14 @@ function load_forcing_file(
         relative_humidity_m, has_relative_humidity_m = optional(rh_name)
 
         has_surface_height = !isnothing(surface_height_name) && haskey(ds, surface_height_name)
-        surface_height_m = fill(NaN, ncol, ntime)
-        has_surface_height && (surface_height_m .= _read_static_columns(ds, surface_height_name, rows, ny, nx))
-        air_pressure_m = fill(air_pressure_default, ncol, ntime)
-        if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
+        # Static fields are stored per column; pressure from the surface height too when it is the
+        # annual mean of one year (see `_compact_air_pressure`).
+        surface_height_m = has_surface_height ? _read_static_columns(ds, surface_height_name, rows, ny, nx) : nothing
+        air_pressure_m = if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
             pressure_raw = columns(air_pressure_name)
-            finite_pressure = isfinite.(pressure_raw)
-            air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
+            @. ifelse(isfinite(pressure_raw), pressure_raw, air_pressure_default)
         elseif has_surface_height
-            air_pressure_m .= air_pressure_from_surface_height(
+            _compact_air_pressure(
                 surface_height_m,
                 air_temperature;
                 dt_days=dt_days,
@@ -331,6 +330,8 @@ function load_forcing_file(
                 temperature_mode=air_pressure_temperature_mode,
                 sea_level_pressure=air_pressure_default,
             )
+        else
+            fill(air_pressure_default, ncol, ntime)
         end
 
         prescribed_albedo_m, has_prescribed_albedo_m = optional(prescribed_albedo_name)

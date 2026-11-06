@@ -34,7 +34,7 @@ parse_list(txt, ::Type{T}) where {T} =
 
 function print_help()
     println("Usage:")
-    println("  julia --project=. examples/scripts/plot_diurnal_shortwave_cycle.jl [options]")
+    println("  julia --project=. examples/figures/plot_diurnal_shortwave_cycle.jl [options]")
     println()
     println("Options:")
     println("  --latitudes=LIST             Comma-separated degrees north, one PDF panel each (default: 40,50,60,70)")

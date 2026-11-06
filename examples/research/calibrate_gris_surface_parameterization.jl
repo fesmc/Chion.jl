@@ -15,23 +15,29 @@
 # Snowpack starting states come from one prescribed spin-up + transient, cached
 # and shared by both calibrations. Calibration years are scored first; the best
 # sets are then re-scored on independent validation years.
+# CHION_DOMAIN=antarctica uses the MAR 27.5 km Antarctic files: the scored season is
+# October–March, the summer diagnostics are DJF, the elevation bands are 0–500–1000–2000–4500 m,
+# and MAR LWU (absent before 2025) is σ·ST2⁴ and MAR refreezing (absent) is ME + RF − RU.
 include(joinpath(@__DIR__, "run_gris_fully_prescribed_transient.jl"))
 using Serialization, Printf, Dates
 
 parse_years(s) = (r = parse.(Int, split(s, ':')); r[1]:r[end])
+const AIS = DOMAIN == :antarctica
+const CAL_DEFAULT_OUT = joinpath(@__DIR__, "..", "..", "output", AIS ? "antarctica_surface_calibration" : "gris_surface_calibration")
 const CAL = (
     mode=Symbol(get(ENV, "CHION_CALIBRATION", "albedo")),
-    out=get(ENV, "CHION_OUTPUT_DIR", joinpath(@__DIR__, "..", "..", "output", "gris_surface_calibration")),
-    state_cache=get(ENV, "CHION_CALIBRATION_STATE_CACHE",
-        joinpath(@__DIR__, "..", "..", "output", "gris_surface_calibration", "prescribed_states.jls")),
-    forcing_dir=get(ENV, "CHION_FORCING_DIR", "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily"),
+    out=get(ENV, "CHION_OUTPUT_DIR", CAL_DEFAULT_OUT),
+    state_cache=get(ENV, "CHION_CALIBRATION_STATE_CACHE", joinpath(CAL_DEFAULT_OUT, "prescribed_states.jls")),
+    forcing_dir=get(ENV, "CHION_FORCING_DIR", DOMAIN_SETUP.forcing_dir),
     cal_years=parse_years(get(ENV, "CHION_CALIBRATION_YEARS", "1980:1989")),
     val_years=parse_years(get(ENV, "CHION_VALIDATION_YEARS", "2010:2019")),
     n_validate=parse(Int, get(ENV, "CHION_VALIDATE_BEST", "5")),
-    months=4:9,
+    months=AIS ? [10, 11, 12, 1, 2, 3] : 4:9,
 )
+const SUMMER = AIS ? ("DJF", [12, 1, 2]) : ("JJA", 6:8)
+const BAND_SPLIT_M = AIS ? 1000 : 1500
 const SECONDS_PER_DAY = 86_400.0
-daily_file(year) = joinpath(CAL.forcing_dir, "MARv3.14.3-10km-daily-ERA5-$(year).nc")
+daily_file(year) = joinpath(CAL.forcing_dir, "MARv3.14.3-$(DOMAIN_SETUP.file_tag)-daily-ERA5-$(year).nc")
 
 """Same model as `build_fully_prescribed_model`, with process parameters overridden."""
 calibration_model(grid; overrides...) = BESSIModel(grid; merge(
@@ -69,7 +75,7 @@ function prescribed_states(grid)
     state = spin.now
     starts = (first(CAL.cal_years), first(CAL.val_years))
     states = Dict{Int,Any}()
-    for year in 1940:(maximum(starts) - 1)
+    for year in DOMAIN_SETUP.first_year:(maximum(starts) - 1)
         year in starts && (states[year] = snapshot(state))
         loaded = load_mar(daily_file(year))
         sim = Simulation(model; forcing=fully_prescribed_forcing(daily_file(year), loaded), state, years=1,
@@ -143,8 +149,8 @@ function score(acc, area, height)
     w = repeat(area', length(months))
     band(sel) = (s = repeat(sel', length(months)); (sum(diff[s] .* w[s]) / sum(w[s]), sqrt(sum(diff[s] .^ 2 .* w[s]) / sum(w[s]))))
     all_bias, all_rmse = band(trues(length(area)))
-    low_bias, low_rmse = band(height .< 1500)
-    high_bias, high_rmse = band(height .>= 1500)
+    low_bias, low_rmse = band(height .< BAND_SPLIT_M)
+    high_bias, high_rmse = band(height .>= BAND_SPLIT_M)
     albedo_bias = CAL.mode == :albedo ?
         sum((acc.albedo_chion[months, :] .- acc.albedo_mar[months, :]) .* w ./ max.(acc.weight[months, :], 1)) / sum(w) : NaN
     return (; bias=all_bias, rmse=all_rmse, low_bias, low_rmse, high_bias, high_rmse, albedo_bias)
@@ -242,22 +248,61 @@ end
 #   sensible_wide  as sensible, stronger stable damping and constant wind only
 #   albedo     cloud-proxy LW, sensible heat from the model defaults (or CHION_SEMIX_*,
 #              CHION_WIND_SOURCE), grid of dynamic-albedo settings (fully parameterized)
-const DIAG_TERMS = (:sw_abs, :lw_net, :sh, :lh, :melt, :runoff, :refreezing, :smb)
+const DIAG_TERMS = (:sw_abs, :lw_net, :sh, :lh, :melt, :runoff, :refreezing, :smb, :swd, :air_temperature)
 const DIAG_MASS_TERMS = (:melt, :runoff, :refreezing, :smb)
-const DIAG_BANDS = ((0, 1000), (1000, 1500), (1500, 2000), (2000, 4000))
+const DIAG_BANDS = AIS ? ((0, 500), (500, 1000), (1000, 2000), (2000, 4500)) : ((0, 1000), (1000, 1500), (1500, 2000), (2000, 4000))
 const DIAG_SET = Symbol(get(ENV, "CHION_DIAGNOSE_SET", "reference"))
 
 env_wind() = Symbol(get(ENV, "CHION_WIND_SOURCE", "constant"))
 
 function diagnose_configs()
     cloud = (longwave_scheme=:cloud_proxy,)
+    # The reference set documents the start of the calibration: SEMIX sensible heat with the
+    # pre-calibration constants (factor 2.25, stable coefficient 10), not the calibrated defaults.
+    precal = (semix_sensible_exchange_factor=2.25, semix_stable_coefficient=10.0)
     if DIAG_SET == :reference
         return [
             (label="prescribed", model=(;), forcing=:prescribed, wind=:constant),
-            (label="mar_albedo_graybody", model=(longwave_scheme=:graybody,), forcing=:mar_albedo, wind=:constant),
-            (label="mar_albedo_cloud_lw", model=cloud, forcing=:mar_albedo, wind=:constant),
-            (label="mar_albedo_cloud_lw_mar_wind", model=cloud, forcing=:mar_albedo, wind=:mar),
+            (label="mar_albedo_graybody", model=merge((longwave_scheme=:graybody,), precal), forcing=:mar_albedo, wind=:constant),
+            (label="mar_albedo_cloud_lw", model=merge(cloud, precal), forcing=:mar_albedo, wind=:constant),
+            (label="mar_albedo_cloud_lw_mar_wind", model=merge(cloud, precal), forcing=:mar_albedo, wind=:mar),
         ]
+    elseif DIAG_SET == :defaults
+        # Starting point of a new domain: the calibrated GrIS defaults, prescribed, with MAR albedo, and free.
+        return [
+            (label="prescribed", model=(;), forcing=:prescribed, wind=:constant),
+            (label="mar_albedo_defaults", model=cloud, forcing=:mar_albedo, wind=:constant),
+            (label="parameterized_defaults", model=merge(cloud, (albedo=:dynamic,)), forcing=:parameterized, wind=:constant),
+        ]
+    elseif DIAG_SET == :ais_turbulent
+        # Antarctica, stage A: SEMIX sensible and latent exchange with MAR albedo prescribed and the
+        # Antarctic longwave (domain parameters), constant wind.
+        return [(label=@sprintf("factor=%.2f stable=%.0f latent=%.2f", f, b, l),
+                 model=merge(cloud, (semix_sensible_exchange_factor=f, semix_stable_coefficient=b, semix_latent_exchange_factor=l)),
+                 forcing=:mar_albedo, wind=:constant)
+                for (f, b, l) in Iterators.product((1.0, 1.5, 2.0, 2.5, 3.0), (20.0, 40.0, 80.0, 160.0), (0.5, 1.0, 1.5, 2.0))]
+    elseif DIAG_SET == :ais_turbulent_edge
+        # Extension of ais_turbulent beyond its optimum at the grid edge (factor 3, stable 20, latent 2).
+        return [(label=@sprintf("factor=%.2f stable=%.0f latent=%.2f", f, b, l),
+                 model=merge(cloud, (semix_sensible_exchange_factor=f, semix_stable_coefficient=b, semix_latent_exchange_factor=l)),
+                 forcing=:mar_albedo, wind=:constant)
+                for (f, b, l) in Iterators.product((2.5, 3.0, 3.5, 4.0), (5.0, 10.0, 20.0), (2.0, 2.5, 3.0, 4.0))]
+    elseif DIAG_SET == :domain
+        # Validation of a domain parameter set (DOMAIN_PARAMETERS; CHION_DOMAIN_PARAMETERS=0 gives the GrIS
+        # defaults): prescribed, MAR albedo and fully parameterized.
+        return [
+            (label="prescribed", model=(;), forcing=:prescribed, wind=:constant),
+            (label="mar_albedo", model=cloud, forcing=:mar_albedo, wind=:constant),
+            (label="parameterized", model=merge(cloud, (albedo=:dynamic,)), forcing=:parameterized, wind=:constant),
+        ]
+    elseif DIAG_SET == :ais_albedo
+        # Antarctica, stage B: dynamic albedo, fully parameterized, turbulent exchange from the domain parameters.
+        # In the :dynamic scheme alpha_wet is also the floor of dry-snow ageing, so it sets the old-snow albedo
+        # (aging_cold_timescale_days belongs to the :aging scheme and has no effect here).
+        return [(label=@sprintf("dry=%.3f wet=%.3f", d, w),
+                 model=merge(cloud, (albedo=:dynamic, alpha_dry=d, alpha_wet=w)),
+                 forcing=:parameterized, wind=:constant)
+                for (d, w) in Iterators.product((0.84, 0.85, 0.86, 0.87), (0.79, 0.80, 0.81, 0.82, 0.83)) if w < d]
     elseif DIAG_SET == :sensible
         return [(label=@sprintf("factor=%.2f stable=%.0f wind=%s", f, b, w),
                  model=merge(cloud, (semix_sensible_exchange_factor=f, semix_stable_coefficient=b)), forcing=:mar_albedo, wind=w)
@@ -272,8 +317,23 @@ function diagnose_configs()
                  model=merge(cloud, (albedo=:dynamic, alpha_dry=d, alpha_wet=w, alpha_ice=i)),
                  forcing=:parameterized, wind=env_wind())
                 for (d, w, i) in Iterators.product((0.81, 0.84, 0.87), (0.65, 0.70, 0.75, 0.80), (0.40, 0.50)) if w < d]
+    elseif DIAG_SET == :sensible_physical
+        # Recalibration for the physically bounded cloud-proxy longwave (Konzelmann-type weighting):
+        # SEMIX sensible heat with MAR albedo prescribed, constant wind.
+        return [(label=@sprintf("factor=%.2f stable=%.0f wind=constant", f, b),
+                 model=merge(cloud, (semix_sensible_exchange_factor=f, semix_stable_coefficient=b)), forcing=:mar_albedo, wind=:constant)
+                for (f, b) in Iterators.product((2.0, 2.25, 2.5, 2.75, 3.0, 3.5), (20.0, 40.0, 80.0))]
+    elseif DIAG_SET == :regions
+        # Calibrated defaults only; per-column JJA energy terms are written for regional analysis.
+        return [(label="defaults", model=merge(cloud, (albedo=:dynamic,)), forcing=:parameterized, wind=:constant)]
+    elseif DIAG_SET == :sensible_physical_fine
+        # Final pass around the stage-A optimum, fully parameterized with the default dynamic albedo.
+        return [(label=@sprintf("factor=%.2f stable=%.0f wind=constant", f, b),
+                 model=merge(cloud, (albedo=:dynamic, semix_sensible_exchange_factor=f, semix_stable_coefficient=b)),
+                 forcing=:parameterized, wind=:constant)
+                for (f, b) in Iterators.product((2.9, 3.0, 3.1, 3.25), (30.0, 40.0, 50.0))]
     end
-    error("CHION_DIAGNOSE_SET must be reference, sensible, sensible_wide or albedo.")
+    error("CHION_DIAGNOSE_SET must be defaults, domain, ais_turbulent, ais_turbulent_edge, ais_albedo, reference, sensible, sensible_wide, sensible_physical, sensible_physical_fine, regions or albedo.")
 end
 
 function diagnose_forcing(year, config)
@@ -290,8 +350,13 @@ end
 """Monthly sums (per column) of Chion's daily-mean fluxes and mass terms next to MAR's."""
 function diagnose_year!(model, forcing, reference, path, grid, state, acc)
     ntime = length(forcing.time_values)
-    mar = Dict(:melt => read_mar_columns(path, "ME", grid, ntime), :runoff => read_mar_columns(path, "RU", grid, ntime),
-        :refreezing => read_mar_columns(path, "RZ", grid, ntime), :smb => read_mar_columns(path, "SMB", grid, ntime))
+    me, ru = read_mar_columns(path, "ME", grid, ntime), read_mar_columns(path, "RU", grid, ntime)
+    # Antarctic files before 2025 lack RZ and LWU: liquid-water budget and blackbody emission from ST2.
+    rz = mar_has(path, "RZ") ? read_mar_columns(path, "RZ", grid, ntime) : me .+ read_mar_columns(path, "RF", grid, ntime) .- ru
+    lwu = mar_has(path, "LWU") ? read_mar_columns(path, "LWU", grid, ntime) :
+        5.670374e-8 .* (min.(read_mar_columns(path, "ST2", grid, ntime), 0.0) .+ 273.15) .^ 4
+    mar = Dict(:melt => me, :runoff => ru, :refreezing => rz, :smb => read_mar_columns(path, "SMB", grid, ntime),
+        :lw_net => read_mar_columns(path, "LWD", grid, ntime) .- lwu)
     sim = Simulation(model; forcing, state=rebind(state, model), years=1, backend=CONFIG.backend,
         write_netcdf=false, compute_year_metrics=false, name="diagnose")
     integ = init_integrator(sim; io=devnull)
@@ -321,8 +386,12 @@ function diagnose_year!(model, forcing, reference, path, grid, state, acc)
             acc.mar[term][m, :] .+= @view mar[term][:, k]
         end
         acc.mar[:sw_abs][m, :] .+= @view reference.q_sw_net[:, k]
-        # MAR has no LWU, so its net longwave stays NaN; compare configs instead.
-        acc.mar[:lw_net][m, :] .= NaN
+        acc.mar[:lw_net][m, :] .+= @view mar[:lw_net][:, k]
+        # Forcing shared by both (diagnostic: albedo = 1 − sw_abs / swd).
+        for (term, field) in ((:swd, forcing.shortwave_down), (:air_temperature, forcing.air_temperature))
+            acc.chion[term][m, :] .+= @view field[:, k]
+            acc.mar[term][m, :] .+= @view field[:, k]
+        end
         acc.mar[:sh][m, :] .+= @view reference.q_sh[:, k]
         acc.mar[:lh][m, :] .+= @view reference.q_lh[:, k]
         acc.days[m, :] .+= 1
@@ -341,6 +410,12 @@ function diagnose_main(grid, area, height, states)
     configs = diagnose_configs()
     max_trials = parse(Int, get(ENV, "CHION_CALIBRATION_MAX_TRIALS", "0"))
     max_trials > 0 && (configs = configs[1:min(end, max_trials)])
+    # Optional sharding over jobs: CHION_DIAGNOSE_SHARD="k/n" runs configs k, k+n, … (1-based).
+    shard = get(ENV, "CHION_DIAGNOSE_SHARD", "")
+    if !isempty(shard)
+        k, n = parse.(Int, split(shard, '/'))
+        configs = configs[k:n:end]; tag *= "_shard$(k)of$(n)"
+    end
     open(joinpath(out, "flux_bands_$(tag).csv"), "w") do io
         println(io, "config,season,band,term,chion,mar,chion_minus_mar,units")
         for (i, config) in enumerate(configs)
@@ -354,8 +429,9 @@ function diagnose_main(grid, area, height, states)
                 state = diagnose_year!(model, forcing, reference, daily_file(year), loaded_grid, state, acc)
                 GC.gc()
             end
+            DIAG_SET == :regions && write_column_terms(joinpath(out, "columns_$(tag).csv"), grid, area, height, acc, nyears)
             row = Dict{String,Float64}()
-            for (season, months) in (("JJA", 6:8), ("year", 1:12)), band in DIAG_BANDS, term in DIAG_TERMS
+            for (season, months) in (SUMMER, ("year", 1:12)), band in DIAG_BANDS, term in DIAG_TERMS
                 sel = (height .>= band[1]) .& (height .< band[2])
                 w = area[sel]
                 if term in DIAG_MASS_TERMS
@@ -380,13 +456,38 @@ function diagnose_main(grid, area, height, states)
     println("Diagnosis written to ", out)
 end
 
+"""Per-column JJA means of the energy terms (W m⁻²) and annual mass terms (kg m⁻² yr⁻¹), Chion and MAR."""
+function write_column_terms(path, grid, area, height, acc, nyears)
+    lat = read_mar_static_columns(daily_file(first(CAL.cal_years)), "LAT", grid)
+    lon = read_mar_static_columns(daily_file(first(CAL.cal_years)), "LON", grid)
+    msk = read_mar_static_columns(daily_file(first(CAL.cal_years)), "MSK", grid)
+    jja = collect(SUMMER[2])
+    energy = (:sw_abs, :lw_net, :sh, :lh, :swd, :air_temperature)
+    mass = (:melt, :runoff, :refreezing, :smb)
+    days = vec(sum(acc.days[jja, :]; dims=1))
+    open(path, "w") do io
+        println(io, join(vcat(["column", "lat", "lon", "height", "area", "msk"],
+            ["$(who)_$(t)" for t in vcat(collect(energy), collect(mass)) for who in ("chion", "mar")]), ','))
+        for j in eachindex(area)
+            vals = Any[j, lat[j], lon[j], height[j], area[j], msk[j]]
+            for t in energy, who in (:chion, :mar)
+                push!(vals, sum(getproperty(acc, who)[t][jja, j]) / days[j])
+            end
+            for t in mass, who in (:chion, :mar)
+                push!(vals, sum(getproperty(acc, who)[t][:, j]) / nyears)
+            end
+            println(io, join(vals, ','))
+        end
+    end
+end
+
 """One row per configuration, ranked by the RMS of the annual melt and SMB errors over the elevation bands."""
 function write_diagnose_summary(path, summary)
     bands = first.(DIAG_BANDS)
     score(row) = sqrt(sum(row["year_melt_$b"]^2 + row["year_smb_$b"]^2 for b in bands) / (2 * length(bands)))
     open(path, "w") do io
         cols = vcat(["year_$(t)_total" for t in DIAG_MASS_TERMS], ["year_melt_$b" for b in bands], ["year_smb_$b" for b in bands],
-            ["JJA_sh_$b" for b in bands], ["JJA_sw_abs_$b" for b in bands])
+            ["$(SUMMER[1])_sh_$b" for b in bands], ["$(SUMMER[1])_sw_abs_$b" for b in bands])
         println(io, join(vcat(["config", "score_gt"], cols), ','))
         for (label, row) in sort(summary; by=x -> score(x[2]))
             values = [startswith(c, "year_") && endswith(c, "_total") ?
