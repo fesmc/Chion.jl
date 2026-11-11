@@ -18,6 +18,31 @@ in `src/step.jl`.
 `initial_state(model)` when a workflow needs to seed or mutate state before
 constructing a `Simulation`.
 
+### Initial snowpack
+
+By default every BESSI column starts snow-free. An ice-sheet host can instead
+cold-start columns with a dry firn column:
+
+```julia
+state = initial_state(model; swe=swe, T_init=T_init)   # or BESSIState(model; ...)
+sim = Simulation(model; forcing=forcing, state=state)
+```
+
+`swe` [kg m^-2] and `T_init` [K] are numbers or one value per column. A column
+with `swe > 0` holds `swe` of firn at `density_init_firn` (default
+350 kg m^-3), layered as a column grown by accumulation: the near-surface
+layers at their maximum thicknesses, then `mass_split` layers, a deepest
+remainder below `mass_min` merged into the `mass_split` layer above, and at most
+`Ntot` layers, the deepest taking any excess. Its layers, ice substrate and
+`Tsrf` are at `min(T_init, T0)`, its albedo is `alpha_dry` and its snow age is
+zero. A column with `swe = 0` stays bare, with its substrate and `Tsrf` at
+`min(T_init, T0)`. `swe` requires `T_init`, and `swe / density_init_firn` must
+not exceed the snow-depth cap (22.5 m).
+
+The initial firn is storage, not SMB: the cumulative diagnostics (`smb_ice`,
+`runoff`, `melt`, `refreezing`, `vapor_mass`, `sublimation`, `mass_base`) start
+at zero, and storage changes count from the initial snowpack in `sim.ref`.
+
 For `BESSIState`, each column stores one active-layer count `N[idx]` together
 with layer-wise arrays for:
 
@@ -88,6 +113,7 @@ NetCDF `smb_ice` is the change in that cumulative field during the month.
 - `mass_max = 500 kg m^-2`
 - `mass_split = 300 kg m^-2`
 - `mass_min = 100 kg m^-2`
+- `density_init_firn = 350 kg m^-3` for an initial firn column
 - `rho_s = 315 kg m^-3` for the constant fresh-snow-density scheme
 - `T0 = 273.15 K`
 

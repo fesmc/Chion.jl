@@ -179,7 +179,98 @@ function _initialize_bessi_state_arrays!(
     return state
 end
 
-function BESSIState(model::BESSIModel)
+@kernel function _initialize_bessi_snowpack_kernel!(
+    fields,
+    swe,
+    T_init,
+    parameters::BESSIParameters,
+    density_firn,
+    albedo_snow,
+)
+    idx = @index(Global)
+    @inbounds begin
+        c = parameters.c
+        temperature = min(T_init[idx], c.T0)
+        fields.Tsrf[idx] = temperature
+        for layer_index in 1:size(fields.ice_temperature, 1)
+            fields.ice_temperature[layer_index, idx] = temperature
+        end
+        if swe[idx] > zero(swe[idx])
+            _initial_firn_layers!(
+                fields.N, fields.mass, fields.mass_w, fields.density, fields.temperature,
+                fields.mass_base, fields.smb_ice, idx, swe[idx], density_firn, temperature,
+                parameters.Ntot, oftype(density_firn, parameters.mass_split),
+                oftype(density_firn, parameters.mass_min),
+                parameters.near_surface_layer_max_thicknesses_m, c,
+            )
+            fields.albedo[idx] = albedo_snow
+            fields.snow_age_days[idx] = zero(density_firn)
+            thickness, wet_mass, bulk_density, liquid_water =
+                _column_summary(fields.N, fields.mass, fields.mass_w, fields.density, idx, fields.thickness)
+            fields.thickness[idx] = thickness
+            fields.wet_mass[idx] = wet_mass
+            fields.bulk_density[idx] = bulk_density
+            fields.liquid_water[idx] = liquid_water
+        end
+    end
+end
+
+_initial_column_values(::Type{NF}, value::Real, ncol::Int, ::Symbol) where {NF} = fill(NF(value), ncol)
+function _initial_column_values(::Type{NF}, values::AbstractVector{<:Real}, ncol::Int, name::Symbol) where {NF}
+    length(values) == ncol || error("`$name` must have one value per column ($ncol), got $(length(values)).")
+    return Vector{NF}(values)
+end
+
+function _initialize_bessi_snowpack!(state::BESSIState, swe, T_init)
+    NF = eltype(state.mass)
+    ncol = state.ncol
+    swe_columns = isnothing(swe) ? zeros(NF, ncol) : _initial_column_values(NF, swe, ncol, :swe)
+    T_columns = _initial_column_values(NF, T_init, ncol, :T_init)
+    all(value -> isfinite(value) && value >= 0, swe_columns) ||
+        error("`swe` must be finite and non-negative.")
+    all(value -> isfinite(value) && value > 0, T_columns) ||
+        error("`T_init` must be finite and positive [K].")
+    density_firn = state.parameters.density_init_firn
+    max_swe = density_firn * BESSI_REFERENCE_SNOW_DEPTH_M
+    all(<=(max_swe), swe_columns) || error(
+        "`swe` exceeds the snow-depth cap: at most $(max_swe) kg m-2 at " *
+        "`density_init_firn` = $(density_firn) kg m-3 ($(BESSI_REFERENCE_SNOW_DEPTH_M) m).",
+    )
+    backend = _ka_backend(state.mass)
+    kernel! = _initialize_bessi_snowpack_kernel!(backend, _state_init_workgroupsize(backend))
+    event = kernel!(
+        get_fields(state),
+        copyto!(similar(state.Tsrf, NF, ncol), swe_columns),
+        copyto!(similar(state.Tsrf, NF, ncol), T_columns),
+        state.parameters,
+        convert(NF, density_firn),
+        _initial_snow_albedo(state.c);
+        ndrange=ncol,
+    )
+    _wait_kernel(event)
+    return state
+end
+
+"""
+    BESSIState(model; swe=nothing, T_init=nothing)
+
+Initial BESSI state for `model`. Without keywords every column starts
+snow-free, with its ice substrate at `model.temperature_init` and `Tsrf = T0`.
+
+`swe` [kg m⁻²] and `T_init` [K], each a number or one value per column, start
+the columns with a dry firn column (a cold start for ice-sheet hosts). A column
+with `swe > 0` holds `swe` of firn at `model.density_init_firn`, layered as an
+accumulated column (near-surface layers at their maximum thicknesses, then
+`mass_split` layers); its layers, ice substrate and `Tsrf` are at
+`min(T_init, T0)`, its albedo is the dry-snow albedo and its snow age is zero. A
+column with `swe = 0` stays bare, with its substrate and `Tsrf` at
+`min(T_init, T0)`. `swe` requires `T_init`, and its depth `swe /
+density_init_firn` must not exceed the snow-depth cap. The initial firn is
+storage: the cumulative mass and flux diagnostics start at zero.
+"""
+function BESSIState(model::BESSIModel; swe=nothing, T_init=nothing)
+    isnothing(swe) || !isnothing(T_init) ||
+        error("`swe` requires `T_init`: give the temperature of the initial snowpack.")
     NF = number_type(model.c)
     ncol = ncols(model.grid)
     state = BESSIState(
@@ -208,7 +299,9 @@ function BESSIState(model::BESSIModel)
         Vector{NF}(undef, ncol),
         Matrix{NF}(undef, model.ice_substrate_layers, ncol),
     )
-    return _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
+    _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
+    isnothing(T_init) && return state
+    return _initialize_bessi_snowpack!(state, swe, T_init)
 end
 
 @inline _cpu_layer_matrix(matrix::TransposedLayerMatrix) = Array(matrix)
@@ -313,7 +406,13 @@ end
 initial_state(model::ITMModel) = ITMState(model)
 Adapt.@adapt_structure ITMState
 
-initial_state(model::BESSIModel) = BESSIState(model)
+"""
+    initial_state(model; kwargs...)
+
+Initial state of `model`. For `BESSIModel` the keywords `swe` and `T_init`
+start the columns with a firn column; see [`BESSIState`](@ref).
+"""
+initial_state(model::BESSIModel; kwargs...) = BESSIState(model; kwargs...)
 reference_state(state::BESSIState) = deepcopy(state)
 reference_state(state::PDDState) = deepcopy(state)
 reference_state(state::ITMState) = deepcopy(state)

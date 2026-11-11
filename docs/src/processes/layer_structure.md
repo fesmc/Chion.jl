@@ -77,6 +77,10 @@ and again after melt, sublimation, compaction and refreezing, the column is
 re-meshed conservatively so that the surface energy balance always sees a thin
 top cell. Without these limits the surface layer can hold up to `mass_max`.
 
+An initial firn column (`initial_state(model; swe, T_init)`) is laid out in
+the same structure: the near-surface layers at their maximum thicknesses, then
+`mass_split` layers. Remeshing leaves it unchanged.
+
 ## Ice Substrate
 
 `ice_substrate_layers` (default 5) adds a fixed-geometry layer of glacier ice

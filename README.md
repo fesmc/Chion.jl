@@ -91,6 +91,16 @@ result = finalize!(integrator)
 `simulation.ref` remains the reference state; `simulation.now` is the evolving
 state.
 
+BESSI columns start snow-free. To cold-start them with a dry firn column, e.g.
+the columns of an ice sheet, pass an initial state with the snow water
+equivalent `swe` [kg m^-2] and temperature `T_init` [K] (numbers or one value
+per column):
+
+```julia
+state = initial_state(model; swe=500.0, T_init=240.0)
+simulation = Simulation(model; forcing=forcing, state=state, years=1)
+```
+
 ## File-Backed Forcing
 
 `load_forcing_file` reads a NetCDF forcing file and returns a named tuple with a

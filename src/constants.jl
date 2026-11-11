@@ -32,6 +32,8 @@ const DEFAULT_MASS_SPLIT = 300.0
 const DEFAULT_MASS_MIN = 100.0
 const DEFAULT_DENSITY_INIT = 300.0
 const DEFAULT_TEMPERATURE_INIT = 273.0
+# Density of an initial firn column (`BESSIState(model; swe, T_init)`).
+const DEFAULT_DENSITY_INIT_FIRN = 350.0
 
 # Legacy BESSI reference uses a 15-layer column when capping total column depth.
 const BESSI_REFERENCE_LAYER_COUNT = 15
