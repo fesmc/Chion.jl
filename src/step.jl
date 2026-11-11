@@ -427,11 +427,14 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.wind_speed,
     )
     # Snow on a previously bare surface takes the air temperature. Set it on
-    # every new layer before remeshing splits the fresh snow.
+    # every new layer before remeshing splits the fresh snow, and on the
+    # surface, about which the energy solve linearises the surface fluxes.
+    # A snow surface is at most at the melting point.
     if forcing.snowfall_rate > zero(dt_seconds) && started_without_surface_snow
         @inbounds for layer_index in 1:_n_active(N_storage, idx)
             _set_layer!(temperature, layer_index, idx, forcing.air_temperature)
         end
+        _set_scalar!(Tsrf, idx, min(forcing.air_temperature, c.T0))
     end
     _remesh_near_surface_layers!(
         N_storage, mass, mass_w, density, temperature,
@@ -692,6 +695,12 @@ Base.@propagate_inbounds function column_step_core!(
     )
 
     final_has_snow = _surface_has_snow(N_storage, mass, idx)
+    # A column left bare takes the temperature of the surface beneath: over
+    # the ice substrate the interface the energy solve found, otherwise bare
+    # ice at the melting point.
+    if !final_has_snow && parameters.ice_substrate_layers == 0
+        _set_scalar!(Tsrf, idx, c.T0)
+    end
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     elseif !final_has_snow
