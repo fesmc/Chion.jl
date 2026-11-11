@@ -672,3 +672,64 @@ function continuous_bottom_deplete!(
         state.c,
     )
 end
+
+"""
+    _initial_firn_layers!(N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, swe, density_firn, temperature_firn, Ntot, mass_split, mass_min, near_surface_thicknesses_m, c)
+
+Lay out an initial dry firn column of total solid mass `swe` at uniform
+`density_firn` and `temperature_firn` in column `idx`, in the structure the
+accumulation and remeshing steps maintain:
+
+- the near-surface layers at their maximum thicknesses
+  (`near_surface_thicknesses_m`; a non-finite entry is a `mass_split` layer),
+- then layers of `mass_split` each,
+- a deepest layer below `mass_min` merged into the `mass_split` layer above it,
+- at most `Ntot` layers, the deepest taking any excess.
+
+A column thinner than the near-surface layers ends in a partial layer, as one
+grown by snowfall does. The result is a fixed point of
+`_remesh_near_surface_layers!`. The column must be empty on entry.
+"""
+@inline function _initial_firn_layers!(
+    N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
+    idx::Int, swe, density_firn, temperature_firn,
+    Ntot::Int, mass_split, mass_min,
+    near_surface_thicknesses_m::NTuple{4, Float64},
+    c::SnowpackPhysicalConstants,
+)
+    remaining = swe
+    n = 0
+    while remaining > zero(remaining) && n < Ntot
+        n += 1
+        layer_mass = min(remaining, _initial_firn_layer_capacity(
+            n, density_firn, mass_split, near_surface_thicknesses_m))
+        _set_layer!(mass, n, idx, layer_mass)
+        _set_layer!(mass_w, n, idx, zero(layer_mass))
+        _set_layer!(density, n, idx, density_firn)
+        _set_layer!(temperature, n, idx, temperature_firn)
+        remaining -= layer_mass
+    end
+    _set_n_active!(N_storage, idx, n)
+    n == 0 && return nothing
+    # A full column: the deepest layer takes the excess.
+    if remaining > zero(remaining)
+        _set_layer!(mass, n, idx, _get_layer(mass, n, idx) + remaining)
+    end
+    # A remainder below the merge mass joins the `mass_split` layer above it;
+    # a fixed-thickness near-surface layer above it stays at its maximum.
+    if n >= 2 && _get_layer(mass, n, idx) < mass_min &&
+            !_is_capped_near_surface_layer(n - 1, near_surface_thicknesses_m)
+        _merge_bottom_layer!(
+            N_storage, mass, mass_w, density, temperature, mass_base, smb_ice, idx, c,
+        )
+    end
+    return nothing
+end
+
+@inline _is_capped_near_surface_layer(layer_index::Int, thicknesses_m::NTuple{4, Float64}) =
+    layer_index <= 4 && isfinite(thicknesses_m[layer_index])
+
+@inline _initial_firn_layer_capacity(
+    layer_index::Int, density_firn, mass_split, thicknesses_m::NTuple{4, Float64},
+) = _is_capped_near_surface_layer(layer_index, thicknesses_m) ?
+    density_firn * oftype(density_firn, thicknesses_m[layer_index]) : mass_split

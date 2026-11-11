@@ -15,6 +15,7 @@ struct BESSIParameters{C <: SnowpackPhysicalConstants}
     mass_min::Float64
     density_init::Float64
     temperature_init::Float64
+    density_init_firn::Float64
     refreezing_correction::Float64
     diurnal_shortwave_threshold::Float64
     diurnal_shortwave_max_substeps::Int
@@ -44,6 +45,9 @@ longwave exchange. Set `seb_scheme=:bessi` for the original BESSI formulation.
 The defaults are the GrIS-calibrated setup for daily forcing: dynamic albedo,
 cloud-proxy longwave, a 5-layer thermal ice substrate, fine near-surface layers
 and up to 8 diurnal substeps with a 1 K air-temperature cycle.
+
+`density_init_firn` (default 350 kg m⁻³) is the density of the initial firn
+column built by `BESSIState(model; swe, T_init)`.
 """
 struct BESSIModel{
         DiurnalShortwave,
@@ -84,6 +88,7 @@ function BESSIModel(
     mass_min::Real=DEFAULT_MASS_MIN,
     density_init::Real=DEFAULT_DENSITY_INIT,
     temperature_init::Real=DEFAULT_TEMPERATURE_INIT,
+    density_init_firn::Real=DEFAULT_DENSITY_INIT_FIRN,
     refreezing_correction::Real=1.0,
     diurnal_shortwave_substeps::Bool=true,
     diurnal_shortwave_threshold::Real=0.0,
@@ -122,6 +127,8 @@ function BESSIModel(
         fresh_snow_density_scheme=fresh_snow_density,
         kwargs...,
     )
+    0 < density_init_firn <= c.rho_i ||
+        error("`density_init_firn` must be positive and at most the ice density `rho_i`.")
     mass_max, mass_split, mass_min =
         _domain_thresholds(Float64, mass_max, mass_split, mass_min)
     parameters = BESSIParameters(
@@ -132,6 +139,7 @@ function BESSIModel(
         mass_min,
         Float64(density_init),
         Float64(temperature_init),
+        Float64(density_init_firn),
         Float64(refreezing_correction),
         Float64(diurnal_shortwave_threshold),
         Int(diurnal_shortwave_max_substeps),

@@ -1,6 +1,7 @@
 using Test
 using Chion
 include("test_geometric_accumulation.jl")
+include("test_initial_snowpack.jl")
 
 include("test_albedo_timestep.jl")
 include("test_case_api.jl")
