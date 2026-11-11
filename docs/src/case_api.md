@@ -43,7 +43,9 @@ explicit `latitude_deg`, `surface_height`, `ice_thickness` (m), and
 `annual_pdd` (K day) in `SnowpackForcing`. `q_sw_net`, when supplied, is its
 insolation driver; otherwise ITM uses `shortwave_down`. It preserves the
 Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
-`runoff`, `refreezing`) and cumulative `mmWE` fields.
+`runoff`, `refreezing`) and cumulative `mmWE` fields. Its offset varies with
+latitude as `itm_c + itm_b*(|lat| - |itm_lat0|)`, the same in both
+hemispheres; `|itm_lat0| >= 90` disables this.
 
 ## Input Units
 

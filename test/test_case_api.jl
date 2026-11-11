@@ -1153,6 +1153,12 @@ end
 
         albedo = Chion._itm_surface_albedo(model, 1500.0, 1000.0, 0.0, 200.0)
         @test albedo == model.alb_ice
+
+        # Latitude offset: linear in |lat|, the same in both hemispheres
+        @test Chion._itm_latitude_offset(-45.0, -2.0, 65.0, 65.0) == -45.0
+        @test Chion._itm_latitude_offset(-45.0, -2.0, 65.0, 75.0) == -65.0
+        @test Chion._itm_latitude_offset(-45.0, -2.0, 65.0, -75.0) == -65.0
+        @test Chion._itm_latitude_offset(-45.0, -2.0, -65.0, -75.0) == -65.0
     end
 
     @testset "legacy names are not exported or documented" begin

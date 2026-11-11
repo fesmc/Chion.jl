@@ -166,4 +166,7 @@ Useful return values:
 It requires explicit `latitude_deg`, `surface_height`, `ice_thickness` (m),
 and `annual_pdd` (K day) forcing. ITM uses `q_sw_net` as its insolation input
 when supplied; otherwise it uses `shortwave_down`. Its internal budgets retain
-the Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics.
+the Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics. The
+offset varies with latitude as `itm_c + itm_b*(|lat| - |itm_lat0|)`, the same
+in both hemispheres (`itm_lat0` [deg] is the reference latitude, its absolute
+value; `|itm_lat0| >= 90` disables this).

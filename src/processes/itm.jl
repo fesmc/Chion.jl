@@ -1,7 +1,10 @@
 """Fortran-compatible insolation-temperature-melt (ITM) process."""
 
 @inline _itm_transmissivity(z, a, b) = a + b * sqrt(max(z, zero(z)))
-@inline _itm_latitude_offset(c, b, lat0, lat) = c + b * (lat - lat0)
+# ITM offset linear in the distance from the equator, the same in both hemispheres:
+# `c` [W m^-2] at |lat| = |lat0| [deg], slope `b` [W m^-2 deg^-1] in |lat|.
+# Equal to smbpal's `c + b*(lat - lat0)` for lat, lat0 > 0. |lat0| >= 90 disables it.
+@inline _itm_latitude_offset(c, b, lat0, lat) = c + b * (abs(lat) - abs(lat0))
 @inline _itm_snow_albedo(model, ::Nothing) = model.alb_snow_wet
 @inline _itm_snow_albedo(model, melt) = ifelse(melt > model.melt_crit, model.alb_snow_wet, model.alb_snow_dry)
 
