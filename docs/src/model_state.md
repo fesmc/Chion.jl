@@ -77,6 +77,11 @@ order:
 If a column starts the step without snow, `step!` takes the bare-ice branch:
 surface albedo is set to `alpha_ice`, positive bare-ice surface energy is
 converted directly into SMB loss, and the snow-column process chain is skipped.
+A column left bare by melt or sublimation keeps the temperature of the surface
+beneath in `Tsrf`: the solved ice-substrate surface, or `T0` without a
+substrate. Fresh snow on a bare column starts at the air temperature, and its
+surface `Tsrf` at the air temperature capped at `T0`, since the energy solve
+linearises the surface fluxes about `Tsrf`.
 
 For BESSI, `smb_ice` is the cumulative mass transferred to the ice-sheet
 reservoir through basal export and bare-ice surface mass changes. Monthly

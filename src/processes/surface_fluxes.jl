@@ -388,8 +388,9 @@ function _apply_snow_surface_vapor_mass_flux!(
         vapor_mass = updated_surface_water - previous_surface_water
     end
 
+    # `Tsrf` stays as the energy solve set it when the column empties: the
+    # temperature of the surface left bare is set by `column_step_core!`.
     if _n_active(N_storage, idx) == 0
-        _set_scalar!(Tsrf, idx, c.T0)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
     return _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
