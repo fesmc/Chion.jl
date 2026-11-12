@@ -157,8 +157,7 @@ end
 
 @inline function _launch_summary_kernel!(kernel, state, args...)
     kernel! = kernel(_ka_backend(state.mass))
-    event = kernel!(args...; ndrange=ncols(state))
-    _wait_kernel(event)
+    kernel!(args...; ndrange=ncols(state))
     return nothing
 end
 

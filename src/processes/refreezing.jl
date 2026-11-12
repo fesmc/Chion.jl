@@ -25,14 +25,11 @@ function _go_refreezing!(
     refreezing_correction=one(latent_heat_of_melting),
 )
     refrozen_mass = zero(latent_heat_of_melting)
-    n_active = _n_active(N_storage, idx)
-
-    @inbounds for layer_index in Base.OneTo(size(mass, 1))
+    @inbounds for layer_index in 1:_n_active(N_storage, idx)
         solid_mass = _get_layer(mass, layer_index, idx)
         liquid_water_mass = _get_layer(mass_w, layer_index, idx)
         layer_temperature = _get_layer(temperature, layer_index, idx)
-        if layer_index <= n_active &&
-           solid_mass > zero(solid_mass) &&
+        if solid_mass > zero(solid_mass) &&
            liquid_water_mass > zero(liquid_water_mass) &&
            layer_temperature < melting_temperature
             cold_content = refreezing_correction *

@@ -3,12 +3,13 @@ using Chion
 
 # Mirrors the Fortran chion's tests/test_forcing_host.f90.
 @testset "Host forcing helpers" begin
-    @testset "shortwave from a cloud fraction" begin
-        c = Chion.SnowpackPhysicalConstants(Float64)
-        sw = shortwave_down_from_cloud(c, 500.0, 1500.0, 0.31)
-        @test sw ≈ 500.0 * 0.9625 * 0.69 rtol=1e-12
-        @test sw / (500.0 * clear_sky_transmissivity(c, 1500.0)) ≈ 0.69 rtol=1e-12
-        @test shortwave_down_from_cloud(c, 500.0, -50.0, 0.31) ≈ 500.0 * 0.85 * 0.69 rtol=1e-12
+    @testset "shortwave from a direct transmissivity" begin
+        greenland = (trans0=0.587, trans_per_km=0.052)
+        @test shortwave_down_from_transmissivity(500.0, 1500.0; greenland...) ≈ 500.0 * (0.587 + 0.052 * 1.5) rtol=1e-12
+        @test shortwave_down_from_transmissivity(500.0, -50.0; greenland...) ≈ 500.0 * 0.587 rtol=1e-12
+        @test shortwave_down_from_transmissivity(500.0, NaN; greenland...) ≈ 500.0 * 0.587 rtol=1e-12
+        @test shortwave_down_from_transmissivity(500.0, 1.0e4; trans0=0.68, trans_per_km=0.041) == 500.0
+        @test shortwave_down_from_transmissivity(500.0, 1000.0; trans0=-0.2, trans_per_km=0.1) == 0.0
     end
 
     @testset "wind from elevation and slope" begin

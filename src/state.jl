@@ -188,8 +188,8 @@ end
     end
 end
 
-@inline _state_init_workgroupsize(backend) =
-    backend isa KernelAbstractions.CPU ? 1024 : 256
+@inline _state_init_workgroupsize(::KernelAbstractions.CPU) = 1024
+@inline _state_init_workgroupsize(::KernelAbstractions.Backend) = 256
 
 function _initialize_bessi_state_arrays!(
     state::BESSIState,
@@ -198,7 +198,7 @@ function _initialize_bessi_state_arrays!(
 )
     backend = _ka_backend(state.mass)
     kernel! = _initialize_bessi_state_kernel!(backend, _state_init_workgroupsize(backend))
-    event = kernel!(
+    kernel!(
         get_fields(state),
         state.Ntot,
         convert(eltype(state.mass), density_init),
@@ -207,7 +207,6 @@ function _initialize_bessi_state_arrays!(
         _initial_snow_albedo(state.c);
         ndrange=state.ncol,
     )
-    _wait_kernel(event)
     return state
 end
 
@@ -244,12 +243,8 @@ function BESSIState(model::BESSIModel)
     return _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
 end
 
-@inline _cpu_layer_matrix(matrix::TransposedLayerMatrix) = Array(matrix)
-@inline _cpu_layer_matrix(matrix) = Array(matrix)
-@inline _cpu_state_array(state::BESSIState, name::Symbol) =
-    _is_bessi_layer_field(name) ?
-    _cpu_layer_matrix(getfield(state, name)) :
-    Array(getfield(state, name))
+# `Array` of a `TransposedLayerMatrix` restores the logical `(layer, column)` layout.
+@inline _cpu_state_array(state::BESSIState, name::Symbol) = Array(getfield(state, name))
 
 function cpu_state(state::BESSIState)
     return BESSIState(
@@ -267,7 +262,6 @@ end
     adapt(storage_type, getfield(state, name))
 
 function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
-    cuda_available() || error("CUDA is not functional in the current environment.")
     return BESSIState(
         state.parameters,
         state.ncol,
@@ -279,7 +273,7 @@ end
 ncols(state::BESSIState) = state.ncol
 
 """Mutable state for `PDDModel`."""
-struct PDDState{ST <: AbstractVector{Float64}}
+struct PDDState{ST <: AbstractVector{<:AbstractFloat}}
     snowpack_swe::ST
     smb_ice::ST
     runoff::ST
@@ -293,11 +287,12 @@ const _PDD_STATE_FIELD_NAMES = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
 
 function PDDState(model::PDDModel)
     ncol = ncols(model.grid)
+    NF = number_type(model.c)
     return PDDState(
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
     )
 end
 
@@ -309,7 +304,7 @@ Adapt.@adapt_structure PDDState
 Instantaneous budget fields use ITM's native mm w.e. day⁻¹ units; cumulative
 fields use mm w.e. and are the quantities exposed in regular output.
 """
-struct ITMState{ST <: AbstractVector{Float64}}
+struct ITMState{ST <: AbstractVector{<:AbstractFloat}}
     H_snow::ST
     alb_s::ST
     smb::ST
@@ -336,10 +331,11 @@ const _ITM_STATE_FIELD_NAMES = (
 
 function ITMState(model::ITMModel)
     ncol = ncols(model.grid)
+    NF = number_type(model.c)
     return ITMState(
-        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(ncol), zeros(ncol),
-        zeros(ncol), zeros(ncol), zeros(ncol), fill(model.c.T0, ncol), zeros(ncol),
-        zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol),
+        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(NF, ncol), zeros(NF, ncol),
+        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), fill(model.c.T0, ncol), zeros(NF, ncol),
+        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol),
     )
 end
 
@@ -385,3 +381,4 @@ function update_diagnostics!(state::BESSIState)
     )
     return state
 end
+ncols(state::Union{PDDState, ITMState}) = length(state.runoff)
