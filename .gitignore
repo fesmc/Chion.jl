@@ -28,3 +28,6 @@ logs/
 checkpoints/
 data/
 p/
+
+# examples kept local for now
+examples/

@@ -10,7 +10,9 @@ using Test, Chion
             q_sw_net=0.,q_lw_down=0.,q_sh=0.,q_lh=0.)
         @test s.Tsrf[1] ≈ 260. atol=1e-10
         @test s.temperature[1,1] ≈ 260. atol=1e-10
-        @test scratch.diag[1,1]==1.
+        # Zero flux derivative: the surface-row diagonal is exactly one, so the
+        # resolved profile reproduces the old temperature bit for bit.
+        @test scratch.rhs[1,1]==260.
         @test e.melt_energy_available==0.
     end
 end

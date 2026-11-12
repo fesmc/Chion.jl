@@ -332,16 +332,24 @@ thicknesses. The surface row additionally includes the eliminated Robin
 boundary term, while the bottom row (the deepest snow layer or the base of the
 ice substrate) only sees conductive exchange with the layer above.
 
-The multi-layer system is solved with the Thomas algorithm. 
+The multi-layer system is solved with the Thomas algorithm, eliminating from
+the bottom row upward. This leaves, for every row below the surface, a relation
+``T_i = p_i + q_i T_{i-1}`` that does not involve the surface boundary
+condition. Only the surface row differs between a free and a melting surface,
+so it is closed last as a single scalar equation for ``T_1``, and the profile
+follows from one downward substitution.
 
 ## Melt-Point Constraint
 
-If the interface temperature from the first solve exceeds `T0`, the code:
+If the interface temperature from the free (Robin) surface row exceeds `T0`,
+the code:
 
 1. marks the step as needing melt
-2. fixes the interface at ``T_s = T_0`` and solves the system again, keeping
-   the conduction from the surface into the first layer,
-   ``G_s (T_0 - T_1)``
+2. fixes the interface at ``T_s = T_0`` and closes the surface row again,
+   keeping the conduction from the surface into the first layer,
+   ``G_s (T_0 - T_1)``. Rows below the surface are reused from the single
+   upward elimination, so this gives the same profile as a second full solve
+   of the system with the Dirichlet surface row.
 3. clamps the final profile to `T <= T0`
 4. returns the remaining surface energy as melt energy,
 

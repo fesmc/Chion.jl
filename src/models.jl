@@ -225,7 +225,6 @@ struct ITMModel{
     c::C
     trans_a::NF
     trans_b::NF
-    trans_c::NF
     itm_c::NF
     itm_t::NF
     itm_b::NF
@@ -248,7 +247,6 @@ function ITMModel(
     grid::SnowpackGrid;
     trans_a::Real=0.46,
     trans_b::Real=6e-5,
-    trans_c::Real=0.01,
     itm_c::Real=-45.0,
     itm_t::Real=10.0,
     itm_b::Real=-2.0,
@@ -276,7 +274,7 @@ function ITMModel(
         error("ITM albedos must be between 0 and 1.")
     NF = number_type
     return ITMModel(grid, SnowpackPhysicalConstants(NF; kwargs...), NF(trans_a),
-        NF(trans_b), NF(trans_c), NF(itm_c), NF(itm_t), NF(itm_b),
+        NF(trans_b), NF(itm_c), NF(itm_t), NF(itm_b),
         NF(itm_lat0), NF(H_snow_max), NF(Pmaxfrac),
         NF(H_snow_crit_desert), NF(H_snow_crit_forest), NF(melt_crit),
         NF(alb_ocean), NF(alb_land), NF(alb_forest), NF(alb_ice),

@@ -4,26 +4,6 @@ Energy-flux temperature solver for array-backed snowpack states.
 
 @inline _safe_positive(x) = x > EPS_TINY ? x : oftype(x, EPS_TINY)
 
-"""
-    _clamp_to_melt!(temperature_profile, idx, melting_temperature, n)
-
-Clamp the first `n` layer temperatures of column `idx` to `melting_temperature`
-from above. Mutates `temperature_profile` in-place and returns it.
-"""
-@inline function _clamp_to_melt!(
-    temperature_profile,
-    idx::Int,
-    melting_temperature,
-    n::Int,
-)
-    @inbounds @simd for layer_index in 1:n
-        if _get_layer(temperature_profile, layer_index, idx) > melting_temperature
-            _set_layer!(temperature_profile, layer_index, idx, melting_temperature)
-        end
-    end
-    return temperature_profile
-end
-
 @inline function _snow_thermal_conductivity(ρ, temperature, ice_density)
     # Calonne et al. (2019), Eq. (5): a smooth blend of the snow and firn
     # regressions, scaled by the temperature dependences of ice and air.
@@ -171,50 +151,74 @@ end
 end
 
 """
-    _solve_heat_diffusion!(scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, n, β_scale, boundary_diag, boundary_correction, rhs1)
+    _eliminate_heat_diffusion_upward!(scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, n, β_scale)
 
-Solve the implicit heat-diffusion system of column `idx` over its `n` thermal rows
-with the Thomas algorithm. Row `i` reads `Tᵢ + βᵢ Gᵢ₋₁ (Tᵢ₋₁ - Tᵢ) + βᵢ Gᵢ (Tᵢ₊₁ - Tᵢ) = Tᵢᵒˡᵈ`
-with `βᵢ = -β_scale / mᵢ` and the interface conductances `G` in
-`scratch.interface_conductance`. The surface boundary condition enters row 1 through
-its diagonal, `boundary_diag - β₁G₁ - boundary_correction`, and right-hand side `rhs1`. The off-diagonals are assembled during
-the forward sweep, so only the eliminated diagonal (`scratch.diag`), the upper
-diagonal (`scratch.upper`) and the solution (`scratch.rhs`) are stored.
+Eliminate rows `n, n-1, …, 2` of the implicit heat-diffusion system of column `idx`.
+Row `i` reads `Tᵢ + βᵢ Gᵢ₋₁ (Tᵢ₋₁ - Tᵢ) + βᵢ Gᵢ (Tᵢ₊₁ - Tᵢ) = Tᵢᵒˡᵈ` with
+`βᵢ = -β_scale / mᵢ` and the interface conductances `G` in
+`scratch.interface_conductance`. Eliminating from the bottom leaves, for each row
+`i ≥ 2`, the relation `Tᵢ = pᵢ + qᵢ Tᵢ₋₁`, stored in `scratch.rhs` (`p`) and
+`scratch.diag` (`q`). These rows do not contain the surface boundary condition, so
+the same elimination serves both the free and the melting surface; only the scalar
+row-1 closure (`_close_surface_row`) differs. Returns `(p₂, q₂)`, or zeros for `n = 1`.
 """
-@inline function _solve_heat_diffusion!(
+@inline function _eliminate_heat_diffusion_upward!(
     scratch, mass, density, temperature, ice_temperature, n_snow::Int, ice_top_thickness, ice_density,
-    idx::Int, n::Int, β_scale, boundary_diag, boundary_correction, rhs1,
+    idx::Int, n::Int, β_scale,
 )
     G = scratch.interface_conductance
-    diag = scratch.diag
-    upper = scratch.upper
-    x = scratch.rhs
-    surface_mass, _, _ = _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, 1)
-    previous_upper = n > 1 ? β_scale / _safe_positive(surface_mass) * _get_layer(G, 1, idx) : zero(boundary_diag)
-    previous_diag = boundary_diag - previous_upper - boundary_correction
-    previous_x = rhs1
-    _set_layer!(diag, 1, idx, previous_diag)
-    _set_layer!(upper, 1, idx, previous_upper)
-    _set_layer!(x, 1, idx, previous_x)
-    @inbounds for row in 2:n
+    q = scratch.diag
+    p = scratch.rhs
+    below_p = zero(β_scale)
+    below_q = zero(β_scale)
+    @inbounds for row in n:-1:2
         row_mass, _, row_temperature =
             _thermal_row(mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, ice_density, idx, row)
         β = β_scale / _safe_positive(row_mass)
         lower = β * _get_layer(G, row - 1, idx)
         row_upper = row < n ? β * _get_layer(G, row, idx) : zero(β)
-        factor = lower / previous_diag
-        previous_diag = one(β) - lower - row_upper - factor * previous_upper
-        previous_x = row_temperature - factor * previous_x
-        previous_upper = row_upper
-        _set_layer!(diag, row, idx, previous_diag)
-        _set_layer!(upper, row, idx, row_upper)
-        _set_layer!(x, row, idx, previous_x)
+        reduced_diag = one(β) - lower - row_upper + row_upper * below_q
+        below_p = (row_temperature - row_upper * below_p) / reduced_diag
+        below_q = -lower / reduced_diag
+        _set_layer!(p, row, idx, below_p)
+        _set_layer!(q, row, idx, below_q)
     end
-    previous_x /= previous_diag
-    _set_layer!(x, n, idx, previous_x)
-    @inbounds for row in (n - 1):-1:1
-        previous_x = (_get_layer(x, row, idx) - _get_layer(upper, row, idx) * previous_x) / _get_layer(diag, row, idx)
-        _set_layer!(x, row, idx, previous_x)
+    return below_p, below_q
+end
+
+"""
+    _close_surface_row(surface_upper, boundary_diag, boundary_correction, rhs1, p2, q2)
+
+Solve row 1 for `T₁` after the upward elimination: its diagonal is
+`boundary_diag - β₁G₁ - boundary_correction` (with `surface_upper = β₁G₁`) and its
+right-hand side `rhs1`; row 2 has been reduced to `T₂ = p₂ + q₂ T₁`.
+"""
+@inline function _close_surface_row(surface_upper, boundary_diag, boundary_correction, rhs1, p2, q2)
+    diag1 = boundary_diag - surface_upper - boundary_correction
+    return (rhs1 - surface_upper * p2) / (diag1 + surface_upper * q2)
+end
+
+"""
+    _substitute_heat_diffusion_downward!(scratch, temperature, ice_temperature, n_snow, idx, n, T1, melting_temperature)
+
+Recover `Tᵢ = pᵢ + qᵢ Tᵢ₋₁` from the surface down, starting from the row-1 solution
+`T1`. The unclipped values carry the recursion; each layer is stored clamped to the
+melting point, both in the model state and in `scratch.rhs` (the resolved profile).
+"""
+@inline function _substitute_heat_diffusion_downward!(
+    scratch, temperature, ice_temperature, n_snow::Int, idx::Int, n::Int, T1, melting_temperature,
+)
+    q = scratch.diag
+    x = scratch.rhs
+    above = T1
+    clamped = min(above, melting_temperature)
+    _set_layer!(x, 1, idx, clamped)
+    _set_thermal_row_temperature!(temperature, ice_temperature, n_snow, idx, 1, clamped)
+    @inbounds for row in 2:n
+        above = _get_layer(x, row, idx) + _get_layer(q, row, idx) * above
+        clamped = min(above, melting_temperature)
+        _set_layer!(x, row, idx, clamped)
+        _set_thermal_row_temperature!(temperature, ice_temperature, n_snow, idx, row, clamped)
     end
     return x
 end
@@ -450,33 +454,33 @@ function _go_energy_flux_resolved!(
     # two enormous, nearly equal terms for very thin surface layers. In the
     # zero-flux-derivative limit the diagonal must remain exactly one, not zero.
     boundary_diag = one(dt_seconds) - boundary_term * (surface_flux_linear / surface_denominator)
-    resolved_temperature = _solve_heat_diffusion!(
+    # Rows 2…n do not depend on the surface boundary: eliminate them once, then
+    # close row 1 for the free (Robin) surface and, if that surface would exceed
+    # T₀, for the melting surface instead. Only the chosen T₁ is substituted down.
+    p2, q2 = _eliminate_heat_diffusion_upward!(
         scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i,
-        idx, n_layers, β_scale, boundary_diag, zero(dt_seconds), first_temperature - boundary_term * surface_constant,
+        idx, n_layers, β_scale,
     )
+    surface_upper = n_layers > 1 ? β1 * _get_layer(interface_terms, 1, idx) : zero(dt_seconds)
+    T1 = _close_surface_row(surface_upper, boundary_diag, zero(dt_seconds),
+        first_temperature - boundary_term * surface_constant, p2, q2)
 
-    resolved_surface_temperature = surface_constant + surface_coefficient * _get_layer(resolved_temperature, 1, idx)
+    resolved_surface_temperature = surface_constant + surface_coefficient * T1
     if resolved_surface_temperature > c.T0
         needs_melt = true
         # Retain the first-to-second-layer conductance from the unconstrained
         # matrix. Only the eliminated Robin-temperature contribution is
         # replaced by the fixed melting boundary.
-        resolved_temperature = _solve_heat_diffusion!(
-            scratch, mass, density, temperature, ice_temperature, n_snow, ice_top_thickness, c.rho_i,
-            idx, n_layers, β_scale, boundary_diag, boundary_term * surface_coefficient, first_temperature - boundary_term * c.T0,
-        )
-        _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
+        T1 = _close_surface_row(surface_upper, boundary_diag, boundary_term * surface_coefficient,
+            first_temperature - boundary_term * c.T0, p2, q2)
         resolved_surface_temperature = c.T0
         heating = dt_seconds * (surface_flux_constant - surface_flux_linear * c.T0)
     else
-        _clamp_to_melt!(resolved_temperature, idx, c.T0, n_layers)
         heating = dt_seconds * (surface_flux_constant - surface_flux_linear * resolved_surface_temperature)
     end
-
-    @inbounds for layer_index in 1:n_layers
-        _set_thermal_row_temperature!(temperature, ice_temperature, n_snow, idx, layer_index,
-            _get_layer(resolved_temperature, layer_index, idx))
-    end
+    resolved_temperature = _substitute_heat_diffusion_downward!(
+        scratch, temperature, ice_temperature, n_snow, idx, n_layers, T1, c.T0,
+    )
     _set_scalar!(Tsrf, idx, resolved_surface_temperature)
 
     melt_energy_available = needs_melt ? max(

@@ -115,7 +115,6 @@ struct SnowpackPhysicalConstants{
     rho_s_a::NF
     rho_s_b::NF
     rho_s_c::NF
-    Ki::NF
     ci::NF
     cw::NF
     Lm::NF
@@ -291,7 +290,6 @@ function SnowpackPhysicalConstants(::Type{NF};
     rho_s_b::Real=6.0,
     rho_s_c::Real=26.0,
     fresh_snow_density_scheme::Union{Symbol, AbstractFreshSnowDensityScheme}=:constant,
-    Ki::Real=2.1,
     ci::Real=2110.0,
     cw::Real=4181.0,
     Lm::Real=334000.0,
@@ -396,7 +394,6 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, rho_s_a),
         convert(NF, rho_s_b),
         convert(NF, rho_s_c),
-        convert(NF, Ki),
         convert(NF, ci),
         convert(NF, cw),
         convert(NF, Lm),

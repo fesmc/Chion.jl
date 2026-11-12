@@ -3,17 +3,18 @@
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
-"""Scratch rows of the column heat-diffusion solve (see `_solve_heat_diffusion!`)."""
+"""Scratch rows of the column heat-diffusion solve (see `_eliminate_heat_diffusion_upward!`):
+interface conductances, the elimination coefficients `q` (`diag`) and `p`, later the
+resolved profile (`rhs`)."""
 struct EnergyWorkspace{A}
     interface_conductance::A
-    upper::A
     diag::A
     rhs::A
 end
 
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(storage, NF, dims...)
-    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate())
+    return EnergyWorkspace(allocate(), allocate(), allocate())
 end
 
 # Thermal rows cover the snow/firn layers followed by the ice substrate.

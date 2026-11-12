@@ -11,7 +11,7 @@ See `examples/configs/` for complete files. Relative output paths are taken rela
 using TOML
 
 const _SYMBOL_KWARGS = (:albedo, :seb_scheme, :turbulent_flux_scheme, :densification, :fresh_snow_density,
-    :longwave_scheme, :low_density_densification)
+    :longwave_scheme, :low_density_densification, :pdd_method)
 
 function _config_years(v)
     v isa AbstractString && (p = parse.(Int, split(v, ':')); return p[1]:p[end])
