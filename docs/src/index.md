@@ -6,9 +6,12 @@ CurrentModule = Chion
 
 Chion is an intermediate-complexity snowpack mass and energy balance model
 with layered solid mass, liquid water, density, temperature, and surface
-diagnostics. It also includes a bulk positive-degree-day model. The public
-workflow is simulation-first: build a grid, choose `BESSIModel` or `PDDModel`,
-provide forcing, construct a `Simulation`, and call `run!`.
+diagnostics, a thermal ice substrate below the snow, and a SEMIX surface
+energy balance whose defaults are calibrated against MAR over Greenland. It
+also includes a bulk positive-degree-day model (`PDDModel`) and the
+insolation-temperature-melt model (`ITMModel`). The public workflow is
+simulation-first: build a grid, choose a model, provide forcing, construct a
+`Simulation`, and call `run!`.
 
 This documentation treats the current Julia implementation as the source of
 truth. The process pages below summarize the formulas and defaults that are
@@ -36,6 +39,7 @@ forcing = SnowpackForcing(
     snowfall_mm_day=[1.0, 0.0],
     rainfall_mm_day=[0.0, 0.0],
     shortwave_down=[120.0, 160.0],
+    latitude_deg=72.0,  # needed by the default diurnal substeps
 )
 simulation = Simulation(model; forcing=forcing, years=1, write_netcdf=false)
 result = run!(simulation)

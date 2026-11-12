@@ -4,7 +4,6 @@ using Printf
 using Dates
 using NCDatasets
 using Adapt: Adapt, adapt, @adapt_structure
-using CUDA
 using KernelAbstractions
 using ProgressMeter: Progress, next!, update!
 using SpecialFunctions: erfc
@@ -12,6 +11,7 @@ using SpecialFunctions: erfc
 # ---------------------------------------------------------------------------
 # Core domain, forcing, and physics
 # ---------------------------------------------------------------------------
+include("backends.jl")
 include("constants.jl")
 include("domain.jl")
 include("forcing.jl")
@@ -41,6 +41,10 @@ include("reporting.jl")
 include("runtime.jl")
 include("integrators.jl")
 include("simulation.jl")
+include("outputs.jl")
+include("forcing_source.jl")
+include("experiment.jl")
+include("config.jl")
 
 # ---------------------------------------------------------------------------
 # Exports — public API
@@ -63,6 +67,13 @@ export Simulation, SimulationResult, RunOptions
 export SimulationIntegrator
 export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_active_mask!
 export update_air_pressure!, sync_forcing!
+
+# Experiments: forcing sources, spin-up, outputs
+export Forcing, Output, Experiment, ExperimentResult
+export NoSpinup, CycledSpinup, ClimatologySpinup
+export forcing_grid, forcing_area, forcing_years, load_forcing_year, slice_forcing, relabel_year
+export available_output_variables, run_config
+export Hour, Day, Week, Month, Year     # output frequencies, from Dates
 
 # Data loading
 export load_forcing_file, read_forcing_columns

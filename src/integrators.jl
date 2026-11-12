@@ -45,16 +45,7 @@ _finished(integrator::SimulationIntegrator) =
 _scheduled_forcing_for_runtime(integrator::SimulationIntegrator) =
     integrator.model_runtime.data.step_fields
 
-function _copy_forcing!(dest::SnowpackForcing, src::SnowpackForcing)
-    for name in _FORCING_COPY_FIELD_NAMES
-        _copy_forcing_field!(getproperty(dest, name), getproperty(src, name))
-    end
-    return dest
-end
-
-# BESSI stores compact forcing fields as a named tuple in its GPU runtime.
-# Keep `sync_forcing!` functional for that representation as well as for the
-# public `SnowpackForcing` container.
+# BESSI stores its device forcing fields as a named tuple (`get_fields(forcing)`).
 function _copy_forcing!(dest::NamedTuple, src::SnowpackForcing)
     for name in _FORCING_COPY_FIELD_NAMES
         _copy_forcing_field!(getproperty(dest, name), getproperty(src, name))
@@ -152,22 +143,22 @@ function _step_n!(integrator::SimulationIntegrator, n::Integer)
     return nothing
 end
 
-@inline _external_gpu_forcing(::BESSIModel, forcing::SnowpackForcing) =
-    adapt(gpu_storage_type(), get_fields(forcing))
-@inline _external_gpu_forcing(::PDDModel, forcing::SnowpackForcing) =
-    _gpu_forcing_view(PDDForcing(forcing))
-@inline _external_gpu_forcing(::ITMModel, forcing::SnowpackForcing) =
-    _gpu_forcing_view(ITMForcing(forcing))
+# On the CPU the kernels read the `SnowpackForcing` view directly.
+_external_forcing(::ThreadsBackend, model, forcing::SnowpackForcing, timings) = forcing
+_external_forcing(backend::GPUBackend, model, forcing::SnowpackForcing, timings) =
+    time_block!(timings, :gpu_transfer) do
+        _backend_forcing(backend, model_forcing(model, forcing))
+    end
 
 function _step_external!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true)
     force_dt || error("Chion's initialized stepper requires `force_dt=true`, matching the FastIsostasy coupling pattern.")
     Δt_days > 0 || error("`Δt_days` must be positive.")
-    forcing = _single_step_forcing_view(integrator.sim.forcing, Δt_days)
-    if integrator.sim.options.backend == :gpu
-        forcing = time_block!(integrator.timings, :gpu_transfer) do
-            _external_gpu_forcing(integrator.sim.model, forcing)
-        end
-    end
+    forcing = _external_forcing(
+        integrator.sim.options.backend,
+        integrator.sim.model,
+        _single_step_forcing_view(integrator.sim.forcing, Δt_days),
+        integrator.timings,
+    )
     return _advance_with_forcing!(integrator, forcing, 1)
 end
 

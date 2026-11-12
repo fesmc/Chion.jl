@@ -10,7 +10,9 @@ using Test, Dates, Chion
             q_sw_net=0.,q_lw_down=0.,q_sh=0.,q_lh=0.)
         @test s.Tsrf[1] ≈ 260. atol=1e-10
         @test s.temperature[1,1] ≈ 260. atol=1e-10
-        @test scratch.diag[1,1]==1.
+        # Zero flux derivative: the surface-row diagonal is exactly one, so the
+        # resolved profile reproduces the old temperature bit for bit.
+        @test scratch.rhs[1,1]==260.
         @test e.melt_energy_available==0.
     end
 end
@@ -42,20 +44,27 @@ end
 
 @testset "Clear-sky transmissivity of the cloud proxy" begin
     c = Chion.SnowpackPhysicalConstants(Float64)
-    @test clear_sky_transmissivity(c, 1500.0) ≈ 0.85 + 0.075 * 1.5 rtol=1e-12
-    @test clear_sky_transmissivity(c, NaN) == 0.85
-    @test clear_sky_transmissivity(c, -200.0) == 0.85
+    τ(z, toa) = min(1.0, c.lw_clear_sky_transmissivity + c.lw_clear_sky_transmissivity_per_km * z / 1000 +
+        c.lw_clear_sky_transmissivity_insolation * log(toa / 300))
+    @test clear_sky_transmissivity(c, 1500.0, 450.0) ≈ τ(1500.0, 450.0) rtol=1e-12
+    @test clear_sky_transmissivity(c, NaN, 450.0) == clear_sky_transmissivity(c, 0.0, 450.0)
+    @test clear_sky_transmissivity(c, -200.0, 450.0) == clear_sky_transmissivity(c, 0.0, 450.0)
+    @test clear_sky_transmissivity(c, 1500.0, 10.0) == clear_sky_transmissivity(c, 1500.0, Chion.LONGWAVE_CLOUD_PROXY_MIN_TOA)
+    @test clear_sky_transmissivity(c, 1.0e5, 450.0) == 1.0
 
-    # A host's SW↓ from a cloud fraction n gives the proxy back n.
-    n = 0.28
+    # A host's SW↓ from a cloud fraction n through the proxy's cloud transmission
+    # gives the proxy back n.
+    n = 0.6
+    z = 1500.0
     forcing = SnowpackForcing(dt_days=[1.0], air_temperature=[268.0], snowfall_rate=[0.0],
-        rainfall_rate=[0.0], shortwave_down=[0.0], latitude_deg=70.0, surface_height=1500.0,
+        rainfall_rate=[0.0], shortwave_down=[0.0], latitude_deg=70.0, surface_height=z,
         time_values=[DateTime(2001, 6, 15, 12)])
     step_forcing = Chion._step_forcing_at(forcing, 1, 1)
-    toa = Chion._daily_toa_shortwave(step_forcing.latitude_deg, step_forcing.solar_longitude_deg, step_forcing.day_of_year)
+    terms = Chion._diurnal_shortwave_integral_terms(step_forcing.latitude_deg, step_forcing.solar_longitude_deg)
+    toa = Chion._daily_toa_shortwave(terms, step_forcing.day_of_year)
     @test toa > Chion.LONGWAVE_CLOUD_PROXY_MIN_TOA
-    step_forcing = Chion._with_step_forcing(step_forcing,
-        (; shortwave_down=toa * clear_sky_transmissivity(c, 1500.0) * (1 - n)))
-    @test Chion._cloud_proxy_emissivity(c, step_forcing) ≈
-        c.lw_emissivity_base + c.lw_emissivity_temperature_slope * (268.0 - c.T0) + c.lw_emissivity_cloud_slope * n rtol=1e-12
+    cloud_effect = c.lw_cloud_transmission_coefficient * exp(-c.lw_cloud_transmission_decay_per_km * z / 1000)
+    shortwave_down = toa * clear_sky_transmissivity(c, z, toa) * (1 - cloud_effect * n^c.lw_cloud_transmission_exponent)
+    step_forcing = Chion._with_step_forcing(step_forcing, (; shortwave_down))
+    @test Chion._cloud_proxy_cloud_fraction(c, step_forcing, terms) ≈ n rtol=1e-10
 end
