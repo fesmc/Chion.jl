@@ -148,6 +148,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
         fields.vapor_mass[idx] = zero(density_init)
         fields.sublimation[idx] = zero(density_init)
         fields.latent_heat_flux_sum[idx] = zero(density_init)
+        _zero_seb_sums!(fields, idx)
         fields.Tsrf[idx] = surface_temperature_init
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)

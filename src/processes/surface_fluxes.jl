@@ -17,10 +17,28 @@ const SOLAR_CONSTANT = 1361.0
     return oftype(x, SOLAR_CONSTANT) * eccentricity * max(x, zero(x)) / oftype(x, 2π)
 end
 
+"""
+    clear_sky_transmissivity(c, height, toa)
+
+Daily shortwave transmissivity of a clear sky (Konzelmann et al., 1994) at the
+surface height `height` (m) and daily-mean top-of-atmosphere shortwave `toa`
+(W m⁻²), τ_cs = min(1, τ₀ + τ_z z + τ_S ln(SW_TOA / 300 W m⁻²)) with z in km,
+the reference of the cloud proxy's cloud fraction. A height that is not finite
+(no surface height) or negative counts as sea level; `toa` is floored at
+$(LONGWAVE_CLOUD_PROXY_MIN_TOA) W m⁻², as in the proxy.
+"""
+@inline function clear_sky_transmissivity(c::SnowpackPhysicalConstants, height, toa)
+    height_km = ifelse(isfinite(height), max(height, zero(height)), zero(height)) / oftype(height, 1000)
+    safe_toa = max(toa, oftype(toa, LONGWAVE_CLOUD_PROXY_MIN_TOA))
+    transmissivity = c.lw_clear_sky_transmissivity + c.lw_clear_sky_transmissivity_per_km * height_km +
+                     c.lw_clear_sky_transmissivity_insolation * log(safe_toa / oftype(safe_toa, 300))
+    return min(one(transmissivity), transmissivity)
+end
+
 """Daily cloud fraction diagnosed from the shortwave transmissivity of the atmosphere.
 
-The clear-sky transmissivity increases with elevation and insolation,
-τ_cs = τ₀ + τ_z z + τ_S ln(SW_TOA / 300 W m⁻²), and clouds reduce it by the factor
+The clear-sky transmissivity τ_cs (`clear_sky_transmissivity`) increases with
+elevation and insolation, and clouds reduce it by the factor
 1 − a nᵖ exp(−b z) (Konzelmann et al., 1994), which is inverted for n ∈ [0, 1].
 In the polar night, or for sub-daily forcing where SW↓ is not a daily mean,
 n is the constant night cloud fraction.
@@ -33,9 +51,7 @@ n is the constant night cloud fraction.
     daily = (toa > oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA)) & (forcing.dt_days >= oftype(T, 0.75)) &
             isfinite(forcing.latitude_deg)
     safe_toa = max(toa, oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA))
-    clear_transmissivity = min(one(T), c.lw_clear_sky_transmissivity +
-        c.lw_clear_sky_transmissivity_per_km * height_km +
-        c.lw_clear_sky_transmissivity_insolation * log(safe_toa / oftype(T, 300)))
+    clear_transmissivity = clear_sky_transmissivity(c, forcing.surface_height, toa)
     deficit = clamp(one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity), zero(T), one(T))
     cloud_effect = c.lw_cloud_transmission_coefficient * exp(-c.lw_cloud_transmission_decay_per_km * height_km)
     cloud_fraction = clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T))^(one(T) / c.lw_cloud_transmission_exponent)
@@ -74,6 +90,10 @@ the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
     return _with_step_forcing(forcing, (; q_lw_down, has_q_lw_down=true))
 end
 
+"""Longwave down (W m⁻²): the forcing's, or the graybody sky's ϵ_air σ T_a⁴."""
+@inline _longwave_down(c::SnowpackPhysicalConstants, air_temperature, use_q_lw_down::Bool, q_lw_down_value) =
+    use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+
 @inline function _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
     return (
         vapor_mass=vapor_mass,
@@ -108,7 +128,7 @@ surface-flux units.
     z0m,
     emissivity,
 )
-    longwave_down = use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+    longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
     longwave_flux = _uses_semix_seb(c) ?
         emissivity * (longwave_down - c.σ * surface_temperature^4) :
         longwave_down - c.σ * c.ϵ_snow * surface_temperature^4

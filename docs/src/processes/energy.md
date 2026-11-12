@@ -94,7 +94,7 @@ fraction is diagnosed from the daily shortwave transmissivity
 ``\tau = Q_{\mathrm{sw,down}}/Q_{\mathrm{sw,TOA}}`` by inverting the cloud
 transmission ``\tau/\tau_{cs} = 1 - a\,n^p e^{-b z}``, with the clear-sky
 transmissivity ``\tau_{cs} = \tau_0 + \tau_z z + \tau_S \ln(Q_{\mathrm{sw,TOA}}/300\,\mathrm{W\,m^{-2}})``
-(at most one). All coefficients were fitted to daily MAR over the Greenland ice
+(at most one; `clear_sky_transmissivity(c, z, Q_sw_TOA)`). All coefficients were fitted to daily MAR over the Greenland ice
 sheet (1980–1989) with `examples/research/fit_cloud_proxy_longwave.jl`:
 ``\tau_0 = 0.718``, ``\tau_z = 0.0298\,\mathrm{km^{-1}}``, ``\tau_S = 0.0569``,
 ``a = 0.447``, ``p = 2.75``, ``b = 0.225\,\mathrm{km^{-1}}``,

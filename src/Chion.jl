@@ -60,6 +60,7 @@ export build_model, initial_state
 
 # Forcing
 export SnowpackForcing
+export clear_sky_transmissivity
 
 # Simulation
 export Simulation, SimulationResult, RunOptions

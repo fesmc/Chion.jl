@@ -44,6 +44,12 @@ const _BESSI_OUTPUT_VARIABLES = Dict{Symbol, OutputVariable}(v.name => v for v i
     OutputVariable(:snowfall, :flux, :mass, :column, "kg m-2", "Snowfall"),
     OutputVariable(:rainfall, :flux, :mass, :column, "kg m-2", "Rainfall"),
     OutputVariable(:latent_heat_flux, :rate, :intensive, :column, "W m-2", "Turbulent latent heat flux"),
+    OutputVariable(:shortwave_down, :rate, :intensive, :column, "W m-2", "Shortwave down"),
+    OutputVariable(:shortwave_net, :rate, :intensive, :column, "W m-2", "Absorbed shortwave"),
+    OutputVariable(:longwave_down, :rate, :intensive, :column, "W m-2", "Longwave down"),
+    OutputVariable(:longwave_net, :rate, :intensive, :column, "W m-2", "Net longwave"),
+    OutputVariable(:sensible_heat_flux, :rate, :intensive, :column, "W m-2", "Turbulent sensible heat flux"),
+    OutputVariable(:rain_heat_flux, :rate, :intensive, :column, "W m-2", "Heat of rain"),
     OutputVariable(:albedo, :state, :intensive, :column, "1", "Surface albedo"),
     OutputVariable(:Tsrf, :state, :intensive, :column, "K", "Surface temperature"),
     OutputVariable(:snow_age_days, :state, :intensive, :column, "day", "Time since the latest snowfall"),
@@ -68,7 +74,7 @@ const _BESSI_OUTPUT_VARIABLES = Dict{Symbol, OutputVariable}(v.name => v for v i
 """Variable selections accepted in place of a list."""
 const _OUTPUT_VARIABLE_GROUPS = Dict{Symbol, Vector{Symbol}}(
     :budget => [:surface_smb, :precipitation, :melt, :runoff, :refreezing, :vapor_mass],
-    :monthly => [:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo],
+    :monthly => collect(MONTHLY_OUTPUT_VARS),
     :default => [:surface_smb, :melt, :runoff, :refreezing, :swe, :albedo],
     :snow => [:swe, :thickness, :snow_cover],
     :firn => [:density_profile, :temperature_profile],
@@ -212,8 +218,9 @@ _bucket(f::Dates.Hour, t::DateTime, k::Int) = fld(Dates.value(t - DateTime(1970)
 # Accumulation on the backend
 # ---------------------------------------------------------------------------
 
+# The rates are the period means of the surface energy balance sums (`MONTHLY_FLUX_SUMS`).
 const _COUNTER_OF = Dict(:smb_ice => :smb_ice, :melt => :melt, :runoff => :runoff, :refreezing => :refreezing,
-    :sublimation => :sublimation, :vapor_mass => :vapor_mass, :latent_heat_flux => :latent_heat_flux_sum)
+    :sublimation => :sublimation, :vapor_mass => :vapor_mass, MONTHLY_FLUX_SUMS...)
 const _FORCING_FLUXES = (:surface_smb, :precipitation, :snowfall, :rainfall)
 
 """The cumulative state field behind the flux `name` of `model`."""

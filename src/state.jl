@@ -59,6 +59,15 @@ struct BESSIState{
     vapor_mass::VT
     sublimation::VT
     latent_heat_flux_sum::VT
+    # Time-integrated surface energy balance (W m⁻² day), positive into the
+    # surface: shortwave down and absorbed, longwave down and net, sensible
+    # heat, and the heat of rain. Diagnostics only.
+    shortwave_down_sum::VT
+    shortwave_net_sum::VT
+    longwave_down_sum::VT
+    longwave_net_sum::VT
+    sensible_heat_flux_sum::VT
+    rain_heat_flux_sum::VT
     Tsrf::VT
     albedo::VT
     snow_age_days::VT
@@ -91,6 +100,15 @@ end
 const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature)
 # Layer-first matrices that share the layer storage conversions.
 @inline _is_bessi_layer_field(name::Symbol) = name in _BESSI_LAYER_FIELD_NAMES || name === :ice_temperature
+# Surface energy balance accumulators, in the order of the state fields.
+const _BESSI_SEB_SUM_NAMES = (
+    :shortwave_down_sum,
+    :shortwave_net_sum,
+    :longwave_down_sum,
+    :longwave_net_sum,
+    :sensible_heat_flux_sum,
+    :rain_heat_flux_sum,
+)
 const _BESSI_ARRAY_FIELD_NAMES = (
     :N,
     _BESSI_LAYER_FIELD_NAMES...,
@@ -102,6 +120,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     :vapor_mass,
     :sublimation,
     :latent_heat_flux_sum,
+    _BESSI_SEB_SUM_NAMES...,
     :Tsrf,
     :albedo,
     :snow_age_days,
@@ -116,6 +135,18 @@ const _BESSI_ARRAY_FIELD_NAMES = (
 @inline get_fields(state::BESSIState) = NamedTuple{_BESSI_ARRAY_FIELD_NAMES}(
     ntuple(index -> getfield(state, _BESSI_ARRAY_FIELD_NAMES[index]), Val(length(_BESSI_ARRAY_FIELD_NAMES))),
 )
+
+@inline function _zero_seb_sums!(fields, idx)
+    @inbounds begin
+        fields.shortwave_down_sum[idx] = zero(eltype(fields.shortwave_down_sum))
+        fields.shortwave_net_sum[idx] = zero(eltype(fields.shortwave_net_sum))
+        fields.longwave_down_sum[idx] = zero(eltype(fields.longwave_down_sum))
+        fields.longwave_net_sum[idx] = zero(eltype(fields.longwave_net_sum))
+        fields.sensible_heat_flux_sum[idx] = zero(eltype(fields.sensible_heat_flux_sum))
+        fields.rain_heat_flux_sum[idx] = zero(eltype(fields.rain_heat_flux_sum))
+    end
+    return nothing
+end
 
 @kernel function _initialize_bessi_state_kernel!(
     fields,
@@ -136,6 +167,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
         fields.vapor_mass[idx] = zero(density_init)
         fields.sublimation[idx] = zero(density_init)
         fields.latent_heat_flux_sum[idx] = zero(density_init)
+        _zero_seb_sums!(fields, idx)
         fields.Tsrf[idx] = surface_temperature_init
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)
@@ -197,6 +229,7 @@ function BESSIState(model::BESSIModel)
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
+        (Vector{NF}(undef, ncol) for _ in _BESSI_SEB_SUM_NAMES)...,
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),

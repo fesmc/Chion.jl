@@ -82,8 +82,10 @@ other dimension (vertical level, sector) is read at its first index.
 
 For `BESSIModel`, `:monthly` writes monthly surface SMB (`surface_smb`:
 precipitation − runoff + vapour exchange), `smb_ice`, runoff, melt,
-refreezing and sublimation changes, plus monthly mean latent heat flux and
-albedo.
+refreezing and sublimation changes, plus albedo and the monthly mean surface
+energy balance (`W m^-2`, positive into the surface): `shortwave_down`,
+`shortwave_net`, `longwave_down`, `longwave_net`, `sensible_heat_flux`,
+`latent_heat_flux` and `rain_heat_flux`.
 
 For `PDDModel`, `:all` writes `snowpack_swe`, `smb_ice`, `runoff`, and
 `pdd_sum` every forcing step. `:monthly` writes month-end snowpack SWE and
@@ -116,6 +118,7 @@ environment. CUDA.jl is a weak dependency: `using CUDA` loads the GPU backend
 ```@docs
 SnowpackGrid
 SnowpackForcing
+clear_sky_transmissivity
 BESSIModel
 PDDModel
 ITMModel

@@ -8,6 +8,12 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}}
     refreezing::VT
     sublimation::VT
     latent_heat_flux::VT
+    shortwave_down::VT
+    shortwave_net::VT
+    longwave_down::VT
+    longwave_net::VT
+    sensible_heat_flux::VT
+    rain_heat_flux::VT
     albedo::VT
     count::Int
     days::Float64
@@ -18,6 +24,12 @@ mutable struct MonthlyState{VT <: AbstractVector{<:AbstractFloat}}
     prev_refreezing::VT
     prev_sublimation::VT
     prev_latent_heat_flux_sum::VT
+    prev_shortwave_down_sum::VT
+    prev_shortwave_net_sum::VT
+    prev_longwave_down_sum::VT
+    prev_longwave_net_sum::VT
+    prev_sensible_heat_flux_sum::VT
+    prev_rain_heat_flux_sum::VT
 end
 
 mutable struct MonthlyOutputBuffer{MT <: AbstractMatrix{<:AbstractFloat}}
@@ -28,11 +40,18 @@ mutable struct MonthlyOutputBuffer{MT <: AbstractMatrix{<:AbstractFloat}}
     refreezing::MT
     sublimation::MT
     latent_heat_flux::MT
+    shortwave_down::MT
+    shortwave_net::MT
+    longwave_down::MT
+    longwave_net::MT
+    sensible_heat_flux::MT
+    rain_heat_flux::MT
     albedo::MT
     count::Int
 end
 
 _zero_like(v) = fill!(similar(v), zero(eltype(v)))
+_prev_name(flux_sum::Symbol) = Symbol(:prev_, flux_sum)
 
 function MonthlyState(state::BESSIState)
     return MonthlyState(
@@ -42,7 +61,7 @@ function MonthlyState(state::BESSIState)
         _zero_like(state.melt),
         _zero_like(state.refreezing),
         _zero_like(state.sublimation),
-        _zero_like(state.latent_heat_flux_sum),
+        (_zero_like(getfield(state, flux_sum)) for (_, flux_sum) in MONTHLY_FLUX_SUMS)...,
         _zero_like(state.albedo),
         0,
         0.0,
@@ -52,20 +71,13 @@ function MonthlyState(state::BESSIState)
         copy(state.melt),
         copy(state.refreezing),
         copy(state.sublimation),
-        copy(state.latent_heat_flux_sum),
+        (copy(getfield(state, flux_sum)) for (_, flux_sum) in MONTHLY_FLUX_SUMS)...,
     )
 end
 
 function MonthlyOutputBuffer(state::BESSIState; nmonth::Integer=12)
     return MonthlyOutputBuffer(
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
-        similar(state.runoff, Float32, Int(nmonth), state.ncol),
+        (similar(state.runoff, Float32, Int(nmonth), state.ncol) for _ in MONTHLY_OUTPUT_VARS)...,
         0,
     )
 end
@@ -99,11 +111,13 @@ function finalize_monthly!(monthly::MonthlyState, state::BESSIState)
     monthly.melt .= state.melt .- monthly.prev_melt
     monthly.refreezing .= state.refreezing .- monthly.prev_refreezing
     monthly.sublimation .= state.sublimation .- monthly.prev_sublimation
-    if monthly.days > 0.0
-        monthly.latent_heat_flux .=
-            (state.latent_heat_flux_sum .- monthly.prev_latent_heat_flux_sum) ./ monthly.days
-    else
-        fill!(monthly.latent_heat_flux, zero(eltype(monthly.latent_heat_flux)))
+    for (flux, flux_sum) in MONTHLY_FLUX_SUMS
+        mean = getfield(monthly, flux)
+        if monthly.days > 0.0
+            mean .= (getfield(state, flux_sum) .- getfield(monthly, _prev_name(flux_sum))) ./ monthly.days
+        else
+            fill!(mean, zero(eltype(mean)))
+        end
     end
     if monthly.count > 0
         monthly.albedo ./= monthly.count
@@ -116,12 +130,14 @@ function finalize_monthly!(monthly::MonthlyState, state::BESSIState)
     monthly.prev_melt .= state.melt
     monthly.prev_refreezing .= state.refreezing
     monthly.prev_sublimation .= state.sublimation
-    monthly.prev_latent_heat_flux_sum .= state.latent_heat_flux_sum
+    for (_, flux_sum) in MONTHLY_FLUX_SUMS
+        getfield(monthly, _prev_name(flux_sum)) .= getfield(state, flux_sum)
+    end
     return monthly
 end
 
 function reset_monthly!(monthly::MonthlyState)
-    for field in (:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
+    for field in MONTHLY_OUTPUT_VARS
         values = getfield(monthly, field)
         fill!(values, zero(eltype(values)))
     end

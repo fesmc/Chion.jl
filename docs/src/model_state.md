@@ -34,9 +34,19 @@ with layer-wise arrays for:
 | `refreezing` | cumulative refrozen liquid mass | `kg m^-2` |
 | `sublimation` | cumulative sublimated mass | `kg m^-2` |
 | `latent_heat_flux_sum` | time-integrated latent heat-flux diagnostic | `W m^-2 day` |
+| `shortwave_down_sum`, `shortwave_net_sum` | time-integrated shortwave down and absorbed | `W m^-2 day` |
+| `longwave_down_sum`, `longwave_net_sum` | time-integrated longwave down and net | `W m^-2 day` |
+| `sensible_heat_flux_sum`, `rain_heat_flux_sum` | time-integrated sensible heat and rain heat | `W m^-2 day` |
 | `Tsrf` | snow–air (or ice–air) interface temperature | `K` |
 | `albedo` | surface albedo used by the energy solver | `1` |
 | `ice_temperature` | temperatures of the ice-substrate layers, `(ice_substrate_layers, column)` | `K` |
+
+The surface energy balance sums are positive into the surface. Under snow and
+on the ice substrate the terms are evaluated at the solved surface temperature,
+on bare ice without a substrate at `T0`. Net shortwave, net longwave, sensible,
+latent and rain heat add up to the energy into the column (melt and
+conduction), up to the linearization of the solve and the heat of snowfall,
+which is not among them.
 
 `PDDState` stores `snowpack_swe`, `smb_ice`, `runoff`, and `pdd_sum` as
 column vectors. Its snow reservoir is capped by `PDDModel.H_snow_max`.

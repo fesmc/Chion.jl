@@ -20,6 +20,18 @@ const NETCDF_METADATA = Dict{Symbol, OutputMetadata}(
     :sublimation => OutputMetadata("sublimation", "Cumulative sublimation", "mmWE"),
     :latent_heat_flux => OutputMetadata("latent_heat_flux", "Monthly mean turbulent latent heat flux", "W m-2"),
     :latent_heat_flux_sum => OutputMetadata("latent_heat_flux_sum", "Integrated turbulent latent heat flux", "W m-2"),
+    :shortwave_down => OutputMetadata("shortwave_down", "Monthly mean shortwave down", "W m-2"),
+    :shortwave_net => OutputMetadata("shortwave_net", "Monthly mean absorbed shortwave", "W m-2"),
+    :longwave_down => OutputMetadata("longwave_down", "Monthly mean longwave down", "W m-2"),
+    :longwave_net => OutputMetadata("longwave_net", "Monthly mean net longwave", "W m-2"),
+    :sensible_heat_flux => OutputMetadata("sensible_heat_flux", "Monthly mean sensible heat flux", "W m-2"),
+    :rain_heat_flux => OutputMetadata("rain_heat_flux", "Monthly mean heat of rain", "W m-2"),
+    :shortwave_down_sum => OutputMetadata("shortwave_down_sum", "Integrated shortwave down", "W m-2 day"),
+    :shortwave_net_sum => OutputMetadata("shortwave_net_sum", "Integrated absorbed shortwave", "W m-2 day"),
+    :longwave_down_sum => OutputMetadata("longwave_down_sum", "Integrated longwave down", "W m-2 day"),
+    :longwave_net_sum => OutputMetadata("longwave_net_sum", "Integrated net longwave", "W m-2 day"),
+    :sensible_heat_flux_sum => OutputMetadata("sensible_heat_flux_sum", "Integrated sensible heat flux", "W m-2 day"),
+    :rain_heat_flux_sum => OutputMetadata("rain_heat_flux_sum", "Integrated heat of rain", "W m-2 day"),
     :Tsrf => OutputMetadata("Tsrf", "Surface temperature", "K"),
     :albedo => OutputMetadata("albedo", "Surface albedo", "1"),
     :snow_age_days => OutputMetadata("snow_age_days", "Time since the latest snowfall event", "day"),
@@ -42,12 +54,33 @@ const NETCDF_METADATA = Dict{Symbol, OutputMetadata}(
 )
 
 const DEFAULT_STATE_OUTPUT_VARS = (:thickness, :wet_mass, :bulk_density, :mass_base, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :albedo)
-const STATE_FIELD_OUTPUT_VARS = (:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum, :Tsrf, :snow_age_days)
-const MONTHLY_OUTPUT_VARS = (:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation, :latent_heat_flux, :albedo)
+const STATE_FIELD_OUTPUT_VARS = (:mass, :mass_w, :density, :temperature, :N, :liquid_water, :latent_heat_flux_sum,
+    :shortwave_down_sum, :shortwave_net_sum, :longwave_down_sum, :longwave_net_sum, :sensible_heat_flux_sum,
+    :rain_heat_flux_sum, :Tsrf, :snow_age_days)
+# Monthly mean surface energy fluxes (W m⁻²) and the state sums (W m⁻² day)
+# they are taken from.
+const MONTHLY_FLUX_SUMS = (
+    :latent_heat_flux => :latent_heat_flux_sum,
+    :shortwave_down => :shortwave_down_sum,
+    :shortwave_net => :shortwave_net_sum,
+    :longwave_down => :longwave_down_sum,
+    :longwave_net => :longwave_net_sum,
+    :sensible_heat_flux => :sensible_heat_flux_sum,
+    :rain_heat_flux => :rain_heat_flux_sum,
+)
+const MONTHLY_OUTPUT_VARS = (:surface_smb, :smb_ice, :runoff, :melt, :refreezing, :sublimation,
+    first.(MONTHLY_FLUX_SUMS)..., :albedo)
 const NETCDF_VARIABLES = (DEFAULT_STATE_OUTPUT_VARS..., STATE_FIELD_OUTPUT_VARS...)
 const PDD_OUTPUT_VARS = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
 const ITM_OUTPUT_VARS = (:H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf, :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum)
 const ALL_OUTPUT_VARS = Tuple(unique((NETCDF_VARIABLES..., MONTHLY_OUTPUT_VARS..., PDD_OUTPUT_VARS..., ITM_OUTPUT_VARS...)))
+
+function _monthly_flux_sum_name(key::Symbol)
+    for (flux, flux_sum) in MONTHLY_FLUX_SUMS
+        flux === key && return flux_sum
+    end
+    return nothing
+end
 
 output_variables(::BESSIModel) = NETCDF_VARIABLES
 output_variables(::PDDModel) = PDD_OUTPUT_VARS
@@ -137,10 +170,11 @@ function init_state_netcdf(
     _write_nc_var!(ds, "domain_mask", ("x", "y"), (key=:domain_mask, long_name="Domain mask", units="1", integer=false), Float32.(permutedims(layout.mask, (2, 1))))
     handles = Dict{Symbol, Any}()
     for key in vars
+        flux_sum = _monthly_flux_sum_name(key)
         values = key == :surface_smb ?
             getfield(state, :smb_ice) :
-            key == :latent_heat_flux && hasfield(typeof(state), :latent_heat_flux_sum) ?
-            getfield(state, :latent_heat_flux_sum) :
+            flux_sum !== nothing && hasfield(typeof(state), flux_sum) ?
+            getfield(state, flux_sum) :
             getfield(state, key)
         meta = get(NETCDF_METADATA, key, OutputMetadata(String(key), String(key), ""))
         if values isa AbstractVector

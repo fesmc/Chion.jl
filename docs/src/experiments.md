@@ -94,7 +94,8 @@ Output(path; variables=:default, frequency=:monthly, aggregate=:columns, kind=:m
 | `melt`, `runoff`, `refreezing`, `sublimation` | flux | kg m⁻² | |
 | `vapor_mass` | flux | kg m⁻² | net vapour exchange (deposition − sublimation − evaporation) |
 | `precipitation`, `snowfall`, `rainfall` | flux | kg m⁻² | from the forcing |
-| `latent_heat_flux` | rate | W m⁻² | period mean |
+| `latent_heat_flux`, `sensible_heat_flux` | rate | W m⁻² | period mean |
+| `shortwave_down`, `shortwave_net`, `longwave_down`, `longwave_net`, `rain_heat_flux` | rate | W m⁻² | period mean; net = absorbed, positive into the surface |
 | `swe`, `snow_mass`, `liquid_water` | state | kg m⁻² | solid + liquid, solid, liquid |
 | `thickness`, `bulk_density`, `firn_air_content` | state | m, kg m⁻³, m | |
 | `snow_cover` | state | 1 | SWE ≥ `snow_cover_threshold`; its mean is the snow-cover frequency |
@@ -104,7 +105,7 @@ Output(path; variables=:default, frequency=:monthly, aggregate=:columns, kind=:m
 | `density_profile`, `temperature_profile` | snapshot | kg m⁻³, K | on the depth bins / at the depths `depths` |
 
 Groups: `:budget` (SMB, precipitation, melt, runoff, refreezing, vapour exchange), `:monthly`
-(the monthly mass-budget maps), `:snow`, `:firn` and `:default`.
+(the monthly mass-budget and surface energy balance maps), `:snow`, `:firn` and `:default`.
 
 Flux totals of a fine frequency add up to those of a coarser one to rounding precision; the tests
 check daily against monthly and yearly totals.
