@@ -322,6 +322,111 @@ function _compact_air_pressure(surface_height, air_temperature; dt_days, time_va
     return ColumnForcingMatrix(values, ntime)
 end
 
+# ---------------------------------------------------------------------------
+# Forcing a host can derive when its climate supplies only monthly air
+# temperature and precipitation. None is called by Chion itself; the Fortran
+# chion has the same functions (chion_forcing_host).
+# ---------------------------------------------------------------------------
+
+"""
+    shortwave_down_from_transmissivity(toa, height; trans0, trans_per_km)
+
+Surface shortwave down (W m⁻²) from the top-of-atmosphere shortwave `toa`
+(W m⁻²) and the surface height `height` (m) with a per-domain direct
+transmissivity: SW↓ = SW_TOA clamp(τ₀ + τ_km max(z, 0)[km], 0, 1). A height
+that is not finite counts as sea level. The cloud proxy then diagnoses its own
+cloudiness from this SW↓.
+
+Calibration (with Chion's TOA): MAR v3.14 1981-2010 over Greenland's ice gives
+τ₀ = 0.587, τ_km = 0.052 km⁻¹ in summer; CERES gives τ₀ = 0.68,
+τ_km = 0.041 km⁻¹ over Antarctica.
+"""
+function shortwave_down_from_transmissivity(toa, height; trans0, trans_per_km)
+    z = ifelse(isfinite(height), max(height, zero(height)), zero(height))
+    return toa * clamp(trans0 + trans_per_km * z / 1000, zero(trans0), one(trans0))
+end
+
+"""
+    wind_speed_from_geometry(z_srf, dx; u0, u_z=0, u_s=0, slope_length_km=50)
+
+Wind speed (m s⁻¹) from the surface elevation `z_srf` (m) on a regular grid
+of spacing `dx` (m): U = u0 + u_z max(z, 0)[km] + u_s |∇z|[m/km], at least 0.
+The slope is a centred difference over 2n cells, n = max(1, round(L/(2 dx)))
+for the baseline L = `slope_length_km`, so that it does not depend on the
+grid's resolution; one-sided over the cells available at the edges. `u_s = 0`
+needs no `dx`.
+
+Calibration: ERA5 1981-2010 summer 10-m wind over the ice gives
+Greenland 2.5 + 1.27 z[km], Antarctica 5.5 + 0.2 z[km] (u_s = 0).
+"""
+function wind_speed_from_geometry(z_srf::AbstractMatrix, dx; u0, u_z=0, u_s=0, slope_length_km=50)
+    u = @. Float64(u0 + u_z * max(z_srf, 0) * 1.0e-3)
+    if u_s != 0
+        nx, ny = size(z_srf)
+        n = max(1, round(Int, slope_length_km * 1.0e3 / (2 * dx), RoundNearestTiesAway))
+        @inbounds for j in 1:ny, i in 1:nx
+            i0, i1 = max(i - n, 1), min(i + n, nx)
+            j0, j1 = max(j - n, 1), min(j + n, ny)
+            gx = i1 > i0 ? (z_srf[i1, j] - z_srf[i0, j]) / ((i1 - i0) * dx) : 0.0
+            gy = j1 > j0 ? (z_srf[i, j1] - z_srf[i, j0]) / ((j1 - j0) * dx) : 0.0
+            u[i, j] += u_s * 1.0e3 * sqrt(gx^2 + gy^2)
+        end
+    end
+    return max.(u, 0.0)
+end
+
+"""
+    temperature_variability_sigma(t_mon, T0; sigma0, slope, smin, smax)
+
+Standard deviation (K) of the daily air temperature about a smooth
+(monthly-interpolated) daily series, from the monthly mean air temperature
+`t_mon` (K): σ = clamp(σ₀ + slope (T_mon − T₀), smin, smax). The daily
+temperature is then T = T_smooth + σ ξ, with ξ from [`red_noise_monthly`](@ref).
+σ falls with the monthly mean temperature and is lowest over melting surfaces
+(Seguinot and Rogozhina 2014, J. Glaciol. 60, 603).
+
+Calibration: ERA5 1981-2010 over the Greenland and Antarctic ice gives
+σ = 2.0 − 0.14 (T_mon − T₀) in [2, 6] K.
+"""
+temperature_variability_sigma(t_mon, T0; sigma0, slope, smin, smax) =
+    min(max(sigma0 + slope * (t_mon - T0), smin), smax)
+
+"""
+    red_noise_monthly(nday, dt_days, nday_mon, tau, seed)
+
+One year of red noise ξ, a value per step of `dt_days` days (`nday ÷ dt_days`
+values): AR(1) with the lag-one correlation exp(−dt/τ), e-folding time `tau`
+(days; ERA5: 4-6 d), driven by standard normals; then its mean removed in
+every month of `nday_mon` days and the whole scaled to unit variance.
+
+The normals come from a portable Park-Miller minimal standard generator,
+x ← 16807 x mod (2³¹ − 1) with x₀ = mod(|seed|, 2³¹ − 2) + 1, two uniforms per
+normal and the Box-Muller cosine branch, so a seed gives the same sequence as
+the Fortran chion's `forcing_red_noise_monthly`.
+"""
+function red_noise_monthly(nday::Integer, dt_days::Integer, nday_mon::Integer, tau::Real, seed::Integer)
+    n = nday ÷ dt_days
+    xi = Vector{Float64}(undef, n)
+    x = Int64(mod(abs(seed), 2147483646)) + 1
+    r = exp(-dt_days / max(Float64(tau), 1.0e-6))
+    two_pi = 8 * atan(1.0)
+    for k in 1:n
+        x = mod(16807 * x, 2147483647)
+        u1 = x / 2147483647
+        x = mod(16807 * x, 2147483647)
+        u2 = x / 2147483647
+        g = sqrt(-2 * log(u1)) * cos(two_pi * u2)
+        xi[k] = k == 1 ? g : r * xi[k - 1] + sqrt(1 - r * r) * g
+    end
+    nm = max(1, nday_mon ÷ dt_days)
+    for m in 1:nm:n
+        month = m:min(m + nm - 1, n)
+        xi[month] .-= sum(view(xi, month)) / length(month)
+    end
+    xi ./= sqrt(max(sum(abs2, xi) / n, floatmin(Float64)))
+    return xi
+end
+
 @inline function _calendar_day_of_year(t::DateTime)
     seconds_today = hour(t) * 3600 + minute(t) * 60 + second(t) + millisecond(t) / 1000
     return Float64(dayofyear(t)) + seconds_today / 86_400.0

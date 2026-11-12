@@ -74,6 +74,14 @@ names given as `x_name`/`y_name` (or `x`/`y`) and a time dimension, and any
 other dimension (vertical level, sector) is read at its first index.
 `read_forcing_columns` exposes the same reader for additional variables.
 
+A host whose climate supplies only monthly air temperature and precipitation
+can derive the rest with `shortwave_down_from_transmissivity` (shortwave from
+a per-domain direct transmissivity; the longwave cloud proxy then diagnoses its
+own cloudiness),
+`wind_speed_from_geometry` (wind from elevation and slope),
+`temperature_variability_sigma` and `red_noise_monthly` (daily temperature
+variability about a smooth series). Chion does not call them itself.
+
 ## Outputs
 
 `Simulation(...; write_netcdf=false)` skips NetCDF output. Use
@@ -119,6 +127,10 @@ environment. CUDA.jl is a weak dependency: `using CUDA` loads the GPU backend
 SnowpackGrid
 SnowpackForcing
 clear_sky_transmissivity
+shortwave_down_from_transmissivity
+wind_speed_from_geometry
+temperature_variability_sigma
+red_noise_monthly
 BESSIModel
 PDDModel
 ITMModel
