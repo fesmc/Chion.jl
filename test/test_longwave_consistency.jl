@@ -1,4 +1,4 @@
-using Test, Chion
+using Test, Dates, Chion
 
 @testset "Thin-layer Robin boundary preserves insulated equilibrium" begin
     m=BESSIModel(SnowpackGrid(1);Ntot=1,D_sh=0.,ϵ_snow=0.,ice_substrate_layers=0)
@@ -38,4 +38,24 @@ end
     @test s.Tsrf[1] ≈ c.T0 atol=1e-10
     @test all(abs.(s.temperature[:,1].-c.T0).<1e-10)
     @test abs(energy.melt_energy_available)<1e-5
+end
+
+@testset "Clear-sky transmissivity of the cloud proxy" begin
+    c = Chion.SnowpackPhysicalConstants(Float64)
+    @test clear_sky_transmissivity(c, 1500.0) ≈ 0.85 + 0.075 * 1.5 rtol=1e-12
+    @test clear_sky_transmissivity(c, NaN) == 0.85
+    @test clear_sky_transmissivity(c, -200.0) == 0.85
+
+    # A host's SW↓ from a cloud fraction n gives the proxy back n.
+    n = 0.28
+    forcing = SnowpackForcing(dt_days=[1.0], air_temperature=[268.0], snowfall_rate=[0.0],
+        rainfall_rate=[0.0], shortwave_down=[0.0], latitude_deg=70.0, surface_height=1500.0,
+        time_values=[DateTime(2001, 6, 15, 12)])
+    step_forcing = Chion._step_forcing_at(forcing, 1, 1)
+    toa = Chion._daily_toa_shortwave(step_forcing.latitude_deg, step_forcing.solar_longitude_deg, step_forcing.day_of_year)
+    @test toa > Chion.LONGWAVE_CLOUD_PROXY_MIN_TOA
+    step_forcing = Chion._with_step_forcing(step_forcing,
+        (; shortwave_down=toa * clear_sky_transmissivity(c, 1500.0) * (1 - n)))
+    @test Chion._cloud_proxy_emissivity(c, step_forcing) ≈
+        c.lw_emissivity_base + c.lw_emissivity_temperature_slope * (268.0 - c.T0) + c.lw_emissivity_cloud_slope * n rtol=1e-12
 end

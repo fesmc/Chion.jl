@@ -16,6 +16,21 @@ const SOLAR_CONSTANT = 1361.0
 end
 
 """
+    clear_sky_transmissivity(c, height)
+
+Daily shortwave transmissivity of a clear sky at the surface height `height`
+(m), τ_clear = τ₀ + τ_km z / 1000, the reference of the cloud proxy's
+cloudiness n = 1 − SW↓/(SW_TOA τ_clear). A height that is not finite (no
+surface height) or negative counts as sea level. A host that makes the
+shortwave from a cloud fraction n, SW↓ = SW_TOA τ_clear (1 − n), gives the
+proxy back the same n.
+"""
+@inline function clear_sky_transmissivity(c::SnowpackPhysicalConstants, height)
+    z = ifelse(isfinite(height), max(height, zero(height)), zero(height))
+    return c.lw_clear_sky_transmissivity + c.lw_clear_sky_transmissivity_per_km * z / 1000
+end
+
+"""
     _cloud_proxy_emissivity(c, forcing)
 
 Effective atmospheric emissivity relative to the near-surface air temperature,
@@ -27,10 +42,7 @@ daily mean) n falls back to a constant night cloudiness.
 @inline function _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing)
     T = forcing.air_temperature
     toa = _daily_toa_shortwave(forcing.latitude_deg, forcing.solar_longitude_deg, forcing.day_of_year)
-    # Forcing without surface height (NaN) uses the sea-level clear-sky transmissivity.
-    height = ifelse(isfinite(forcing.surface_height), max(forcing.surface_height, zero(T)), zero(T))
-    clear_transmissivity = c.lw_clear_sky_transmissivity +
-                           c.lw_clear_sky_transmissivity_per_km * height / oftype(T, 1000)
+    clear_transmissivity = clear_sky_transmissivity(c, forcing.surface_height)
     daily = (toa > oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA)) & (forcing.dt_days >= oftype(T, 0.75)) &
             isfinite(forcing.latitude_deg)
     cloudiness = ifelse(
