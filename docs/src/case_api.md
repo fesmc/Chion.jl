@@ -68,8 +68,10 @@ Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
 `:monthly`.
 
 For `BESSIModel`, `:monthly` writes monthly `smb_ice`, runoff, melt,
-refreezing and sublimation changes, plus monthly mean latent heat flux and
-albedo.
+refreezing and sublimation changes, plus albedo and the monthly mean surface
+energy balance (`W m^-2`, positive into the surface): `shortwave_down`,
+`shortwave_net`, `longwave_down`, `longwave_net`, `sensible_heat_flux`,
+`latent_heat_flux` and `rain_heat_flux`.
 
 For `PDDModel`, `:all` writes `snowpack_swe`, `smb_ice`, `runoff`, and
 `pdd_sum` every forcing step. `:monthly` writes month-end snowpack SWE and
@@ -98,6 +100,7 @@ environment.
 ```@docs
 SnowpackGrid
 SnowpackForcing
+clear_sky_transmissivity
 BESSIModel
 PDDModel
 ITMModel
