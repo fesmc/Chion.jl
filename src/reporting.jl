@@ -106,7 +106,7 @@ function print_run_report(
     println(io, "Input label     : ", isempty(options.input_label) ? "(not provided)" : options.input_label)
     println(io, "Forcing start   : $(first(time_values))")
     println(io, "Forcing end     : $(last(time_values))")
-    println(io, "Backend         : ", String(options.backend))
+    println(io, "Backend         : ", String(backend_name(options.backend)))
     println(io, "Years           : ", completed_year_count(history, status, options.years))
     println(io, "Status          : ", string(status))
     println(io, "Year metrics    : ", year_metrics_schedule_label(options.history_year_stride, options.compute_year_metrics))

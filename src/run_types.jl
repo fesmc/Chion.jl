@@ -27,15 +27,16 @@ struct RunOptions
     write_netcdf::Bool
     netcdf_variables::Vector{Symbol}
     years::Int
-    backend::Symbol
+    backend::ComputeBackend
     history_year_stride::Int
     compute_year_metrics::Bool
 end
 
+@inline normalize_backend(backend::ComputeBackend) = backend
 @inline function normalize_backend(backend)
-    value = lowercase(strip(String(backend)))
-    value in ("threads", "gpu") || error("Unsupported backend '$backend'. Use `threads` or `gpu`.")
-    return Symbol(value)
+    value = Symbol(lowercase(strip(String(backend))))
+    haskey(_COMPUTE_BACKENDS, value) || error("Unsupported backend '$backend'. Use `threads` or `gpu`.")
+    return _COMPUTE_BACKENDS[value]
 end
 
 @inline normalize_history_year_stride(stride::Integer) =

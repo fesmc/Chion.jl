@@ -3,18 +3,18 @@
 @inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
     similar(storage, NF, dims...)
 
+"""Scratch rows of the column heat-diffusion solve (see `_eliminate_heat_diffusion_upward!`):
+interface conductances, the elimination coefficients `q` (`diag`) and `p`, later the
+resolved profile (`rhs`)."""
 struct EnergyWorkspace{A}
-    lower::A
-    diag::A
-    upper::A
-    rhs::A
     interface_conductance::A
-    previous_temperature::A
+    diag::A
+    rhs::A
 end
 
 function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
     allocate() = _workspace_array(storage, NF, dims...)
-    return EnergyWorkspace(allocate(), allocate(), allocate(), allocate(), allocate(), allocate())
+    return EnergyWorkspace(allocate(), allocate(), allocate())
 end
 
 # Thermal rows cover the snow/firn layers followed by the ice substrate.
@@ -23,33 +23,24 @@ end
 EnergyWorkspace(state) =
     EnergyWorkspace(state.mass, number_type(state.c), _thermal_row_capacity(state))
 
-struct ColumnarStepWorkspace{LWT,ET,LWE,SWE,SHE,RHE}
+struct ColumnarStepWorkspace{LWT,ET,BHE}
     liquid_water_before_energy::LWT
     energy::ET
-    # Cumulative net-longwave energy (J m⁻²), recorded from the same
-    # linearized boundary condition used by the energy solver.
-    net_longwave_energy::LWE
-    absorbed_shortwave_energy::SWE
-    sensible_heat_energy::SHE
-    rain_heat_energy::RHE
+    # Cumulative enthalpy (J m⁻²) that crossed the boundary of the snow/firn column and
+    # ice substrate: the surface energy applied by the solver plus the enthalpy of mass
+    # entering (snowfall, deposition) minus that of mass leaving to the ice reservoir,
+    # and minus the energy that melts reservoir ice. Enthalpy is relative to liquid
+    # water at T₀, so its change must equal the change of `column_enthalpy`.
+    boundary_enthalpy::BHE
 end
 
 function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
-    net_longwave_energy = _workspace_array(storage, NF, ncol)
-    absorbed_shortwave_energy = _workspace_array(storage, NF, ncol)
-    sensible_heat_energy = _workspace_array(storage, NF, ncol)
-    rain_heat_energy = _workspace_array(storage, NF, ncol)
-    fill!(net_longwave_energy, zero(NF))
-    fill!(absorbed_shortwave_energy, zero(NF))
-    fill!(sensible_heat_energy, zero(NF))
-    fill!(rain_heat_energy, zero(NF))
+    boundary_enthalpy = _workspace_array(storage, NF, ncol)
+    fill!(boundary_enthalpy, zero(NF))
     return ColumnarStepWorkspace(
         _workspace_array(storage, NF, Ntot, ncol),
         EnergyWorkspace(storage, NF, Ntot, ncol),
-        net_longwave_energy,
-        absorbed_shortwave_energy,
-        sensible_heat_energy,
-        rain_heat_energy,
+        boundary_enthalpy,
     )
 end
 
@@ -109,9 +100,9 @@ end
     )
 end
 
-@inline _copy_liquid_water_for_compaction!(::Val{:bessi}, args...) = 0
+@inline _copy_liquid_water_for_compaction!(::BESSIDensification, args...) = 0
 @inline function _copy_liquid_water_for_compaction!(
-    ::Val{:htessel},
+    ::HTESSELDensification,
     N_storage,
     mass_w,
     liquid_water_before_energy,
@@ -129,9 +120,9 @@ end
     return n
 end
 
-@inline _apply_liquid_water_compaction!(::Val{:bessi}, args...) = nothing
+@inline _apply_liquid_water_compaction!(::BESSIDensification, args...) = nothing
 @inline function _apply_liquid_water_compaction!(
-    ::Val{:htessel},
+    ::HTESSELDensification,
     N_storage,
     mass,
     mass_w,
@@ -152,6 +143,28 @@ end
 end
 
 """
+    column_enthalpy(state, idx)
+
+Enthalpy (J m⁻²) of the snow/firn column and the ice substrate of column `idx`,
+relative to liquid water at T₀: solid mass contributes cᵢ m (T − T₀) − Lₘ m, liquid
+water (held at T₀) contributes nothing, and the fixed-mass substrate contributes its
+sensible heat only. Its change over a step equals the change of the workspace
+diagnostic `boundary_enthalpy`.
+"""
+function column_enthalpy(state, idx::Int)
+    c = state.c
+    H = zero(eltype(state.mass))
+    @inbounds for k in 1:_n_active(state.N, idx)
+        H += _solid_enthalpy(_get_layer(state.mass, k, idx), _get_layer(state.temperature, k, idx), c)
+    end
+    dz = state.parameters.ice_substrate_top_thickness_m
+    @inbounds for k in axes(state.ice_temperature, 1)
+        H += c.rho_i * ldexp(dz, k - 1) * c.ci * (_get_layer(state.ice_temperature, k, idx) - c.T0)
+    end
+    return H
+end
+
+"""
 Core stepping flow shared by batch stepping kernels.
 """
 
@@ -164,6 +177,38 @@ end
     return nothing
 end
 
+"""Whether this step takes the surface albedo from the `prescribed_albedo` forcing."""
+@inline _prescribes_albedo(::PrescribedAlbedo, forcing::SnowpackStepForcing) = forcing.has_prescribed_albedo
+@inline _prescribes_albedo(::AbstractAlbedoScheme, forcing::SnowpackStepForcing) = false
+
+"""Reset the snow age, which only the aging albedo scheme tracks."""
+@inline _reset_snow_age!(::AgingAlbedo, snow_age_days, idx::Int, age) = _set_scalar!(snow_age_days, idx, age)
+@inline _reset_snow_age!(::AbstractAlbedoScheme, snow_age_days, idx::Int, age) = nothing
+
+"""Update the albedo of a snow-covered surface with the scheme-specific rule."""
+@inline _update_snow_albedo!(
+    ::SemixAlbedo, N_storage, mass, mass_w, density, temperature, albedo_dynamic, snow_age_days,
+    w_snow_max, idx::Int, c, forcing::SnowpackStepForcing,
+) = _update_semix_surface_albedo!(
+    N_storage, mass, mass_w, temperature, albedo_dynamic, w_snow_max,
+    idx, c, forcing.snowfall_rate, forcing,
+)
+@inline _update_snow_albedo!(
+    ::AgingAlbedo, N_storage, mass, mass_w, density, temperature, albedo_dynamic, snow_age_days,
+    w_snow_max, idx::Int, c, forcing::SnowpackStepForcing,
+) = _update_aging_surface_albedo_arrays!(
+    N_storage, mass, temperature, albedo_dynamic, snow_age_days,
+    idx, c, forcing.snowfall_rate, forcing.dt_days,
+)
+# Constant, dynamic, and prescribed albedo without forcing for this column.
+@inline _update_snow_albedo!(
+    ::AbstractAlbedoScheme, N_storage, mass, mass_w, density, temperature, albedo_dynamic, snow_age_days,
+    w_snow_max, idx::Int, c, forcing::SnowpackStepForcing,
+) = _update_surface_albedo_arrays!(
+    N_storage, mass, mass_w, density, temperature, albedo_dynamic,
+    idx, c, forcing.dt_days,
+)
+
 @inline function _step_diurnal_shortwave_interval!(
     fields,
     parameters::BESSIParameters,
@@ -171,14 +216,13 @@ end
     forcing::SnowpackStepForcing,
     config,
     workspace,
+    solar_terms,
     hour_angle_start,
     hour_angle_end,
 )
     fraction = (hour_angle_end - hour_angle_start) / oftype(forcing.dt_days, 2π)
     shortwave_down = _diurnal_shortwave_interval_average(
-        forcing.shortwave_down, forcing.latitude_deg,
-        forcing.solar_longitude_deg, hour_angle_start, hour_angle_end,
-    )
+        forcing.shortwave_down, solar_terms, hour_angle_start, hour_angle_end)
     air_temperature = _diurnal_air_temperature(
         config.diurnal_temperature_cycle,
         forcing,
@@ -187,9 +231,7 @@ end
         hour_angle_end,
     )
     reconstructed_q_sw_net = _diurnal_shortwave_interval_average(
-        forcing.q_sw_net, forcing.latitude_deg,
-        forcing.solar_longitude_deg, hour_angle_start, hour_angle_end,
-    )
+        forcing.q_sw_net, solar_terms, hour_angle_start, hour_angle_end)
     q_sw_net = ifelse(forcing.has_q_sw_net, reconstructed_q_sw_net, forcing.q_sw_net)
     # Preserve the daily prescribed melt integral while allocating it by the
     # reconstructed absorbed shortwave energy.  This is deliberately a
@@ -234,14 +276,18 @@ end
     config,
     workspace,
 )
+    # The solar geometry depends only on latitude and season: evaluate it once
+    # for the cloud-proxy longwave and all diurnal substeps.
+    solar_terms = _diurnal_shortwave_integral_terms(forcing.latitude_deg, forcing.solar_longitude_deg)
     return _column_step_diurnal!(
         config.diurnal_shortwave_substeps,
         fields,
         parameters,
         idx,
-        _with_parameterized_longwave(parameters.c, forcing),
+        _with_parameterized_longwave(parameters.c, forcing, solar_terms),
         config,
         workspace,
+        solar_terms,
     )
 end
 
@@ -253,6 +299,7 @@ end
     forcing,
     config,
     workspace,
+    solar_terms,
 )
     return column_step_core!(fields, parameters, idx, forcing, workspace)
 end
@@ -265,12 +312,12 @@ end
     forcing,
     config,
     workspace,
+    solar_terms,
 )
     shortwave_for_criterion = ifelse(forcing.has_q_sw_net, forcing.q_sw_net, forcing.shortwave_down)
     n_substeps = _diurnal_shortwave_substep_count(
         forcing.dt_days, shortwave_for_criterion, forcing.air_temperature,
-        config.diurnal_shortwave_min_air_temperature, forcing.latitude_deg,
-        forcing.solar_longitude_deg, config.diurnal_shortwave_threshold,
+        config.diurnal_shortwave_min_air_temperature, solar_terms, config.diurnal_shortwave_threshold,
         config.diurnal_shortwave_max_substeps,
     )
     day_start = -oftype(forcing.dt_days, π)
@@ -290,10 +337,33 @@ end
             forcing,
             config,
             workspace,
+            solar_terms,
             hour_angle_start,
             hour_angle_end,
         )
     end
+    return nothing
+end
+
+@inline _add_to_scalar!(values, idx::Int, increment) =
+    _set_scalar!(values, idx, _get_scalar(values, idx) + increment)
+
+"""
+    _accumulate_surface_energy_balance!(fields, idx, dt_days, shortwave_down, shortwave_net, longwave_down, longwave_net, sensible_heat_flux, rain_heat_flux)
+
+Add one (sub)step's surface energy balance terms (W m⁻², positive into the
+surface) times its length (days) to the column's `*_sum` diagnostics.
+"""
+@inline function _accumulate_surface_energy_balance!(
+    fields, idx::Int, dt_days,
+    shortwave_down, shortwave_net, longwave_down, longwave_net, sensible_heat_flux, rain_heat_flux,
+)
+    _add_to_scalar!(fields.shortwave_down_sum, idx, shortwave_down * dt_days)
+    _add_to_scalar!(fields.shortwave_net_sum, idx, shortwave_net * dt_days)
+    _add_to_scalar!(fields.longwave_down_sum, idx, longwave_down * dt_days)
+    _add_to_scalar!(fields.longwave_net_sum, idx, longwave_net * dt_days)
+    _add_to_scalar!(fields.sensible_heat_flux_sum, idx, sensible_heat_flux * dt_days)
+    _add_to_scalar!(fields.rain_heat_flux_sum, idx, rain_heat_flux * dt_days)
     return nothing
 end
 
@@ -337,10 +407,11 @@ surface.
             forcing.relative_humidity, forcing.air_pressure, forcing.wind_speed,
             c.semix_z0m_ice, c.eps_ice,
         )
-    _set_scalar!(workspace.net_longwave_energy, idx, _get_scalar(workspace.net_longwave_energy, idx) + longwave_flux * dt_seconds)
-    _set_scalar!(workspace.absorbed_shortwave_energy, idx, _get_scalar(workspace.absorbed_shortwave_energy, idx) + energy.absorbed_shortwave * dt_seconds)
-    _set_scalar!(workspace.sensible_heat_energy, idx, _get_scalar(workspace.sensible_heat_energy, idx) + sensible_heat_flux * dt_seconds)
-    _set_scalar!(workspace.rain_heat_energy, idx, _get_scalar(workspace.rain_heat_energy, idx) + rain_heat_flux * dt_seconds)
+    _accumulate_surface_energy_balance!(
+        fields, idx, forcing.dt_days, forcing.shortwave_down, energy.absorbed_shortwave,
+        _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down),
+        longwave_flux, sensible_heat_flux, rain_heat_flux,
+    )
 
     # Bare ice is a solid surface: vapour exchange carries Lᵥ+Lₘ.
     vapor_mass = latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
@@ -354,6 +425,10 @@ surface.
     liquid_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds + melt_mass
 
     _set_scalar!(fields.smb_ice, idx, _get_scalar(fields.smb_ice, idx) + vapor_mass - melt_mass)
+    # The substrate takes up the applied surface energy; the energy that melts reservoir
+    # ice leaves the column with the meltwater.
+    _set_scalar!(workspace.boundary_enthalpy, idx,
+        _get_scalar(workspace.boundary_enthalpy, idx) + energy.heating - melt_mass * c.Lm)
     _set_scalar!(fields.melt, idx, _get_scalar(fields.melt, idx) + melt_mass)
     _set_scalar!(fields.runoff, idx, _get_scalar(fields.runoff, idx) + liquid_mass)
     _set_scalar!(fields.vapor_mass, idx, _get_scalar(fields.vapor_mass, idx) + vapor_fluxes.vapor_mass)
@@ -382,10 +457,6 @@ Base.@propagate_inbounds function column_step_core!(
     vapor_mass = fields.vapor_mass
     sublimation = fields.sublimation
     latent_heat_flux_sum = fields.latent_heat_flux_sum
-    net_longwave_energy = workspace.net_longwave_energy
-    absorbed_shortwave_energy = workspace.absorbed_shortwave_energy
-    sensible_heat_energy = workspace.sensible_heat_energy
-    rain_heat_energy = workspace.rain_heat_energy
     Tsrf = fields.Tsrf
     albedo_dynamic = fields.albedo
     c = parameters.c
@@ -401,9 +472,19 @@ Base.@propagate_inbounds function column_step_core!(
         parameters.mass_min,
     )
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
-    use_prescribed_albedo = _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo
+    use_prescribed_albedo = _prescribes_albedo(albedo_scheme(c), forcing)
 
-    _apply_accumulation_resolved!(
+    # Enthalpy crossing the column boundary in this step (see `boundary_enthalpy`).
+    # Snowfall joins the surface layer at its temperature, or takes the air temperature
+    # (at most T₀, since solid snow cannot be warmer) on a snow-free surface.
+    new_snow_temperature = min(forcing.air_temperature, c.T0)
+    boundary_enthalpy = ifelse(
+        forcing.snowfall_rate > zero(dt_seconds),
+        _solid_enthalpy(forcing.snowfall_rate * dt_seconds,
+            ifelse(started_without_surface_snow, new_snow_temperature, _get_layer(temperature, 1, idx)), c),
+        zero(dt_seconds),
+    )
+    boundary_enthalpy -= _apply_accumulation_resolved!(
         N_storage,
         mass,
         mass_w,
@@ -426,37 +507,40 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.air_temperature,
         forcing.wind_speed,
     )
-    # Snow on a previously bare surface takes the air temperature. Set it on
-    # every new layer before remeshing splits the fresh snow.
+    # A sub-threshold surface layer (e.g. from a trace of snowfall on bare ice)
+    # is not snow: remove it and route its contents to runoff, so that the
+    # bare-ice branch below cannot leave water stored in it unseen.
+    while _n_active(N_storage, idx) > 0 && _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
+        _remove_depleted_surface_and_route_water!(N_storage, mass, mass_w, density, temperature, runoff, idx, c)
+    end
+    # Snow on a previously bare surface takes the air temperature, capped at the
+    # melting point. Set it on every new layer before remeshing splits the fresh snow.
     if forcing.snowfall_rate > zero(dt_seconds) && started_without_surface_snow
         @inbounds for layer_index in 1:_n_active(N_storage, idx)
-            _set_layer!(temperature, layer_index, idx, forcing.air_temperature)
+            _set_layer!(temperature, layer_index, idx, new_snow_temperature)
         end
     end
-    _remesh_near_surface_layers!(
-        N_storage, mass, mass_w, density, temperature,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m, c,
+    boundary_enthalpy -= _remesh_near_surface_layers!(
+        N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
+        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
+        parameters.mass_max, parameters.mass_split, c,
     )
+    _set_scalar!(workspace.boundary_enthalpy, idx, _get_scalar(workspace.boundary_enthalpy, idx) + boundary_enthalpy)
+    boundary_enthalpy = zero(dt_seconds)
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
-        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
+        _reset_snow_age!(albedo_scheme(c), snow_age_days, idx, zero(dt_seconds))
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         if parameters.ice_substrate_layers > 0
             return _step_bare_ice_substrate!(fields, parameters, idx, forcing, workspace, dt_seconds)
         end
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
-        _set_scalar!(
-            net_longwave_energy,
-            idx,
-            _get_scalar(net_longwave_energy, idx) + bare_ice_fluxes.longwave_flux * dt_seconds,
+        _accumulate_surface_energy_balance!(
+            fields, idx, forcing.dt_days, forcing.shortwave_down, bare_ice_fluxes.absorbed_shortwave,
+            _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down),
+            bare_ice_fluxes.longwave_flux, bare_ice_fluxes.sensible_heat_flux, bare_ice_fluxes.rain_heat_flux,
         )
-        _set_scalar!(absorbed_shortwave_energy, idx,
-            _get_scalar(absorbed_shortwave_energy, idx) + bare_ice_fluxes.absorbed_shortwave * dt_seconds)
-        _set_scalar!(sensible_heat_energy, idx,
-            _get_scalar(sensible_heat_energy, idx) + bare_ice_fluxes.sensible_heat_flux * dt_seconds)
-        _set_scalar!(rain_heat_energy, idx,
-            _get_scalar(rain_heat_energy, idx) + bare_ice_fluxes.rain_heat_flux * dt_seconds)
         rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
         melt_mass = ifelse(forcing.has_prescribed_melt, max(forcing.prescribed_melt, zero(forcing.prescribed_melt)) * dt_seconds, bare_ice_fluxes.melt_mass)
         net_mass_change = bare_ice_fluxes.net_mass_change + bare_ice_fluxes.melt_mass - melt_mass
@@ -471,24 +555,14 @@ Base.@propagate_inbounds function column_step_core!(
 
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
-    elseif _uses_semix_albedo(c)
-        _update_semix_surface_albedo!(
-            N_storage, mass, mass_w, temperature, albedo_dynamic, w_snow_max,
-            idx, c, forcing.snowfall_rate, forcing,
-        )
-    elseif _uses_aging_albedo(c)
-        _update_aging_surface_albedo_arrays!(
-            N_storage, mass, temperature, albedo_dynamic, snow_age_days,
-            idx, c, forcing.snowfall_rate, forcing.dt_days,
-        )
     else
-        _update_surface_albedo_arrays!(
-            N_storage, mass, mass_w, density, temperature, albedo_dynamic,
-            idx, c, forcing.dt_days,
+        _update_snow_albedo!(
+            albedo_scheme(c), N_storage, mass, mass_w, density, temperature, albedo_dynamic,
+            snow_age_days, w_snow_max, idx, c, forcing,
         )
     end
 
-    densification_tag = _densification_tag(c)
+    densification_tag = densification_scheme(c)
     n_liquid_water_before_energy = _copy_liquid_water_for_compaction!(
         densification_tag,
         N_storage,
@@ -548,36 +622,17 @@ Base.@propagate_inbounds function column_step_core!(
         parameters.ice_substrate_layers,
         parameters.ice_substrate_top_thickness_m,
     )
+    boundary_enthalpy += energy.heating
     # The implicit solve linearises Stefan--Boltzmann emission about the
     # previous surface temperature.  Record the physical, nonlinear flux at
     # the resolved surface temperature instead: the tangent approximation is
     # not an energy diagnostic when Ts changes appreciably within a substep.
     resolved_surface_temperature = _get_scalar(Tsrf, idx)
-    longwave_down = ifelse(
-        forcing.has_q_lw_down,
-        forcing.q_lw_down,
-        c.σ * c.ϵ_air * forcing.air_temperature^4,
-    )
+    longwave_down = _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down)
     exact_net_longwave = ifelse(
         _uses_semix_seb(c),
         c.ϵ_snow * (longwave_down - c.σ * resolved_surface_temperature^4),
         longwave_down - c.σ * c.ϵ_snow * resolved_surface_temperature^4,
-    )
-    _set_scalar!(
-        net_longwave_energy,
-        idx,
-        _get_scalar(net_longwave_energy, idx) + exact_net_longwave * dt_seconds,
-    )
-    _set_scalar!(
-        absorbed_shortwave_energy,
-        idx,
-        _get_scalar(absorbed_shortwave_energy, idx) + energy.absorbed_shortwave * dt_seconds,
-    )
-    _set_scalar!(
-        sensible_heat_energy,
-        idx,
-        _get_scalar(sensible_heat_energy, idx) +
-        (energy.sensible_heat_flux_constant - energy.sensible_heat_flux_linear * _get_scalar(Tsrf, idx)) * dt_seconds,
     )
     # The snow energy solver carries precipitation enthalpy in its effective
     # latent-heat coefficients. Record its rain component separately for the
@@ -592,12 +647,17 @@ Base.@propagate_inbounds function column_step_core!(
             zero(dt_seconds),
         ),
     )
-    _set_scalar!(
-        rain_heat_energy,
-        idx,
-        _get_scalar(rain_heat_energy, idx) + rain_heat_flux * dt_seconds,
+    _accumulate_surface_energy_balance!(
+        fields, idx, forcing.dt_days, forcing.shortwave_down, energy.absorbed_shortwave,
+        longwave_down, exact_net_longwave,
+        energy.sensible_heat_flux_constant - energy.sensible_heat_flux_linear * resolved_surface_temperature,
+        rain_heat_flux,
     )
 
+    # Below the melting point the vapour exchange adds or removes solid mass of the
+    # surface layer at its temperature; at the melting point it exchanges liquid water.
+    solid_vapor_exchange = _get_scalar(Tsrf, idx) < c.T0
+    vapor_layer_temperature = _get_layer(temperature, 1, idx)
     snow_vapor_fluxes = _apply_snow_surface_vapor_mass_flux!(
         N_storage,
         mass,
@@ -615,6 +675,8 @@ Base.@propagate_inbounds function column_step_core!(
         surface_mass_min,
     )
     _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
+    boundary_enthalpy += ifelse(solid_vapor_exchange,
+        _solid_enthalpy(snow_vapor_fluxes.vapor_mass, vapor_layer_temperature, c), zero(dt_seconds))
     _set_scalar!(sublimation, idx, _get_scalar(sublimation, idx) + snow_vapor_fluxes.sublimation_mass)
     _set_scalar!(latent_heat_flux_sum, idx, _get_scalar(latent_heat_flux_sum, idx) + snow_vapor_fluxes.latent_heat_flux * forcing.dt_days)
 
@@ -624,7 +686,9 @@ Base.@propagate_inbounds function column_step_core!(
         max(forcing.prescribed_melt, zero(forcing.prescribed_melt)) * dt_seconds,
         endogenous_melt_mass,
     )
-    melted_snow = _apply_melt!(
+    # Melt from the surface energy balance also pays for warming sub-freezing ice to T₀;
+    # prescribed melt is a mass forcing and is applied exactly.
+    melted_snow, melt_left = _melt_surface_layers!(
         N_storage,
         mass,
         mass_w,
@@ -638,12 +702,14 @@ Base.@propagate_inbounds function column_step_core!(
         surface_mass_min,
         melt_mass,
         c,
+        !forcing.has_prescribed_melt,
     )
-    melt_reaches_ice = (melted_snow < melt_mass) & (_n_active(N_storage, idx) == 0)
-    ice_melt = ifelse(melt_reaches_ice, melt_mass - melted_snow, zero(melt_mass))
+    # Melt potential left once the snow is gone melts the underlying ice (at T₀).
+    ice_melt = ifelse(_n_active(N_storage, idx) == 0, melt_left, zero(melt_left))
+    boundary_enthalpy -= ice_melt * c.Lm
     _set_scalar!(smb_ice, idx, _get_scalar(smb_ice, idx) - ice_melt)
     _set_scalar!(runoff, idx, _get_scalar(runoff, idx) + ice_melt)
-    _set_scalar!(melt, idx, _get_scalar(melt, idx) + melt_mass)
+    _set_scalar!(melt, idx, _get_scalar(melt, idx) + melted_snow + ice_melt)
 
     routed_runoff = _go_percolation!(
         N_storage,
@@ -686,17 +752,19 @@ Base.@propagate_inbounds function column_step_core!(
     # Melt, sublimation, compaction, and refreezing can leave a vanishingly
     # thin surface cell. Restore the prescribed near-surface geometry before
     # the next energy solve without changing any column-integrated reservoir.
-    _remesh_near_surface_layers!(
-        N_storage, mass, mass_w, density, temperature,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m, c,
+    boundary_enthalpy -= _remesh_near_surface_layers!(
+        N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
+        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
+        parameters.mass_max, parameters.mass_split, c,
     )
+    _set_scalar!(workspace.boundary_enthalpy, idx, _get_scalar(workspace.boundary_enthalpy, idx) + boundary_enthalpy)
 
     final_has_snow = _surface_has_snow(N_storage, mass, idx)
     if use_prescribed_albedo
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     elseif !final_has_snow
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        _uses_aging_albedo(c) && _set_scalar!(snow_age_days, idx, zero(dt_seconds))
+        _reset_snow_age!(albedo_scheme(c), snow_age_days, idx, zero(dt_seconds))
     end
 
     return nothing
@@ -762,15 +830,34 @@ end
     _launch_step_columns_kernel!(state, forcing, time_start, time_stop, workspace, active_indices, config)
 
 Launch the backend-specific batch stepping kernel for one contiguous forcing
-range and return the KernelAbstractions event.
+range.
 """
-@inline _step_kernel_workgroupsize(backend) =
-    backend isa KernelAbstractions.CPU ? 16 : 256
+@inline _step_kernel_workgroupsize(::KernelAbstractions.CPU) = 16
+@inline _step_kernel_workgroupsize(::KernelAbstractions.Backend) = 256
 
-@inline function _step_time_block_steps(backend)
-    name = backend isa KernelAbstractions.CPU ? "CHION_CPU_TIME_BLOCK_STEPS" : "CHION_GPU_TIME_BLOCK_STEPS"
-    value = get(ENV, name, "1")
-    parsed = tryparse(Int, value)
+"""GPU block size for `ncolumns` columns: the step kernel uses ~255 registers per thread, so each
+multiprocessor holds only one 256-thread block. Small domains (e.g. Greenland, 18,620 columns,
+73 blocks on 132 multiprocessors) therefore use smaller blocks: the largest of 256/128/64/32
+that still gives at least four blocks per multiprocessor (1.35x faster for Greenland)."""
+@inline _step_kernel_workgroupsize(::KernelAbstractions.CPU, ncolumns::Int) = 16
+@inline function _step_kernel_workgroupsize(backend::KernelAbstractions.Backend, ncolumns::Int)
+    target = 4 * _multiprocessor_count(backend)
+    for threads in (256, 128, 64)
+        cld(ncolumns, threads) >= target && return threads
+    end
+    return 32
+end
+
+"""Forcing steps advanced per launch. Columns are independent, so blocking never changes
+results. On the CPU a thread then keeps its column in cache over the whole block
+(1.2-4.8x faster); on the GPU one launch per step is faster for large domains."""
+@inline _step_time_block_steps(::KernelAbstractions.CPU) =
+    _env_time_block_steps("CHION_CPU_TIME_BLOCK_STEPS", "1000000")
+@inline _step_time_block_steps(::KernelAbstractions.Backend) =
+    _env_time_block_steps("CHION_GPU_TIME_BLOCK_STEPS", "1")
+
+@inline function _env_time_block_steps(name, default)
+    parsed = tryparse(Int, get(ENV, name, default))
     return isnothing(parsed) || parsed < 1 ? 1 : parsed
 end
 
@@ -784,10 +871,29 @@ end
     config,
 )
     time_stop >= time_start || return nothing
-    backend = _ka_backend(state.mass)
+    return _launch_step_columns!(
+        _ka_backend(state.mass), state, forcing, time_start, time_stop, workspace, active_indices, config,
+    )
+end
+
+# Plain threaded loop on the CPU, compiled before the threads start (see
+# `_cpu_step_columns!`); concurrent compilation inside KernelAbstractions'
+# task closures made the column step allocate at every process call
+# (up to ~80 GB per Greenland year, 4-25x slower with several threads).
+@inline function _launch_step_columns!(
+    ::KernelAbstractions.CPU, state, forcing, time_start::Int, time_stop::Int, workspace, active_indices, config,
+)
+    _cpu_step_columns!(get_fields(state), state.parameters, workspace, active_indices,
+        _device_forcing_fields(forcing), config, time_start, time_stop)
+    return nothing
+end
+
+@inline function _launch_step_columns!(
+    backend::KernelAbstractions.Backend, state, forcing, time_start::Int, time_stop::Int, workspace, active_indices, config,
+)
     if time_start == time_stop
-        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend))
-        return kernel!(
+        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
+        kernel!(
             get_fields(state),
             state.parameters,
             workspace,
@@ -797,9 +903,10 @@ end
             time_start,
             ndrange=length(active_indices),
         )
+        return nothing
     end
-    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend))
-    return kernel!(
+    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
+    kernel!(
         get_fields(state),
         state.parameters,
         workspace,
@@ -810,6 +917,39 @@ end
         time_stop,
         ndrange=length(active_indices),
     )
+    return nothing
+end
+
+"""Advance the columns of `active_indices` over `time_start:time_stop` on CPU threads."""
+function _cpu_step_columns!(fields, parameters, workspace, active_indices, forcing_fields, config,
+        time_start::Int, time_stop::Int)
+    # Compile the whole column step on this thread before the threads start: when
+    # several threads compile the call tree concurrently, callers can be compiled
+    # against callees that are not finished yet and then call them through the
+    # boxed generic ABI for good (heap allocation at every process call).
+    precompile(_cpu_step_column!, map(typeof, (fields, parameters, workspace, first(active_indices),
+        forcing_fields, config, time_start, time_stop)))
+    if Threads.nthreads() == 1 || length(active_indices) < 2 * Threads.nthreads()
+        for idx in active_indices
+            _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config, time_start, time_stop)
+        end
+    else
+        # :dynamic (not :static) so that the step can run inside other threaded code.
+        Threads.@threads :dynamic for active_idx in eachindex(active_indices)
+            _cpu_step_column!(fields, parameters, workspace, active_indices[active_idx], forcing_fields,
+                config, time_start, time_stop)
+        end
+    end
+    return nothing
+end
+
+@inline function _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config,
+        time_start::Int, time_stop::Int)
+    @inbounds for time_index in time_start:time_stop
+        step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
+        column_step!(fields, parameters, idx, step_forcing, config, workspace)
+    end
+    return nothing
 end
 
 @inline function _time_range_bounds(time_range)
@@ -835,15 +975,7 @@ function _step_range!(
     time_index = first_time
     while time_index <= last_time
         time_stop = min(last_time, time_index + block_steps - 1)
-        _wait_kernel(_launch_step_columns_kernel!(
-            state,
-            forcing,
-            time_index,
-            time_stop,
-            workspace,
-            active_indices,
-            config,
-        ))
+        _launch_step_columns_kernel!(state, forcing, time_index, time_stop, workspace, active_indices, config)
         time_index = time_stop + 1
     end
     return nothing

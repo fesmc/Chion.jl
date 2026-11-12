@@ -59,6 +59,15 @@ struct BESSIState{
     vapor_mass::VT
     sublimation::VT
     latent_heat_flux_sum::VT
+    # Time-integrated surface energy balance (W m⁻² day), positive into the
+    # surface: shortwave down and absorbed, longwave down and net, sensible
+    # heat, and the heat of rain. Diagnostics only.
+    shortwave_down_sum::VT
+    shortwave_net_sum::VT
+    longwave_down_sum::VT
+    longwave_net_sum::VT
+    sensible_heat_flux_sum::VT
+    rain_heat_flux_sum::VT
     Tsrf::VT
     albedo::VT
     snow_age_days::VT
@@ -91,6 +100,15 @@ end
 const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature)
 # Layer-first matrices that share the layer storage conversions.
 @inline _is_bessi_layer_field(name::Symbol) = name in _BESSI_LAYER_FIELD_NAMES || name === :ice_temperature
+# Surface energy balance accumulators, in the order of the state fields.
+const _BESSI_SEB_SUM_NAMES = (
+    :shortwave_down_sum,
+    :shortwave_net_sum,
+    :longwave_down_sum,
+    :longwave_net_sum,
+    :sensible_heat_flux_sum,
+    :rain_heat_flux_sum,
+)
 const _BESSI_ARRAY_FIELD_NAMES = (
     :N,
     _BESSI_LAYER_FIELD_NAMES...,
@@ -102,6 +120,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     :vapor_mass,
     :sublimation,
     :latent_heat_flux_sum,
+    _BESSI_SEB_SUM_NAMES...,
     :Tsrf,
     :albedo,
     :snow_age_days,
@@ -116,6 +135,18 @@ const _BESSI_ARRAY_FIELD_NAMES = (
 @inline get_fields(state::BESSIState) = NamedTuple{_BESSI_ARRAY_FIELD_NAMES}(
     ntuple(index -> getfield(state, _BESSI_ARRAY_FIELD_NAMES[index]), Val(length(_BESSI_ARRAY_FIELD_NAMES))),
 )
+
+@inline function _zero_seb_sums!(fields, idx)
+    @inbounds begin
+        fields.shortwave_down_sum[idx] = zero(eltype(fields.shortwave_down_sum))
+        fields.shortwave_net_sum[idx] = zero(eltype(fields.shortwave_net_sum))
+        fields.longwave_down_sum[idx] = zero(eltype(fields.longwave_down_sum))
+        fields.longwave_net_sum[idx] = zero(eltype(fields.longwave_net_sum))
+        fields.sensible_heat_flux_sum[idx] = zero(eltype(fields.sensible_heat_flux_sum))
+        fields.rain_heat_flux_sum[idx] = zero(eltype(fields.rain_heat_flux_sum))
+    end
+    return nothing
+end
 
 @kernel function _initialize_bessi_state_kernel!(
     fields,
@@ -136,6 +167,7 @@ const _BESSI_ARRAY_FIELD_NAMES = (
         fields.vapor_mass[idx] = zero(density_init)
         fields.sublimation[idx] = zero(density_init)
         fields.latent_heat_flux_sum[idx] = zero(density_init)
+        _zero_seb_sums!(fields, idx)
         fields.Tsrf[idx] = surface_temperature_init
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)
@@ -156,8 +188,8 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     end
 end
 
-@inline _state_init_workgroupsize(backend) =
-    backend isa KernelAbstractions.CPU ? 1024 : 256
+@inline _state_init_workgroupsize(::KernelAbstractions.CPU) = 1024
+@inline _state_init_workgroupsize(::KernelAbstractions.Backend) = 256
 
 function _initialize_bessi_state_arrays!(
     state::BESSIState,
@@ -166,7 +198,7 @@ function _initialize_bessi_state_arrays!(
 )
     backend = _ka_backend(state.mass)
     kernel! = _initialize_bessi_state_kernel!(backend, _state_init_workgroupsize(backend))
-    event = kernel!(
+    kernel!(
         get_fields(state),
         state.Ntot,
         convert(eltype(state.mass), density_init),
@@ -175,7 +207,6 @@ function _initialize_bessi_state_arrays!(
         _initial_snow_albedo(state.c);
         ndrange=state.ncol,
     )
-    _wait_kernel(event)
     return state
 end
 
@@ -198,6 +229,7 @@ function BESSIState(model::BESSIModel)
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
+        (Vector{NF}(undef, ncol) for _ in _BESSI_SEB_SUM_NAMES)...,
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
         Vector{NF}(undef, ncol),
@@ -211,12 +243,8 @@ function BESSIState(model::BESSIModel)
     return _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
 end
 
-@inline _cpu_layer_matrix(matrix::TransposedLayerMatrix) = Array(matrix)
-@inline _cpu_layer_matrix(matrix) = Array(matrix)
-@inline _cpu_state_array(state::BESSIState, name::Symbol) =
-    _is_bessi_layer_field(name) ?
-    _cpu_layer_matrix(getfield(state, name)) :
-    Array(getfield(state, name))
+# `Array` of a `TransposedLayerMatrix` restores the logical `(layer, column)` layout.
+@inline _cpu_state_array(state::BESSIState, name::Symbol) = Array(getfield(state, name))
 
 function cpu_state(state::BESSIState)
     return BESSIState(
@@ -234,7 +262,6 @@ end
     adapt(storage_type, getfield(state, name))
 
 function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
-    cuda_available() || error("CUDA is not functional in the current environment.")
     return BESSIState(
         state.parameters,
         state.ncol,
@@ -246,7 +273,7 @@ end
 ncols(state::BESSIState) = state.ncol
 
 """Mutable state for `PDDModel`."""
-struct PDDState{ST <: AbstractVector{Float64}}
+struct PDDState{ST <: AbstractVector{<:AbstractFloat}}
     snowpack_swe::ST
     smb_ice::ST
     runoff::ST
@@ -260,11 +287,12 @@ const _PDD_STATE_FIELD_NAMES = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
 
 function PDDState(model::PDDModel)
     ncol = ncols(model.grid)
+    NF = number_type(model.c)
     return PDDState(
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
-        zeros(Float64, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
+        zeros(NF, ncol),
     )
 end
 
@@ -276,7 +304,7 @@ Adapt.@adapt_structure PDDState
 Instantaneous budget fields use ITM's native mm w.e. day⁻¹ units; cumulative
 fields use mm w.e. and are the quantities exposed in regular output.
 """
-struct ITMState{ST <: AbstractVector{Float64}}
+struct ITMState{ST <: AbstractVector{<:AbstractFloat}}
     H_snow::ST
     alb_s::ST
     smb::ST
@@ -303,10 +331,11 @@ const _ITM_STATE_FIELD_NAMES = (
 
 function ITMState(model::ITMModel)
     ncol = ncols(model.grid)
+    NF = number_type(model.c)
     return ITMState(
-        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(ncol), zeros(ncol),
-        zeros(ncol), zeros(ncol), zeros(ncol), fill(model.c.T0, ncol), zeros(ncol),
-        zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol), zeros(ncol),
+        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(NF, ncol), zeros(NF, ncol),
+        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), fill(model.c.T0, ncol), zeros(NF, ncol),
+        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol),
     )
 end
 
@@ -352,3 +381,4 @@ function update_diagnostics!(state::BESSIState)
     )
     return state
 end
+ncols(state::Union{PDDState, ITMState}) = length(state.runoff)

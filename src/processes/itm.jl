@@ -74,7 +74,7 @@ Base.@propagate_inbounds function _itm_apply_column!(
     total_melt = snow_melt + ice_melt
     snow = max(snow - snow_melt, zero(snow))
     albedo = _itm_surface_albedo(model, z, H_ice, snow, PDDs, total_melt / dt)
-    rfac = model.Pmaxfrac * sf / max(precipitation, 1e-3)
+    rfac = model.Pmaxfrac * sf / max(precipitation, oftype(precipitation, 1e-3))
     rfac += min(one(snow), snow / 1000) * (1 - rfac)
     refrz_rain = min(rf * dt * rfac, snow)
     refrz_snow = min(snow_melt * rfac, snow - refrz_rain)
@@ -137,13 +137,12 @@ end
 function _itm_step_arrays!(state::ITMState, forcing, time_index::Int, model::ITMModel, active_indices)
     isempty(active_indices) && return nothing
     kernel! = _itm_step_kernel!(_ka_backend(state.H_snow))
-    event = kernel!(state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
+    kernel!(state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
         state.runoff, state.refreezing, state.Tsrf, state.melt_net, state.smb_cum,
         state.smb_ice, state.melt_cum, state.runoff_cum, state.refreezing_cum,
         forcing.air_temperature, forcing.snowfall_rate, forcing.rainfall_rate, forcing.shortwave_down,
         forcing.q_sw_net, forcing.has_q_sw_net, forcing.latitude_deg, forcing.surface_height,
         forcing.ice_thickness, forcing.annual_pdd, time_index, _step_dt(forcing.dt_days, time_index),
         _itm_parameters(model), active_indices; ndrange=length(active_indices))
-    _wait_kernel(event)
     return nothing
 end

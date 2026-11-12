@@ -17,9 +17,13 @@ function _validate_model_forcing!(model::BESSIModel, forcing::SnowpackForcing)
         all(isfinite, forcing.latitude_deg) || error("`latitude_deg` is required in `SnowpackForcing` for the default BESSI diurnal substeps; " *
             "provide it or set `diurnal_shortwave_substeps=false` (e.g. for sub-daily forcing).")
     end
-    if _uses_prescribed_albedo(model.c)
-        all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
-    end
+    _validate_albedo_forcing!(albedo_scheme(model.c), forcing)
+    return nothing
+end
+
+_validate_albedo_forcing!(::AbstractAlbedoScheme, ::SnowpackForcing) = nothing
+function _validate_albedo_forcing!(::PrescribedAlbedo, forcing::SnowpackForcing)
+    all(forcing.has_prescribed_albedo) || error("`prescribed_albedo` is required for every column and timestep when BESSI uses `albedo=:prescribed`.")
     return nothing
 end
 
@@ -48,85 +52,70 @@ function validate_integrator_setup!(sim, options::RunOptions)
     return nothing
 end
 
-function _prepare_backend!(timings::StepTimingStats, state::BESSIState, forcing::SnowpackForcing; is_gpu::Bool)
-    step_fields = get_fields(forcing)
-    if is_gpu
-        cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-        state = time_block!(timings, :gpu_transfer) do
-            gpu_state(state)
-        end
-        step_fields = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), step_fields)
-        end
-        workspace = time_block!(timings, :gpu_transfer) do
-            ColumnarStepWorkspace(state)
-        end
-        return ModelRuntimeData(state, step_fields, workspace, true)
-    end
+_model_forcing_view(::BESSIModel, forcing::SnowpackForcing) = get_fields(forcing)
+_model_forcing_view(::PDDModel, forcing::SnowpackForcing) = PDDForcing(forcing)
+_model_forcing_view(::ITMModel, forcing::SnowpackForcing) = ITMForcing(forcing)
+
+"""Forcing fields stepped by `model`, in the model's number type (no copy for Float64)."""
+model_forcing(model::AbstractSnowModel, forcing::SnowpackForcing) =
+    forcing_fields_as(number_type(model.c), _model_forcing_view(model, forcing))
+
+"""Copy `state` to `backend`; BESSI layer fields are transposed for coalesced GPU access."""
+to_backend(::ThreadsBackend, state) = state
+to_backend(backend::GPUBackend, state::BESSIState) = gpu_state(state, storage_type(backend))
+to_backend(backend::GPUBackend, state) = adapt(storage_type(backend), state)
+
+# Forcing fields on `backend`. PDD and ITM keep `dt_days` on the host because their
+# kernels receive the step length as a scalar.
+_backend_forcing(::ThreadsBackend, step_fields) = step_fields
+_backend_forcing(backend::GPUBackend, step_fields::NamedTuple) = adapt(storage_type(backend), step_fields)
+function _backend_forcing(backend::GPUBackend, forcing::PDDForcing)
+    to_device(field) = adapt(storage_type(backend), field)
+    return PDDForcing(
+        forcing.dt_days,
+        to_device(forcing.air_temperature),
+        to_device(forcing.snowfall_rate),
+        to_device(forcing.rainfall_rate),
+    )
+end
+function _backend_forcing(backend::GPUBackend, forcing::ITMForcing)
+    to_device(field) = adapt(storage_type(backend), field)
+    return ITMForcing(
+        forcing.dt_days,
+        to_device(forcing.air_temperature),
+        to_device(forcing.snowfall_rate),
+        to_device(forcing.rainfall_rate),
+        to_device(forcing.shortwave_down),
+        to_device(forcing.q_sw_net),
+        to_device(forcing.has_q_sw_net),
+        to_device(forcing.latitude_deg),
+        to_device(forcing.surface_height),
+        to_device(forcing.ice_thickness),
+        to_device(forcing.annual_pdd),
+    )
+end
+
+_runtime_workspace(state::BESSIState) = ColumnarStepWorkspace(state)
+_runtime_workspace(state) = nothing
+
+function prepare_runtime!(model::AbstractSnowModel, state, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
+    return _prepare_runtime(options.backend, timings, state, model_forcing(model, forcing))
+end
+
+function _prepare_runtime(::ThreadsBackend, timings::StepTimingStats, state, step_fields)
     workspace = time_block!(timings, :create_workspaces) do
-        ColumnarStepWorkspace(state)
+        _runtime_workspace(state)
     end
     return ModelRuntimeData(state, step_fields, workspace, false)
 end
 
-function prepare_runtime!(model::BESSIModel, state::BESSIState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
-    return _prepare_backend!(timings, state, forcing; is_gpu=options.backend == :gpu)
-end
-
-function _gpu_forcing_view(forcing::PDDForcing)
-    to_gpu(field) = adapt(gpu_storage_type(), field)
-    return PDDForcing(
-        forcing.dt_days,
-        to_gpu(forcing.air_temperature),
-        to_gpu(forcing.snowfall_rate),
-        to_gpu(forcing.rainfall_rate),
-    )
-end
-
-function _gpu_forcing_view(forcing::ITMForcing)
-    to_gpu(field) = adapt(gpu_storage_type(), field)
-    return ITMForcing(
-        forcing.dt_days,
-        to_gpu(forcing.air_temperature),
-        to_gpu(forcing.snowfall_rate),
-        to_gpu(forcing.rainfall_rate),
-        to_gpu(forcing.shortwave_down),
-        to_gpu(forcing.q_sw_net),
-        to_gpu(forcing.has_q_sw_net),
-        to_gpu(forcing.latitude_deg),
-        to_gpu(forcing.surface_height),
-        to_gpu(forcing.ice_thickness),
-        to_gpu(forcing.annual_pdd),
-    )
-end
-
-function prepare_runtime!(model::PDDModel, state::PDDState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
-    is_gpu = options.backend == :gpu
-    step_fields = PDDForcing(forcing)
-    if is_gpu
-        cuda_available() || error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-        backend_state = time_block!(timings, :gpu_transfer) do
-            adapt(gpu_storage_type(), state)
-        end
-        step_fields = time_block!(timings, :gpu_transfer) do
-            _gpu_forcing_view(step_fields)
-        end
-        return ModelRuntimeData(backend_state, step_fields, nothing, true)
+function _prepare_runtime(backend::GPUBackend, timings::StepTimingStats, state, step_fields)
+    _require_functional(backend)
+    state, step_fields, workspace = time_block!(timings, :gpu_transfer) do
+        backend_state = to_backend(backend, state)
+        backend_state, _backend_forcing(backend, step_fields), _runtime_workspace(backend_state)
     end
-    return ModelRuntimeData(state, step_fields, nothing, false)
-end
-
-function prepare_runtime!(model::ITMModel, state::ITMState, forcing::SnowpackForcing, options::RunOptions, timings::StepTimingStats)
-    is_gpu = options.backend == :gpu
-    is_gpu && !cuda_available() && error("`backend=gpu` requested, but CUDA is not functional in the current environment.")
-    backend_state = is_gpu ? time_block!(timings, :gpu_transfer) do
-        adapt(gpu_storage_type(), state)
-    end : state
-    step_fields = ITMForcing(forcing)
-    step_fields = is_gpu ? time_block!(timings, :gpu_transfer) do
-        _gpu_forcing_view(step_fields)
-    end : step_fields
-    return ModelRuntimeData(backend_state, step_fields, nothing, is_gpu)
+    return ModelRuntimeData(state, step_fields, workspace, is_gpu(backend))
 end
 
 _backend_active_indices(indices::Vector{Int}, data) =
@@ -159,6 +148,7 @@ _backend_active_indices(indices::Vector{Int}, data) =
         fields.vapor_mass[idx] = zero(density_init)
         fields.sublimation[idx] = zero(density_init)
         fields.latent_heat_flux_sum[idx] = zero(density_init)
+        _zero_seb_sums!(fields, idx)
         fields.Tsrf[idx] = surface_temperature_init
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)
@@ -169,7 +159,7 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
     isempty(inactive_indices) && return nothing
     backend_indices = _backend_active_indices(inactive_indices, runtime)
     kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.state.mass))
-    event = kernel!(
+    kernel!(
         get_fields(runtime.state),
         runtime.state.Ntot,
         backend_indices,
@@ -179,7 +169,6 @@ function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactiv
         _initial_snow_albedo(runtime.state.c);
         ndrange=length(inactive_indices),
     )
-    _wait_kernel(event)
     return nothing
 end
 
@@ -201,12 +190,11 @@ function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices
     isempty(inactive_indices) && return nothing
     backend_indices = _backend_active_indices(inactive_indices, runtime)
     kernel! = _reset_pdd_columns_kernel!(_ka_backend(runtime.state.snowpack_swe))
-    event = kernel!(
+    kernel!(
         get_fields(runtime.state),
         backend_indices;
         ndrange=length(inactive_indices),
     )
-    _wait_kernel(event)
     return nothing
 end
 
@@ -235,9 +223,8 @@ end
 function _reset_model_columns!(model::ITMModel, ::ITMState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
     indices = _backend_active_indices(inactive_indices, runtime)
-    event = _reset_itm_columns_kernel!(_ka_backend(runtime.state.H_snow))(get_fields(runtime.state), indices,
+    _reset_itm_columns_kernel!(_ka_backend(runtime.state.H_snow))(get_fields(runtime.state), indices,
         model.H_snow_max, model.alb_snow_dry, model.c.T0; ndrange=length(inactive_indices))
-    _wait_kernel(event)
     return nothing
 end
 
@@ -291,7 +278,19 @@ function step_model!(model::ITMModel, ::ITMState, model_runtime::ModelRuntime, f
     return nothing
 end
 
-function finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats)
+# PDD and ITM step one time index at a time.
+function step_model!(model::Union{PDDModel, ITMModel}, state, model_runtime::ModelRuntime, forcing, time_range::AbstractUnitRange)
+    for k in time_range
+        step_model!(model, state, model_runtime, forcing, Int(k))
+    end
+    return nothing
+end
+
+finalize_state!(::BESSIModel, state::BESSIState, runtime, ::RunOptions, timings::StepTimingStats) =
+    _sync_bessi_state!(state, runtime, timings)
+
+"""Copy the backend state into the host `state` and refresh its diagnostics."""
+function _sync_bessi_state!(state::BESSIState, runtime, timings::StepTimingStats)
     if runtime.is_gpu
         time_block!(timings, :gpu_transfer) do
             _copy_bessi_state!(state, runtime.state)
@@ -308,15 +307,7 @@ function _copy_vector_state_from_runtime!(state, runtime)
     return state
 end
 
-function finalize_state!(::PDDModel, state::PDDState, runtime, ::RunOptions, timings::StepTimingStats)
-    runtime.is_gpu || return nothing
-    time_block!(timings, :gpu_transfer) do
-        _copy_vector_state_from_runtime!(state, runtime)
-    end
-    return nothing
-end
-
-function finalize_state!(::ITMModel, state::ITMState, runtime, ::RunOptions, timings::StepTimingStats)
+function finalize_state!(::Union{PDDModel,ITMModel}, state, runtime, ::RunOptions, timings::StepTimingStats)
     runtime.is_gpu || return nothing
     time_block!(timings, :gpu_transfer) do
         _copy_vector_state_from_runtime!(state, runtime)

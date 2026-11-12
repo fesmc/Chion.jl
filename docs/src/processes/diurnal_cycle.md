@@ -174,5 +174,9 @@ Each substep receives:
 - unchanged precipitation rates and other atmospheric forcing
 
 Because precipitation remains a rate while the timestep is shortened, total
-daily snowfall and rainfall are preserved. Each substep then executes the
+daily snowfall and rainfall are preserved. Incident longwave from the default
+cloud-proxy scheme is derived once from the daily forcing before the split, so
+every substep uses the same daily cloudiness. Prescribed melt
+(`prescribed_melt`) is distributed over the substeps in proportion to the
+reconstructed net shortwave, which preserves the daily total. Each substep then executes the
 normal BESSI column process sequence.
