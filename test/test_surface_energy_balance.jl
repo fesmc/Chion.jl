@@ -1,11 +1,13 @@
 using Test
 using Dates
+using NCDatasets
 using Chion
 
 # A warm, snow-free column ablating at the melting point (the Fortran chion's
 # test_seb_fluxes, "ablate"): 40 days at 280 K, light rain, 320 W m⁻².
 function _ablating_column(; nday=40, kwargs...)
-    model = BESSIModel(SnowpackGrid(1); kwargs...)
+    grid = SnowpackGrid(1; x=[0.0], y=[0.0], js=[1], is=[1], mask=ones(1, 1))
+    model = BESSIModel(grid; kwargs...)
     shortwave = 320.2
     forcing = SnowpackForcing(
         dt_days=fill(1.0, nday),
@@ -63,6 +65,25 @@ _seb_sums(state) = NamedTuple{_SEB_SUMS}(map(name -> getfield(state, name)[1], _
         @test melt_energy > 0
         @test melt_energy ≈ energy_in * model.c.seconds_per_day rtol=1e-3
         @test sums.longwave_down_sum > 0
+    end
+
+    @testset "monthly means in the monthly output" begin
+        model, forcing, shortwave = _ablating_column()   # 30 days of June, 10 of July
+        mktempdir() do dir
+            path = joinpath(dir, "monthly_seb.nc")
+            sim = Simulation(model; forcing=forcing, netcdf_variables=:monthly,
+                write_netcdf=true, netcdf_path=path, years=1)
+            @test run!(sim; io=devnull).status == :complete
+            NCDataset(path) do ds
+                days = [30.0, 10.0]
+                for (flux, flux_sum) in Chion.MONTHLY_FLUX_SUMS
+                    @test ds[String(flux)].attrib["units"] == "W m-2"
+                    means = Float64.(ds[String(flux)][1, 1, 1:2])
+                    @test sum(means .* days) ≈ getfield(sim.now, flux_sum)[1] rtol=1e-6
+                end
+                @test Float64.(ds["shortwave_down"][1, 1, 1:2]) ≈ [shortwave, shortwave] rtol=1e-6
+            end
+        end
     end
 
     @testset "sums start at zero" begin
