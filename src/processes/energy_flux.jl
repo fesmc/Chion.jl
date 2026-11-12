@@ -423,7 +423,7 @@ function _go_energy_flux_resolved!(
     absorbed_shortwave = use_q_sw_net ?
         q_sw_net_value :
         shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
-    longwave_down = use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+    longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
     longwave_flux_constant = if _uses_semix_seb(c)
         emissivity * (longwave_down + c.σ * oftype(air_temperature, 3.0) * surface_temperature_fourth)
     else

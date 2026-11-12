@@ -56,6 +56,10 @@ the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
     return _with_step_forcing(forcing, (; q_lw_down, has_q_lw_down=true))
 end
 
+"""Longwave down (W m⁻²): the forcing's, or the graybody sky's ϵ_air σ T_a⁴."""
+@inline _longwave_down(c::SnowpackPhysicalConstants, air_temperature, use_q_lw_down::Bool, q_lw_down_value) =
+    use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+
 @inline function _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
     return (
         vapor_mass=vapor_mass,
@@ -90,7 +94,7 @@ surface-flux units.
     z0m,
     emissivity,
 )
-    longwave_down = use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+    longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
     longwave_flux = _uses_semix_seb(c) ?
         emissivity * (longwave_down - c.σ * surface_temperature^4) :
         longwave_down - c.σ * c.ϵ_snow * surface_temperature^4

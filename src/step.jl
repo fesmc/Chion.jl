@@ -23,33 +23,15 @@ end
 EnergyWorkspace(state) =
     EnergyWorkspace(state.mass, number_type(state.c), _thermal_row_capacity(state))
 
-struct ColumnarStepWorkspace{LWT,ET,LWE,SWE,SHE,RHE}
+struct ColumnarStepWorkspace{LWT,ET}
     liquid_water_before_energy::LWT
     energy::ET
-    # Cumulative net-longwave energy (J m⁻²), recorded from the same
-    # linearized boundary condition used by the energy solver.
-    net_longwave_energy::LWE
-    absorbed_shortwave_energy::SWE
-    sensible_heat_energy::SHE
-    rain_heat_energy::RHE
 end
 
 function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
-    net_longwave_energy = _workspace_array(storage, NF, ncol)
-    absorbed_shortwave_energy = _workspace_array(storage, NF, ncol)
-    sensible_heat_energy = _workspace_array(storage, NF, ncol)
-    rain_heat_energy = _workspace_array(storage, NF, ncol)
-    fill!(net_longwave_energy, zero(NF))
-    fill!(absorbed_shortwave_energy, zero(NF))
-    fill!(sensible_heat_energy, zero(NF))
-    fill!(rain_heat_energy, zero(NF))
     return ColumnarStepWorkspace(
         _workspace_array(storage, NF, Ntot, ncol),
         EnergyWorkspace(storage, NF, Ntot, ncol),
-        net_longwave_energy,
-        absorbed_shortwave_energy,
-        sensible_heat_energy,
-        rain_heat_energy,
     )
 end
 
@@ -297,6 +279,28 @@ end
     return nothing
 end
 
+@inline _add_to_scalar!(values, idx::Int, increment) =
+    _set_scalar!(values, idx, _get_scalar(values, idx) + increment)
+
+"""
+    _accumulate_surface_energy_balance!(fields, idx, dt_days, shortwave_down, shortwave_net, longwave_down, longwave_net, sensible_heat_flux, rain_heat_flux)
+
+Add one (sub)step's surface energy balance terms (W m⁻², positive into the
+surface) times its length (days) to the column's `*_sum` diagnostics.
+"""
+@inline function _accumulate_surface_energy_balance!(
+    fields, idx::Int, dt_days,
+    shortwave_down, shortwave_net, longwave_down, longwave_net, sensible_heat_flux, rain_heat_flux,
+)
+    _add_to_scalar!(fields.shortwave_down_sum, idx, shortwave_down * dt_days)
+    _add_to_scalar!(fields.shortwave_net_sum, idx, shortwave_net * dt_days)
+    _add_to_scalar!(fields.longwave_down_sum, idx, longwave_down * dt_days)
+    _add_to_scalar!(fields.longwave_net_sum, idx, longwave_net * dt_days)
+    _add_to_scalar!(fields.sensible_heat_flux_sum, idx, sensible_heat_flux * dt_days)
+    _add_to_scalar!(fields.rain_heat_flux_sum, idx, rain_heat_flux * dt_days)
+    return nothing
+end
+
 """
     _step_bare_ice_substrate!(fields, parameters, idx, forcing, workspace, dt_seconds)
 
@@ -337,10 +341,11 @@ surface.
             forcing.relative_humidity, forcing.air_pressure, forcing.wind_speed,
             c.semix_z0m_ice, c.eps_ice,
         )
-    _set_scalar!(workspace.net_longwave_energy, idx, _get_scalar(workspace.net_longwave_energy, idx) + longwave_flux * dt_seconds)
-    _set_scalar!(workspace.absorbed_shortwave_energy, idx, _get_scalar(workspace.absorbed_shortwave_energy, idx) + energy.absorbed_shortwave * dt_seconds)
-    _set_scalar!(workspace.sensible_heat_energy, idx, _get_scalar(workspace.sensible_heat_energy, idx) + sensible_heat_flux * dt_seconds)
-    _set_scalar!(workspace.rain_heat_energy, idx, _get_scalar(workspace.rain_heat_energy, idx) + rain_heat_flux * dt_seconds)
+    _accumulate_surface_energy_balance!(
+        fields, idx, forcing.dt_days, forcing.shortwave_down, energy.absorbed_shortwave,
+        _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down),
+        longwave_flux, sensible_heat_flux, rain_heat_flux,
+    )
 
     # Bare ice is a solid surface: vapour exchange carries Lᵥ+Lₘ.
     vapor_mass = latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
@@ -382,10 +387,6 @@ Base.@propagate_inbounds function column_step_core!(
     vapor_mass = fields.vapor_mass
     sublimation = fields.sublimation
     latent_heat_flux_sum = fields.latent_heat_flux_sum
-    net_longwave_energy = workspace.net_longwave_energy
-    absorbed_shortwave_energy = workspace.absorbed_shortwave_energy
-    sensible_heat_energy = workspace.sensible_heat_energy
-    rain_heat_energy = workspace.rain_heat_energy
     Tsrf = fields.Tsrf
     albedo_dynamic = fields.albedo
     c = parameters.c
@@ -446,17 +447,11 @@ Base.@propagate_inbounds function column_step_core!(
             return _step_bare_ice_substrate!(fields, parameters, idx, forcing, workspace, dt_seconds)
         end
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
-        _set_scalar!(
-            net_longwave_energy,
-            idx,
-            _get_scalar(net_longwave_energy, idx) + bare_ice_fluxes.longwave_flux * dt_seconds,
+        _accumulate_surface_energy_balance!(
+            fields, idx, forcing.dt_days, forcing.shortwave_down, bare_ice_fluxes.absorbed_shortwave,
+            _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down),
+            bare_ice_fluxes.longwave_flux, bare_ice_fluxes.sensible_heat_flux, bare_ice_fluxes.rain_heat_flux,
         )
-        _set_scalar!(absorbed_shortwave_energy, idx,
-            _get_scalar(absorbed_shortwave_energy, idx) + bare_ice_fluxes.absorbed_shortwave * dt_seconds)
-        _set_scalar!(sensible_heat_energy, idx,
-            _get_scalar(sensible_heat_energy, idx) + bare_ice_fluxes.sensible_heat_flux * dt_seconds)
-        _set_scalar!(rain_heat_energy, idx,
-            _get_scalar(rain_heat_energy, idx) + bare_ice_fluxes.rain_heat_flux * dt_seconds)
         rainfall_mass = max(forcing.rainfall_rate, zero(forcing.rainfall_rate)) * dt_seconds
         melt_mass = ifelse(forcing.has_prescribed_melt, max(forcing.prescribed_melt, zero(forcing.prescribed_melt)) * dt_seconds, bare_ice_fluxes.melt_mass)
         net_mass_change = bare_ice_fluxes.net_mass_change + bare_ice_fluxes.melt_mass - melt_mass
@@ -553,31 +548,11 @@ Base.@propagate_inbounds function column_step_core!(
     # the resolved surface temperature instead: the tangent approximation is
     # not an energy diagnostic when Ts changes appreciably within a substep.
     resolved_surface_temperature = _get_scalar(Tsrf, idx)
-    longwave_down = ifelse(
-        forcing.has_q_lw_down,
-        forcing.q_lw_down,
-        c.σ * c.ϵ_air * forcing.air_temperature^4,
-    )
+    longwave_down = _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down)
     exact_net_longwave = ifelse(
         _uses_semix_seb(c),
         c.ϵ_snow * (longwave_down - c.σ * resolved_surface_temperature^4),
         longwave_down - c.σ * c.ϵ_snow * resolved_surface_temperature^4,
-    )
-    _set_scalar!(
-        net_longwave_energy,
-        idx,
-        _get_scalar(net_longwave_energy, idx) + exact_net_longwave * dt_seconds,
-    )
-    _set_scalar!(
-        absorbed_shortwave_energy,
-        idx,
-        _get_scalar(absorbed_shortwave_energy, idx) + energy.absorbed_shortwave * dt_seconds,
-    )
-    _set_scalar!(
-        sensible_heat_energy,
-        idx,
-        _get_scalar(sensible_heat_energy, idx) +
-        (energy.sensible_heat_flux_constant - energy.sensible_heat_flux_linear * _get_scalar(Tsrf, idx)) * dt_seconds,
     )
     # The snow energy solver carries precipitation enthalpy in its effective
     # latent-heat coefficients. Record its rain component separately for the
@@ -592,10 +567,11 @@ Base.@propagate_inbounds function column_step_core!(
             zero(dt_seconds),
         ),
     )
-    _set_scalar!(
-        rain_heat_energy,
-        idx,
-        _get_scalar(rain_heat_energy, idx) + rain_heat_flux * dt_seconds,
+    _accumulate_surface_energy_balance!(
+        fields, idx, forcing.dt_days, forcing.shortwave_down, energy.absorbed_shortwave,
+        longwave_down, exact_net_longwave,
+        energy.sensible_heat_flux_constant - energy.sensible_heat_flux_linear * resolved_surface_temperature,
+        rain_heat_flux,
     )
 
     snow_vapor_fluxes = _apply_snow_surface_vapor_mass_flux!(

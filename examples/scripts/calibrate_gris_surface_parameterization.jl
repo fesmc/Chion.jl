@@ -104,12 +104,12 @@ function run_year!(model, forcing, reference, state, acc)
         write_netcdf=false, compute_year_metrics=false, name="calibration_trial")
     integ = init_integrator(sim; io=devnull)
     runtime = integ.model_runtime.data
-    previous_sh = copy(Array(runtime.workspace.sensible_heat_energy))
+    previous_sh = copy(Array(runtime.state.sensible_heat_flux_sum))
     for k in eachindex(forcing.dt_days)
         step!(integ)
         m = month(forcing.time_values[k])
         if !(m in CAL.months)
-            CAL.mode == :sensible && copyto!(previous_sh, Array(runtime.workspace.sensible_heat_energy))
+            CAL.mode == :sensible && copyto!(previous_sh, Array(runtime.state.sensible_heat_flux_sum))
             continue
         end
         if CAL.mode == :albedo
@@ -121,8 +121,8 @@ function run_year!(model, forcing, reference, state, acc)
             acc.albedo_mar[m, :] .+= swd .* clamp.(@view(reference.prescribed_albedo[:, k]), 0, 1)
             acc.weight[m, :] .+= swd
         else
-            sh = Array(runtime.workspace.sensible_heat_energy)
-            acc.chion[m, :] .+= (sh .- previous_sh) ./ (forcing.dt_days[k] * SECONDS_PER_DAY)
+            sh = Array(runtime.state.sensible_heat_flux_sum)
+            acc.chion[m, :] .+= (sh .- previous_sh) ./ forcing.dt_days[k]
             copyto!(previous_sh, sh)
             acc.mar[m, :] .+= @view reference.q_sh[:, k]
         end
@@ -296,8 +296,10 @@ function diagnose_year!(model, forcing, reference, path, grid, state, acc)
         write_netcdf=false, compute_year_metrics=false, name="diagnose")
     integ = init_integrator(sim; io=devnull)
     runtime = integ.model_runtime.data
-    read_now() = (sw_abs=Array(runtime.workspace.absorbed_shortwave_energy), lw_net=Array(runtime.workspace.net_longwave_energy),
-        sh=Array(runtime.workspace.sensible_heat_energy), vapor=Array(runtime.state.vapor_mass), melt=Array(runtime.state.melt),
+    # The flux sums are W m⁻² day; as J m⁻², like the step energies below.
+    read_now() = (sw_abs=Array(runtime.state.shortwave_net_sum) .* SECONDS_PER_DAY,
+        lw_net=Array(runtime.state.longwave_net_sum) .* SECONDS_PER_DAY,
+        sh=Array(runtime.state.sensible_heat_flux_sum) .* SECONDS_PER_DAY, vapor=Array(runtime.state.vapor_mass), melt=Array(runtime.state.melt),
         runoff=Array(runtime.state.runoff), refreezing=Array(runtime.state.refreezing))
     previous = read_now()
     c = model.parameters.c

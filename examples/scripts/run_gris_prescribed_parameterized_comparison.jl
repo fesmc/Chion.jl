@@ -1036,8 +1036,10 @@ function run_case(grid, base_forcing, reference, case)
     initial_budget = annual_budget_start(runtime.state)
     previous_budget = annual_budget_start(runtime.state)
     previous_firn_mass = firn_mass(runtime.state)
-    previous_net_longwave_energy = zeros(Float64, length(grid.js))
-    previous_sensible_heat_energy = zeros(Float64, length(grid.js))
+    # Surface energy terms as J m⁻² from the state's W m⁻² day sums.
+    energy_now(name) = to_host(getfield(runtime.state, name)) .* model.c.seconds_per_day
+    previous_net_longwave_energy = energy_now(:longwave_net_sum)
+    previous_sensible_heat_energy = energy_now(:sensible_heat_flux_sum)
     sh_stability = sh_stability_buffers()
     monthly_delta_firn = zeros(Float64, 12, length(grid.js))
     firn_pre_melt = nothing
@@ -1091,10 +1093,10 @@ function run_case(grid, base_forcing, reference, case)
             rain_heat=to_host(forcing.rainfall_rate[:, time_index]) .* c.cw .* (air_temperature .- c.T0),
         )
         Chion.step_model!(model, diagnostic.now, integrator.model_runtime, runtime.step_fields, time_index)
-        net_longwave_energy = to_host(runtime.workspace.net_longwave_energy)
+        net_longwave_energy = energy_now(:longwave_net_sum)
         interval_net_longwave_energy = net_longwave_energy .- previous_net_longwave_energy
         copyto!(previous_net_longwave_energy, net_longwave_energy)
-        sensible_heat_energy = to_host(runtime.workspace.sensible_heat_energy)
+        sensible_heat_energy = energy_now(:sensible_heat_flux_sum)
         actual_sensible_heat_flux =
             (sensible_heat_energy .- previous_sensible_heat_energy) ./ dt_seconds
         copyto!(previous_sensible_heat_energy, sensible_heat_energy)

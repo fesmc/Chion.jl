@@ -1545,10 +1545,12 @@ function run_case(grid, base_forcing, reference, case)
     # same time-integrated flux that drives vapor exchange in the model.
     previous_latent_heat_flux_sum = copy(to_host(runtime.state.latent_heat_flux_sum))
     previous_firn_mass = firn_mass(runtime.state)
-    previous_net_longwave_energy = zeros(Float64, length(grid.js))
-    previous_absorbed_shortwave_energy = zeros(Float64, length(grid.js))
-    previous_sensible_heat_energy = zeros(Float64, length(grid.js))
-    previous_rain_heat_energy = zeros(Float64, length(grid.js))
+    # Surface energy terms as J m⁻² from the state's W m⁻² day sums.
+    energy_now(name) = to_host(getfield(runtime.state, name)) .* model.c.seconds_per_day
+    previous_net_longwave_energy = energy_now(:longwave_net_sum)
+    previous_absorbed_shortwave_energy = energy_now(:shortwave_net_sum)
+    previous_sensible_heat_energy = energy_now(:sensible_heat_flux_sum)
+    previous_rain_heat_energy = energy_now(:rain_heat_flux_sum)
     monthly_delta_firn = zeros(Float64, 12, length(grid.js))
     hydrology_pathways = hydrology_pathway_buffers(length(grid.js))
     monthly_hydrology = monthly_hydrology_buffers(length(grid.js))
@@ -1628,16 +1630,16 @@ function run_case(grid, base_forcing, reference, case)
             max(air_pressure[column], eps(eltype(air_pressure)))
             for column in eachindex(actual_surface_temperature)
         ]
-        net_longwave_energy = to_host(runtime.workspace.net_longwave_energy)
+        net_longwave_energy = energy_now(:longwave_net_sum)
         interval_net_longwave_energy = net_longwave_energy .- previous_net_longwave_energy
         copyto!(previous_net_longwave_energy, net_longwave_energy)
-        shortwave_energy = to_host(runtime.workspace.absorbed_shortwave_energy)
+        shortwave_energy = energy_now(:shortwave_net_sum)
         interval_shortwave_energy = shortwave_energy .- previous_absorbed_shortwave_energy
         copyto!(previous_absorbed_shortwave_energy, shortwave_energy)
-        sensible_heat_energy = to_host(runtime.workspace.sensible_heat_energy)
+        sensible_heat_energy = energy_now(:sensible_heat_flux_sum)
         interval_sensible_heat_energy = sensible_heat_energy .- previous_sensible_heat_energy
         copyto!(previous_sensible_heat_energy, sensible_heat_energy)
-        rain_heat_energy = to_host(runtime.workspace.rain_heat_energy)
+        rain_heat_energy = energy_now(:rain_heat_flux_sum)
         interval_rain_heat_energy = rain_heat_energy .- previous_rain_heat_energy
         copyto!(previous_rain_heat_energy, rain_heat_energy)
         actual_shortwave_flux = interval_shortwave_energy ./ dt_seconds
