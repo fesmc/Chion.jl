@@ -9,15 +9,18 @@ Diagnose the density of newly fallen snow from the configured scheme in `c`.
 The result is clamped to a physically plausible range between fresh snow and
 ice density.
 """
+@inline _fresh_snow_density(c::SnowpackPhysicalConstants, air_temperature, wind_speed) =
+    _fresh_snow_density(fresh_snow_density_scheme(c), c, air_temperature, wind_speed)
+
+@inline _fresh_snow_density(::ConstantFreshSnowDensity, c, air_temperature, wind_speed) =
+    clamp(c.rho_s, oftype(c.rho_s, 50), c.rho_i)
+
 @inline function _fresh_snow_density(
+    ::ParameterizedFreshSnowDensity,
     c::SnowpackPhysicalConstants,
     air_temperature,
     wind_speed,
 )
-    if _uses_constant_fresh_snow_density(c)
-        return clamp(c.rho_s, oftype(c.rho_s, 50), c.rho_i)
-    end
-
     nonnegative_wind_speed = max(wind_speed, zero(wind_speed))
     fresh_snow_density = c.rho_s_a +
                          c.rho_s_b * (air_temperature - c.T0) +
@@ -31,7 +34,8 @@ end
 Apply snowfall and rainfall to column `idx`, update the surface layer, and
 maintain layer-structure constraints such as split and merge thresholds.
 Mutates the supplied state arrays in-place and may also update albedo, runoff,
-and basal-mass diagnostics.
+and basal-mass diagnostics. Returns the enthalpy of the ice exported to the ice
+reservoir (relative to liquid water at T₀).
 """
 function _apply_accumulation_resolved!(
     N_storage,
@@ -56,12 +60,13 @@ function _apply_accumulation_resolved!(
     resolved_air_temperature,
     wind_speed,
 )
+    exported_enthalpy = zero(eltype(mass))
     if _n_active(N_storage, idx) == 0
         if snowfall_rate > zero(snowfall_rate)
             _set_n_active!(N_storage, idx, 1)
         else
             _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-            return nothing
+            return exported_enthalpy
         end
     end
 
@@ -83,14 +88,16 @@ function _apply_accumulation_resolved!(
         _refresh_dynamic_albedo_from_snowfall!(albedo_dynamic, idx, c, added_snow_mass)
     end
 
-    if _get_layer(mass, 1, idx) > zero(eltype(mass)) && rainfall_rate > zero(rainfall_rate)
+    # Same threshold as `_surface_has_snow`: rain on a sub-threshold remnant is
+    # not retained, because the step treats that column as bare ice.
+    if _get_layer(mass, 1, idx) > EPS_EMPTY_LAYER && rainfall_rate > zero(rainfall_rate)
         _set_layer!(mass_w, 1, idx, _get_layer(mass_w, 1, idx) + rainfall_rate * dt_seconds)
     end
 
     while _n_active(N_storage, idx) > 0 && _get_layer(mass, 1, idx) > mass_max
         if _n_active(N_storage, idx) == Ntot
             if Ntot <= 2
-                _free_slot_for_surface_split!(
+                exported_enthalpy += _free_slot_for_surface_split!(
                     N_storage,
                     mass,
                     mass_w,
@@ -107,7 +114,7 @@ function _apply_accumulation_resolved!(
                     c,
                 )
             else
-                _merge_bottom_layer!(
+                exported_enthalpy += _merge_bottom_layer!(
                     N_storage,
                     mass,
                     mass_w,
@@ -130,7 +137,7 @@ function _apply_accumulation_resolved!(
         _merge_surface_layer!(N_storage, mass, mass_w, density, temperature, idx, Ntot, mass_split, mass_min, c)
     end
 
-    _enforce_snow_depth_cap!(
+    exported_enthalpy += _enforce_snow_depth_cap!(
         N_storage,
         mass,
         mass_w,
@@ -148,7 +155,7 @@ function _apply_accumulation_resolved!(
         c,
     )
 
-    return nothing
+    return exported_enthalpy
 end
 
 function _apply_accumulation!(

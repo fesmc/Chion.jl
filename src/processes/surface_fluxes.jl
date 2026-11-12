@@ -8,39 +8,57 @@ const LONGWAVE_CLOUD_PROXY_MIN_TOA = 50.0
 const SOLAR_CONSTANT = 1361.0
 
 """Daily-mean top-of-atmosphere shortwave (W m⁻²) from latitude and season."""
-@inline function _daily_toa_shortwave(latitude_deg, solar_longitude_deg, day_of_year)
-    terms = _diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg)
-    eccentricity = one(latitude_deg) + oftype(latitude_deg, 0.033) * cos(oftype(latitude_deg, 2π) * day_of_year / oftype(latitude_deg, 365))
-    return oftype(latitude_deg, SOLAR_CONSTANT) * eccentricity * max(terms.daylight_integral, zero(latitude_deg)) /
-           oftype(latitude_deg, 2π)
+@inline _daily_toa_shortwave(latitude_deg, solar_longitude_deg, day_of_year) =
+    _daily_toa_shortwave(_diurnal_shortwave_integral_terms(latitude_deg, solar_longitude_deg), day_of_year)
+
+@inline function _daily_toa_shortwave(terms::NamedTuple, day_of_year)
+    x = terms.daylight_integral
+    eccentricity = one(x) + oftype(x, 0.033) * cos(oftype(x, 2π) * day_of_year / oftype(x, 365))
+    return oftype(x, SOLAR_CONSTANT) * eccentricity * max(x, zero(x)) / oftype(x, 2π)
+end
+
+"""Daily cloud fraction diagnosed from the shortwave transmissivity of the atmosphere.
+
+The clear-sky transmissivity increases with elevation and insolation,
+τ_cs = τ₀ + τ_z z + τ_S ln(SW_TOA / 300 W m⁻²), and clouds reduce it by the factor
+1 − a nᵖ exp(−b z) (Konzelmann et al., 1994), which is inverted for n ∈ [0, 1].
+In the polar night, or for sub-daily forcing where SW↓ is not a daily mean,
+n is the constant night cloud fraction.
+"""
+@inline function _cloud_proxy_cloud_fraction(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
+    T = forcing.air_temperature
+    toa = _daily_toa_shortwave(terms, forcing.day_of_year)
+    # Forcing without surface height (NaN) uses the sea-level coefficients.
+    height_km = ifelse(isfinite(forcing.surface_height), max(forcing.surface_height, zero(T)), zero(T)) / oftype(T, 1000)
+    daily = (toa > oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA)) & (forcing.dt_days >= oftype(T, 0.75)) &
+            isfinite(forcing.latitude_deg)
+    safe_toa = max(toa, oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA))
+    clear_transmissivity = min(one(T), c.lw_clear_sky_transmissivity +
+        c.lw_clear_sky_transmissivity_per_km * height_km +
+        c.lw_clear_sky_transmissivity_insolation * log(safe_toa / oftype(T, 300)))
+    deficit = clamp(one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity), zero(T), one(T))
+    cloud_effect = c.lw_cloud_transmission_coefficient * exp(-c.lw_cloud_transmission_decay_per_km * height_km)
+    cloud_fraction = clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T))^(one(T) / c.lw_cloud_transmission_exponent)
+    return ifelse(daily, cloud_fraction, c.lw_night_cloud_fraction)
 end
 
 """
     _cloud_proxy_emissivity(c, forcing)
 
 Effective atmospheric emissivity relative to the near-surface air temperature,
-ε = ε₀ + ε_T (T_a − T₀) + ε_n n. The cloudiness n = 1 − τ/τ_clear(z) uses the
-daily shortwave transmissivity τ = SW↓/SW_TOA, which the forcing already
-provides; in the polar night (or for sub-daily forcing, where SW↓ is not a
-daily mean) n falls back to a constant night cloudiness.
+weighted between clear-sky and overcast emissivities (Konzelmann et al., 1994),
+ε = ε_cs(T)(1 − n^q) + ε_oc(T) n^q, with both emissivities linear in T − T₀ and
+the cloud fraction n from `_cloud_proxy_cloud_fraction`.
 """
-@inline function _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing)
+@inline _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+    _cloud_proxy_emissivity(c, forcing, _diurnal_shortwave_integral_terms(forcing.latitude_deg, forcing.solar_longitude_deg))
+
+@inline function _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
     T = forcing.air_temperature
-    toa = _daily_toa_shortwave(forcing.latitude_deg, forcing.solar_longitude_deg, forcing.day_of_year)
-    # Forcing without surface height (NaN) uses the sea-level clear-sky transmissivity.
-    height = ifelse(isfinite(forcing.surface_height), max(forcing.surface_height, zero(T)), zero(T))
-    clear_transmissivity = c.lw_clear_sky_transmissivity +
-                           c.lw_clear_sky_transmissivity_per_km * height / oftype(T, 1000)
-    daily = (toa > oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA)) & (forcing.dt_days >= oftype(T, 0.75)) &
-            isfinite(forcing.latitude_deg)
-    cloudiness = ifelse(
-        daily,
-        clamp(one(T) - forcing.shortwave_down / _safe_positive(toa * clear_transmissivity), zero(T), one(T)),
-        c.lw_night_cloud_fraction,
-    )
-    emissivity = c.lw_emissivity_base + c.lw_emissivity_temperature_slope * (T - c.T0) +
-                 c.lw_emissivity_cloud_slope * cloudiness
-    return clamp(emissivity, oftype(T, 0.4), oftype(T, 1.3))
+    weight = _cloud_proxy_cloud_fraction(c, forcing, terms)^c.lw_cloud_emissivity_exponent
+    clear = c.lw_clear_sky_emissivity + c.lw_clear_sky_emissivity_temperature_slope * (T - c.T0)
+    overcast = c.lw_overcast_emissivity + c.lw_overcast_emissivity_temperature_slope * (T - c.T0)
+    return clamp(clear * (one(T) - weight) + overcast * weight, oftype(T, 0.4), c.lw_emissivity_max)
 end
 
 """
@@ -50,9 +68,9 @@ For the `:cloud_proxy` longwave scheme, resolve the daily longwave down once fro
 the daily forcing and pass it on as a fixed flux, so the diurnal substeps reuse
 the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
 """
-@inline function _with_parameterized_longwave(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing)
+@inline function _with_parameterized_longwave(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
     (c.longwave_scheme == LONGWAVE_CLOUD_PROXY) & !forcing.has_q_lw_down || return forcing
-    q_lw_down = _cloud_proxy_emissivity(c, forcing) * c.σ * forcing.air_temperature^4
+    q_lw_down = _cloud_proxy_emissivity(c, forcing, terms) * c.σ * forcing.air_temperature^4
     return _with_step_forcing(forcing, (; q_lw_down, has_q_lw_down=true))
 end
 
@@ -273,13 +291,17 @@ function _bare_ice_ablation_mass(
 end
 
 """Albedo of an exposed bare-ice surface."""
-@inline function _bare_ice_albedo(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing)
-    return _uses_semix_albedo(c) && forcing.has_prescribed_ice_albedo ?
+@inline _bare_ice_albedo(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+    _bare_ice_albedo(albedo_scheme(c), c, forcing)
+
+@inline _bare_ice_albedo(::SemixAlbedo, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+    forcing.has_prescribed_ice_albedo ?
         clamp(forcing.prescribed_ice_albedo, zero(forcing.prescribed_ice_albedo), one(forcing.prescribed_ice_albedo)) :
-    _uses_prescribed_albedo(c) && forcing.has_prescribed_albedo ?
-        _prescribed_surface_albedo(forcing) :
         c.alpha_ice
-end
+@inline _bare_ice_albedo(::PrescribedAlbedo, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+    forcing.has_prescribed_albedo ? _prescribed_surface_albedo(forcing) : c.alpha_ice
+@inline _bare_ice_albedo(::AbstractAlbedoScheme, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+    c.alpha_ice
 
 @inline function _resolved_turbulent_latent_heat_flux(
     c::SnowpackPhysicalConstants,
@@ -388,8 +410,11 @@ function _apply_snow_surface_vapor_mass_flux!(
         vapor_mass = updated_surface_water - previous_surface_water
     end
 
+    # Sublimation that removes the last layer leaves the (subfreezing) surface temperature
+    # just solved. Resetting it to T₀ would make the next step's vapour flux, linearised about
+    # T₀, sublimate any fresh snowfall at once: on dry, cold surfaces (East Antarctic plateau)
+    # the column then never builds snow again.
     if _n_active(N_storage, idx) == 0
-        _set_scalar!(Tsrf, idx, c.T0)
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
     end
     return _surface_vapor_fluxes(vapor_mass, latent_heat_flux)

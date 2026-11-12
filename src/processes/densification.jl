@@ -98,12 +98,12 @@ critical close-off density `rho_e`.
 end
 
 """
-    _low_density_tendency(::Val{:bessi}, c, overburden_pressure, temperature, density, accumulation_rate)
+    _low_density_tendency(::BESSIDensification, c, overburden_pressure, temperature, density, accumulation_rate)
 
 Return the low-density densification tendency for the BESSI formulation.
 """
 @inline function _low_density_tendency(
-    ::Val{:bessi},
+    ::BESSIDensification,
     c::SnowpackPhysicalConstants,
     overburden_pressure,
     temperature,
@@ -114,12 +114,12 @@ Return the low-density densification tendency for the BESSI formulation.
 end
 
 """
-    _low_density_tendency(::Val{:htessel}, c, overburden_pressure, temperature, density, accumulation_rate)
+    _low_density_tendency(::HTESSELDensification, c, overburden_pressure, temperature, density, accumulation_rate)
 
 Return the low-density densification tendency for the HTESSEL formulation.
 """
 @inline function _low_density_tendency(
-    ::Val{:htessel},
+    ::HTESSELDensification,
     c::SnowpackPhysicalConstants,
     overburden_pressure,
     temperature,
@@ -142,7 +142,7 @@ firn and near-close-off firn.
     ice_density,
 )
     density_ratio = density / ice_density
-    densification_shape_factor = oftype(density, 10.0)^(
+    densification_shape_factor = exp10(
         -oftype(density, 29.166) * density_ratio^3 +
         oftype(density, 84.422) * density_ratio^2 -
         oftype(density, 87.425) * density_ratio +
@@ -164,7 +164,7 @@ Return the high-density densification tendency used near pore close-off.
     ice_density,
 )
     relative_porosity = _relative_porosity(density, ice_density)
-    denominator = one(density) - relative_porosity^(one(density) / oftype(density, 3))
+    denominator = one(density) - cbrt(relative_porosity)
     if abs(denominator) <= EPS_TINY
         return zero(density)
     end
@@ -191,8 +191,8 @@ function _go_densification_scheme!(
     c::SnowpackPhysicalConstants,
     accumulation_rate,
     dt_seconds,
-    low_density_scheme::Val{scheme},
-) where {scheme}
+    low_density_scheme::AbstractDensificationScheme,
+)
     n = _n_active(N_storage, idx)
     if n <= 0
         return nothing
@@ -269,29 +269,8 @@ function _go_densification!(
     accumulation_rate,
     dt_seconds,
 )
-    if _uses_htessel_densification(c)
-        return _go_densification_scheme!(
-            N_storage,
-            mass,
-            density,
-            temperature,
-            idx,
-            c,
-            accumulation_rate,
-            dt_seconds,
-            Val(:htessel),
-        )
-    end
     return _go_densification_scheme!(
-        N_storage,
-        mass,
-        density,
-        temperature,
-        idx,
-        c,
-        accumulation_rate,
-        dt_seconds,
-        Val(:bessi),
+        N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds, densification_scheme(c),
     )
 end
 

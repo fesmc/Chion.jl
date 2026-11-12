@@ -24,7 +24,7 @@ end
     dt_days,
     freezing_temperature,
     temperature_sigma,
-    ::Val{:simple},
+    ::SimplePDD,
 )
     mean_temperature_c = air_temperature - freezing_temperature
     return max(mean_temperature_c, zero(mean_temperature_c)) * dt_days
@@ -35,13 +35,11 @@ end
     dt_days,
     freezing_temperature,
     temperature_sigma,
-    ::Val{:pism},
+    ::PISMPDD,
 )
     mean_temperature_c = air_temperature - freezing_temperature
     return dt_days * _pdd_expected_positive_temperature(mean_temperature_c, temperature_sigma)
 end
-
-@inline _pdd_method_tag(::PDDModel{Method}) where {Method} = Val(Method)
 
 @inline function _pdd_step_mass(rate, dt_days, seconds_per_day)
     return max(rate, zero(rate)) * dt_days * seconds_per_day
@@ -171,7 +169,7 @@ function _pdd_step_arrays!(
     isempty(active_indices) && return nothing
 
     kernel! = _pdd_step_kernel!(_ka_backend(state.snowpack_swe))
-    event = kernel!(
+    kernel!(
         get_fields(state),
         forcing.air_temperature,
         forcing.snowfall_rate,
@@ -183,13 +181,12 @@ function _pdd_step_arrays!(
         model.refreezing_fraction,
         model.temperature_sigma,
         model.H_snow_max,
-        _pdd_method_tag(model),
+        pdd_method(model),
         model.c.T0,
         model.c.seconds_per_day,
         active_indices;
         ndrange=length(active_indices),
     )
-    _wait_kernel(event)
     return nothing
 end
 

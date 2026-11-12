@@ -77,7 +77,7 @@ end
 
 function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, forcing_fields, time_index::Int, dt_days::Real=1.0)
     kernel! = _accumulate_monthly_precipitation!(_ka_backend(monthly.surface_smb))
-    event = kernel!(
+    kernel!(
         monthly.surface_smb,
         forcing_fields.snowfall_rate,
         forcing_fields.rainfall_rate,
@@ -85,7 +85,6 @@ function accumulate_monthly!(monthly::MonthlyState, state::BESSIState, forcing_f
         Float64(dt_days) * state.c.seconds_per_day;
         ndrange=length(monthly.surface_smb),
     )
-    _wait_kernel(event)
     monthly.albedo .+= state.albedo
     monthly.count += 1
     monthly.days += Float64(dt_days)
@@ -162,8 +161,7 @@ function _store_named_monthly_fields!(output, source, names, row::Int, reference
     output_fields = _named_fields(output, names)
     source_fields = _named_fields(source, names)
     kernel! = _store_named_monthly_fields_kernel!(_ka_backend(reference))
-    event = kernel!(output_fields, source_fields, row; ndrange=length(reference))
-    _wait_kernel(event)
+    kernel!(output_fields, source_fields, row; ndrange=length(reference))
     return output
 end
 

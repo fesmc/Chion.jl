@@ -15,7 +15,7 @@ set -euo pipefail
 module load julia
 
 PROJECT_DIR=/p/projects/ou/labs/ai/Nils/Chion.jl
-SCRIPT_PATH="${PROJECT_DIR}/examples/scripts/benchmark_snowpack_columns.jl"
+SCRIPT_PATH="${PROJECT_DIR}/examples/research/benchmark_snowpack_columns.jl"
 COLUMNS="${COLUMNS:-128,1024,16384,65536,524288,1048576}"
 NTOTS="${NTOTS:-4,8,12,20}"
 BACKENDS="${BACKENDS:-gpu}"

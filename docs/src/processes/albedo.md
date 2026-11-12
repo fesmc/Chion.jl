@@ -18,8 +18,10 @@ When `albedo_scheme = :constant`, the code uses:
 
 ## Dynamic Scheme
 
-The dynamic scheme keeps the surface albedo between `alpha_wet` and
-`alpha_dry`.
+The dynamic scheme is the `BESSIModel` default. It keeps the surface albedo
+between `alpha_wet` and `alpha_dry`; bare ice uses `alpha_ice`. The defaults
+`alpha_dry = 0.81`, `alpha_wet = 0.70`, and `alpha_ice = 0.40` were calibrated
+against MAR over Greenland in coupled runs.
 
 ### Temperature Aging
 

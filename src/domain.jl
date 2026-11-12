@@ -1,17 +1,4 @@
-"""Grid and backend helpers shared across Chion."""
-
-@inline cuda_available() = CUDA.functional()
-@inline gpu_storage_type() = CUDA.CuArray
-
-@inline function _ka_backend(array)
-    backend = KernelAbstractions.get_backend(array)
-    return backend isa KernelAbstractions.CPU ? KernelAbstractions.CPU(; static=true) : backend
-end
-
-@inline function _wait_kernel(event)
-    isnothing(event) || KernelAbstractions.wait(event)
-    return nothing
-end
+"""Grid helpers shared across Chion."""
 
 struct SpatialLayout
     x::Vector{Float64}

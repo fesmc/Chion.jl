@@ -1,4 +1,5 @@
 using Test
+using CUDA
 using Chion
 
 if Chion.cuda_available()

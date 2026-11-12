@@ -245,6 +245,7 @@ function load_forcing_file(
     q_sh_name::Union{Nothing, AbstractString}="SHF",
     q_lh_name::Union{Nothing, AbstractString}="LHF",
     relative_humidity_name::Union{Nothing, AbstractString}="RHZ",
+    relative_humidity_fallback_name::Union{Nothing, AbstractString}="RH",
     air_pressure_name::Union{Nothing, AbstractString}=nothing,
     surface_height_name::Union{Nothing, AbstractString}="SH",
     air_pressure_temperature_mode=:annual_mean,
@@ -300,25 +301,28 @@ function load_forcing_file(
         end
         shortwave_down = columns(shortwave_name)
         wind_speed = isnothing(wind_speed_name) || !haskey(ds, wind_speed_name) ?
-            fill(wind_default, ncol, ntime) : columns(wind_speed_name)
+            wind_default : columns(wind_speed_name)
         latitude_deg = !isnothing(latitude_name) && haskey(ds, latitude_name) ?
             _read_static_columns(ds, latitude_name, rows, ny, nx) : nothing
 
         q_lw_m, has_q_lw_m = optional(q_lw_down_name)
         q_sh_m, has_q_sh_m = optional(q_sh_name)
         q_lh_m, has_q_lh_m = optional(q_lh_name)
-        relative_humidity_m, has_relative_humidity_m = optional(relative_humidity_name)
+        # Recent MAR files (e.g. Antarctica from 2025) have no near-surface RHZ; their daily-mean
+        # relative humidity of the lowest atmospheric layer (RH) is the consistent substitute.
+        rh_name = !isnothing(relative_humidity_name) && haskey(ds, relative_humidity_name) ? relative_humidity_name :
+            relative_humidity_fallback_name
+        relative_humidity_m, has_relative_humidity_m = optional(rh_name)
 
         has_surface_height = !isnothing(surface_height_name) && haskey(ds, surface_height_name)
-        surface_height_m = fill(NaN, ncol, ntime)
-        has_surface_height && (surface_height_m .= _read_static_columns(ds, surface_height_name, rows, ny, nx))
-        air_pressure_m = fill(air_pressure_default, ncol, ntime)
-        if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
+        # Static fields are stored per column; pressure from the surface height too when it is the
+        # annual mean of one year (see `_compact_air_pressure`).
+        surface_height_m = has_surface_height ? _read_static_columns(ds, surface_height_name, rows, ny, nx) : nothing
+        air_pressure_m = if !isnothing(air_pressure_name) && haskey(ds, air_pressure_name)
             pressure_raw = columns(air_pressure_name)
-            finite_pressure = isfinite.(pressure_raw)
-            air_pressure_m[finite_pressure] .= pressure_raw[finite_pressure]
+            @. ifelse(isfinite(pressure_raw), pressure_raw, air_pressure_default)
         elseif has_surface_height
-            air_pressure_m .= air_pressure_from_surface_height(
+            _compact_air_pressure(
                 surface_height_m,
                 air_temperature;
                 dt_days=dt_days,
@@ -326,6 +330,8 @@ function load_forcing_file(
                 temperature_mode=air_pressure_temperature_mode,
                 sea_level_pressure=air_pressure_default,
             )
+        else
+            fill(air_pressure_default, ncol, ntime)
         end
 
         prescribed_albedo_m, has_prescribed_albedo_m = optional(prescribed_albedo_name)

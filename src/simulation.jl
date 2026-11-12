@@ -118,15 +118,6 @@ step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
 step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
     _step_external!(integrator, Δt_days, force_dt)
 
-_model_smb_ice_vector(::BESSIModel, ::BESSIState, runtime) =
-    _host_vector(runtime.state.smb_ice; copy_array=true)
-
-_model_smb_ice_vector(::PDDModel, ::PDDState, runtime) =
-    _host_vector(runtime.state.smb_ice; copy_array=true)
-
-_model_smb_ice_vector(::ITMModel, ::ITMState, runtime) =
-    _host_vector(runtime.state.smb_ice; copy_array=true)
-
 function _yearly_grid(values::Vector{Float64}, grid)
     any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
         return Matrix{Float64}(undef, 0, 0)
@@ -228,25 +219,6 @@ function _bessi_step_kwargs(
     )
 end
 
-function _sync_bessi_state!(sim::Simulation{<:BESSIModel}, backend_state, is_gpu::Bool, timings::StepTimingStats)
-    if is_gpu
-        time_block!(timings, :gpu_transfer) do
-            _copy_bessi_state!(sim.now, backend_state)
-        end
-    end
-    update_diagnostics!(sim.now)
-    return nothing
-end
-
-function run!(
-    sim::Simulation{<:BESSIModel};
-    io::IO=stdout,
-)
-    integrator = init_integrator(sim; io=io)
-    run!(integrator)
-    return finalize!(integrator)
-end
-
 _run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel}}) =
     _run_bessi_integrator!(integrator)
 
@@ -256,15 +228,6 @@ _run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:PDDModel}}) =
 _run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:ITMModel}}) =
     _run_itm_integrator!(integrator)
 
-@inline _can_block_bessi_scheduled_steps(monthly_mode::Bool, nc) =
-    !monthly_mode && nc === nothing
-
-@inline function _bessi_scheduled_step_stop(integrator::SimulationIntegrator, nsteps::Int)
-    runtime = integrator.model_runtime.data
-    block_steps = _step_time_block_steps(_ka_backend(runtime.state.mass))
-    return min(nsteps, integrator.time_index + block_steps - 1)
-end
-
 function _run_bessi_integrator!(integrator::SimulationIntegrator)
     run_options = integrator.sim.options
 
@@ -272,7 +235,6 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     timings = integrator.timings
     runtime = integrator.model_runtime.data
     backend_state = runtime.state
-    is_gpu = runtime.is_gpu
     nc = _state_output_from_options(sim, run_options)
     monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, run_options)
     monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
@@ -301,16 +263,11 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
     progress = Progress(run_options.years; desc="Running years: ", output=integrator.io, showspeed=true)
     while !_finished(integrator)
         year = integrator.completed_years + 1
-        allow_step_blocking = _can_block_bessi_scheduled_steps(monthly_mode, nc)
         while integrator.completed_years < year
-            if allow_step_blocking
-                first_step = integrator.time_index
-                last_step = _bessi_scheduled_step_stop(integrator, nsteps)
-                if first_step == last_step
-                    _step_scheduled!(integrator)
-                else
-                    _step_scheduled_range!(integrator, first_step:last_step)
-                end
+            if nc === nothing
+                # No per-step output: advance the rest of the year at once
+                # (`_step_range!` splits it into kernel launches).
+                _step_scheduled_range!(integrator, integrator.time_index:nsteps)
             else
                 k = integrator.time_index
                 _step_scheduled!(integrator)
@@ -330,7 +287,7 @@ function _run_bessi_integrator!(integrator::SimulationIntegrator)
                         reset_monthly!(monthly_state)
                     end
                 elseif nc !== nothing
-                    _sync_bessi_state!(sim, backend_state, is_gpu, timings)
+                    _sync_bessi_state!(sim.now, runtime, timings)
                     record_index += 1
                     time_block!(timings, :write_netcdf) do
                         write_nc!(nc, sim.now, record_index, sim.model.grid)
@@ -509,7 +466,7 @@ function yearly_step!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel
     runtime = integrator.model_runtime.data
     grid = model.grid
 
-    smb_before = _model_smb_ice_vector(model, state, runtime)
+    smb_before = _host_vector(runtime.state.smb_ice; copy_array=true)
     Tsrf_sum = similar(runtime.state.Tsrf)
     fill!(Tsrf_sum, zero(eltype(Tsrf_sum)))
 
@@ -518,7 +475,7 @@ function yearly_step!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel
         @. Tsrf_sum += runtime.state.Tsrf * weights_days[time_index]
     end
 
-    ice_sheet_net_forcing_yearly = _model_smb_ice_vector(model, state, runtime) .- smb_before
+    ice_sheet_net_forcing_yearly = _host_vector(runtime.state.smb_ice; copy_array=true) .- smb_before
     mean_T_srf_K = _host_vector(Tsrf_sum; copy_array=true) ./ total_days
     _mask_inactive_yearly_outputs!(ice_sheet_net_forcing_yearly, mean_T_srf_K, integrator.model_runtime.active)
 

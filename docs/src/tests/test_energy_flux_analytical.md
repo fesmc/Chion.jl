@@ -1,32 +1,44 @@
 # Energy Flux Analytical Validation Note
 
-This page records the analytical checks used to verify the current
-energy-balance documentation. These notes are retained as validation material;
-they are not currently backed by a file in `test/`.
+This page summarizes the analytical checks of the energy solve with the Robin
+surface boundary (see [Energy Balance](../processes/energy.md)). They are
+executed in `test/test_longwave_consistency.jl` and `test/test_case_api.jl`.
 
-## Single-Layer Closed-Form Update
+## Insulated Equilibrium
 
-For one snow layer, the implemented implicit-Euler update is
+With all surface fluxes and emission switched off and a uniform temperature,
+the solve must leave interface and layer temperatures unchanged and diagnose
+no melt. This is checked for a regular (100 kg m⁻²) and a vanishingly thin
+(10⁻⁸ kg m⁻²) surface layer: eliminating the interface temperature must not
+create a numerically singular top row, so the diagonal stays exactly one.
 
-```math
-T^{n+1} = \frac{T^n + \lambda F_{\mathrm{const}}}{1 + \lambda F_{\mathrm{lin}}},
-\quad
-\lambda = \frac{\Delta t}{c_i m_s}.
-```
+## Graybody Radiative Equilibrium
 
-This matches the single-layer branch in `src/processes/energy_flux.jl`.
+A surface at `T0` under incident longwave ``\sigma T_0^4`` from an isothermal
+blackbody environment absorbs and emits the same graybody flux regardless of
+emissivity, so neither snow nor bare ice may warm or melt. The original BESSI
+treatment (`seb_scheme=:bessi`, unit incident absorption) is checked to retain
+its spurious net gain ``(1-\epsilon)\,\sigma T_0^4``.
 
-## Uniform Profile Under Pure Diffusion
+## Interface Conductance
 
-When all external surface-flux terms are disabled and the temperature profile is
-uniform, the diffusion solve should preserve that uniform state up to
-floating-point roundoff.
+For two layers under pure diffusion, the heat exchanged between them must
+follow the harmonic interface conductance
+``G_{i+1/2} = 2K_iK_{i+1}/(K_{i+1}\Delta z_i + K_i\Delta z_{i+1})``.
 
-## Sensible-Energy Conservation
+## Melting Boundary
 
-Under the same pure-diffusion setup, diffusion should redistribute heat
-internally while conserving total sensible energy:
+When the surface energy balance would raise the interface above `T0`:
 
-```math
-E = \sum_i m_i c_i T_i.
-```
+- melt is diagnosed even if the centre of the top cell is still below `T0`;
+- the conduction ``G_s(T_0 - T_1)`` from the melting surface into the snow
+  below is retained, and the melt energy is the remainder of the surface
+  energy balance;
+- the sensible-energy change of the column plus the melt energy equals the
+  energy supplied at the surface.
+
+## Ice Substrate
+
+On a bare-ice column the public `go_energy_flux!` solves the ice substrate: a
+negative surface energy balance cools both the interface and the top
+substrate layer below `T0` instead of being discarded.
