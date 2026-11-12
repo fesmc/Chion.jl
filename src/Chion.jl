@@ -57,6 +57,8 @@ export build_model, initial_state
 # Forcing
 export SnowpackForcing
 export clear_sky_transmissivity
+export shortwave_down_from_cloud, wind_speed_from_geometry
+export temperature_variability_sigma, red_noise_monthly
 
 # Simulation
 export Simulation, SimulationResult, RunOptions

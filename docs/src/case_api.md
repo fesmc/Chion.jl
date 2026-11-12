@@ -61,6 +61,13 @@ Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
 `load_forcing_file` can select spatial columns directly with `mask_name` and
 `mask_threshold`. Selection depends only on that mask variable.
 
+A host whose climate supplies only monthly air temperature and precipitation
+can derive the rest with `shortwave_down_from_cloud` (shortwave from a cloud
+fraction, consistent with the longwave cloud proxy),
+`wind_speed_from_geometry` (wind from elevation and slope),
+`temperature_variability_sigma` and `red_noise_monthly` (daily temperature
+variability about a smooth series). Chion does not call them itself.
+
 ## Outputs
 
 `Simulation(...; write_netcdf=false)` skips NetCDF output. Use
@@ -101,6 +108,10 @@ environment.
 SnowpackGrid
 SnowpackForcing
 clear_sky_transmissivity
+shortwave_down_from_cloud
+wind_speed_from_geometry
+temperature_variability_sigma
+red_noise_monthly
 BESSIModel
 PDDModel
 ITMModel
