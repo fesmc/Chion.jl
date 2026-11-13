@@ -4,8 +4,9 @@ CurrentModule = Chion
 
 # Densification
 
-`go_densification!` updates layer density using the scheme encoded in
-`SnowpackPhysicalConstants.low_density_densification`.
+`go_densification!` updates layer density. The low-density scheme is chosen
+with the `BESSIModel` keyword `densification` (`:bessi`, the default, or
+`:htessel`); firn above 550 kg m⁻³ always follows Barnola et al. (1991).
 
 ## Common Update Rule
 
@@ -43,7 +44,10 @@ The BESSI-style tendency is
 (\rho_i - \rho)\max(A_t, 0),
 ```
 
-where `A_t` is the accumulation proxy passed into `go_densification!`.
+after Herron and Langway (1980), where ``A_t = \max(P_{\mathrm{snow}}, 0) +
+P_{\mathrm{rain}}`` is the accumulation rate in kg m⁻² s⁻¹ of the current step
+and ``T`` the layer temperature. Snow below 550 kg m⁻³ therefore densifies only
+in steps with precipitation.
 
 ### HTESSEL Option (`:htessel`)
 
@@ -79,6 +83,9 @@ after the energy, melt, and percolation updates:
 \qquad
 \Delta m_w = \max\left(m_w^{after} - m_w^{before}, 0\right).
 ```
+
+Here ``m_w^{before}`` is the liquid water saved before the energy solve, and the
+compaction applies only to layers below 550 kg m⁻³.
 
 ## Intermediate-Density Branch (`550 <= rho < 800 kg m^-3`)
 
@@ -120,7 +127,8 @@ P_{\mathrm{bubble}}=
 ```
 
 The current implementation uses `rho_e = 815 kg m^-3` and `P_atm = 101325 Pa`
-internally.
+internally. ``P_{\mathrm{bubble}}`` is zero for ``\rho \le \rho_e`` (no closed
+pores), so in practice it acts only in the high-density branch below.
 
 ## High-Density Branch (`rho >= 800 kg m^-3`)
 

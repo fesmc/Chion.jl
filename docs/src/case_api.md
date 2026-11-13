@@ -4,16 +4,22 @@ CurrentModule = Chion
 
 # Simulation API And Outputs
 
-The supported public workflow is:
+For runs from forcing files with spin-up and outputs, use an `Experiment`
+([Running Experiments](experiments.md)). This page describes the lower-level
+`Simulation` API underneath it, for forcing held in memory, step-by-step
+coupling to other models, and custom loops:
 
 1. build a `SnowpackGrid`
-2. build `BESSIModel`, `PDDModel`, or `ITMModel`
-3. build `SnowpackForcing`
+2. build `BESSIModel`, `PDDModel`, or `ITMModel` (or `build_model(:bessi, grid; ...)`)
+3. build `SnowpackForcing` (see its docstring below for the optional fields)
 4. build `Simulation`
 5. call `run!`
 
 `Simulation` owns two model-state objects: `sim.ref` is the reference state and
-`sim.now` is the evolving state. Model structs are configuration-only.
+`sim.now` is the evolving state. Model structs are configuration-only. By
+default a `Simulation` runs the forcing once (`years=1`) on the CPU and writes
+no NetCDF; pass `write_netcdf=true`, `netcdf_variables`, `output_dir` and
+`backend=:gpu` to change this.
 
 For coupling workflows, initialize an explicit stepper and update its forcing
 between steps:
@@ -29,7 +35,10 @@ result = finalize!(integrator)
 ```
 
 `run!(sim)` is a wrapper over `init_integrator`, `run!(integrator)`, and
-`finalize!(integrator)`.
+`finalize!(integrator)`. `set_active_mask!(integrator, mask)` restricts stepping
+to a subset of columns, and `yearly_step!(integrator)` advances a BESSI
+simulation by one forcing year and returns the annual coupling fields (SMB and
+mean surface temperature).
 
 `BESSIModel` resolves the layered mass and energy balance. Its defaults are
 the setup calibrated against MAR over Greenland for daily forcing (see
@@ -116,7 +125,19 @@ NetCDF output requires a `SnowpackGrid` with spatial coordinates.
 
 Use `backend=:threads` for the CPU and `backend=:gpu` with a functional CUDA
 environment. CUDA.jl is a weak dependency: `using CUDA` loads the GPU backend
-(the `ChionCUDAExt` package extension).
+(the `ChionCUDAExt` package extension). Without it, `backend=:gpu` stops with an
+error that asks for `using CUDA`.
+
+## Host Forcing Helpers
+
+These functions build forcing fields for runs without a regional climate model
+(for example, forcing from an ice-sheet model's climate). `clear_sky_transmissivity`
+needs the physical constants of a model, `model.c`:
+
+```julia
+model = BESSIModel(grid)
+tau_cs = clear_sky_transmissivity(model.c, 2000.0, 300.0)   # height (m), TOA SW (W m⁻²)
+```
 
 `PDDModel` and `ITMModel` accept `number_type` like `BESSIModel`
 (`number_type=Float32` for single precision).
@@ -126,6 +147,10 @@ environment. CUDA.jl is a weak dependency: `using CUDA` loads the GPU backend
 ```@docs
 SnowpackGrid
 SnowpackForcing
+update_air_pressure!
+build_model
+set_active_mask!
+yearly_step!
 clear_sky_transmissivity
 shortwave_down_from_transmissivity
 wind_speed_from_geometry

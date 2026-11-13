@@ -91,6 +91,12 @@ BESSIModel(forcing::Forcing; kwargs...) = BESSIModel(forcing_grid(forcing); kwar
 PDDModel(forcing::Forcing; kwargs...) = PDDModel(forcing_grid(forcing); kwargs...)
 ITMModel(forcing::Forcing; kwargs...) = ITMModel(forcing_grid(forcing); kwargs...)
 
+"""
+    ExperimentResult
+
+Returned by `run!(experiment)`: the final model `state`, the paths of the
+written `outputs`, the simulated `years` and the `wall_seconds` of the run.
+"""
 struct ExperimentResult
     state::Any
     outputs::Vector{String}
