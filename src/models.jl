@@ -44,6 +44,28 @@ longwave exchange. Set `seb_scheme=:bessi` for the original BESSI formulation.
 The defaults are the GrIS-calibrated setup for daily forcing: dynamic albedo,
 cloud-proxy longwave, a 5-layer thermal ice substrate, fine near-surface layers
 and up to 8 diurnal substeps with a 1 K air-temperature cycle.
+
+Keywords:
+- schemes: `albedo` (`:dynamic`, `:constant`, `:aging`, `:semix`,
+  `:prescribed`), `seb_scheme`, `turbulent_flux_scheme` (`:semix`, `:bessi`),
+  `longwave_scheme` (`:cloud_proxy`, `:graybody`), `densification`
+  (`:bessi`, `:htessel`), `fresh_snow_density` (`:constant`, `:parameterized`).
+- layers: `Ntot=15`, `mass_max=500`, `mass_split=300`, `mass_min=100`
+  (kg m⁻²), `near_surface_layer_max_thicknesses_m=(0.02, 0.05, 0.10, 0.30)`,
+  `ice_substrate_layers=5`, `ice_substrate_top_thickness_m=0.05`,
+  `density_init=300`, `temperature_init=273`, `refreezing_correction=1`.
+- diurnal cycle: `diurnal_shortwave_substeps=true`,
+  `diurnal_shortwave_max_substeps=8`, `diurnal_shortwave_threshold=0`,
+  `diurnal_shortwave_min_air_temperature_c=-8`, `diurnal_temperature_cycle=true`,
+  `diurnal_temperature_amplitude_c=1`, `diurnal_temperature_amplitude_gradient_c_per_km=0`,
+  `diurnal_temperature_amplitude_reference_height_m=0`, `diurnal_temperature_amplitude_max_c=1`.
+- `number_type=Float64` (`Float32` for single precision, about 2× faster on GPUs).
+- any physical constant of `SnowpackPhysicalConstants` (e.g. `alpha_dry`,
+  `semix_sensible_exchange_factor`, `lw_night_cloud_fraction`); see the
+  Default Parameters page. The values in use are in `model.c`.
+
+`BESSIModel(forcing::Forcing; kwargs...)` builds the model on the columns of a
+file-backed forcing.
 """
 struct BESSIModel{
         DiurnalShortwave,

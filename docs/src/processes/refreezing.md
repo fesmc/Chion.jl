@@ -11,7 +11,9 @@ For the layered BESSI model, `BESSIModel(...; refreezing_correction=1.0)`
 multiplies the cold-content-limited refreezing capacity everywhere. The
 default preserves the original scheme. Values above one are an empirical
 correction representing an unresolved heat sink; refreezing remains capped by
-the liquid water available in each layer.
+the liquid water available in each layer. With values above one the layer
+refreezes more water than its cold content allows, so the energy budget is no
+longer closed.
 
 ## Model Formulation
 
@@ -47,8 +49,8 @@ If ``Q_{\mathrm{cold}} \ge Q_{\mathrm{lat}}``, all liquid water freezes. Using
 the pre-update values of ``m_s``, ``m_w``, and ``T``, the code sets
 
 ```math
-T^{new} =
-\frac{m_w L_m / c_i + m_w T_0 + T m_s}{m_w + m_s}.
+T^{new} = \min\left(T_0,\;
+\frac{m_w L_m / c_i + m_w T_0 + T m_s}{m_w + m_s}\right).
 ```
 
 It then updates:

@@ -6,10 +6,14 @@ Simulation orchestration for Chion.
 """
 
 """
-    Simulation(model; forcing, state=nothing, options=RunOptions(), ...)
+    Simulation(model; forcing, state=nothing, years=1, backend=:threads,
+               write_netcdf=false, netcdf_variables, output_dir, name, ...)
 
 Couple a model configuration with forcing, reference state, current state, and
-execution/output options.
+execution/output options. `years` repeats the forcing that many times. The
+keywords override the corresponding `RunOptions` fields; without them a
+`Simulation` runs the forcing once, on the CPU, without NetCDF output.
+`sim.ref` is a copy of the initial state and `sim.now` the evolving state.
 """
 mutable struct Simulation{M<:AbstractSnowModel, F<:SnowpackForcing, S}
     model::M
@@ -61,6 +65,12 @@ function _normalize_model_name(model)
     error("Unsupported model '$model'. Use `:bessi`, `:pdd`, or `:itm`.")
 end
 
+"""
+    build_model(name, grid; kwargs...)
+
+Build `BESSIModel`, `PDDModel` or `ITMModel` from the name `:bessi`, `:pdd` or
+`:itm` (also as a string).
+"""
 function build_model(model, grid::SnowpackGrid; kwargs...)
     name = _normalize_model_name(model)
     return build_model(Val(name), grid; kwargs...)
@@ -109,6 +119,11 @@ function init_integrator(
     return _new_integrator(sim, io, timings, model_runtime)
 end
 
+"""
+    finished(integrator) -> Bool
+
+Whether all scheduled forcing steps of the simulation have been taken.
+"""
 finished(integrator::SimulationIntegrator) = _finished(integrator)
 
 step!(integrator::SimulationIntegrator) = _step_scheduled!(integrator)
@@ -490,8 +505,22 @@ end
 
 run!(integrator::SimulationIntegrator) = _run_integrator!(integrator)
 
+"""
+    finalize!(integrator) -> SimulationResult
+
+Finish a stepped simulation: copy the state back to `sim.now`, close the
+NetCDF output and return the `SimulationResult` (status `:complete` or
+`:incomplete`). Calling it again returns the same result.
+"""
 finalize!(integrator::SimulationIntegrator) = _finalize_integrator!(integrator)
 
+"""
+    set_active_mask!(integrator, mask; reset_newly_inactive=true)
+
+Restrict stepping to the columns where `mask` is true (a column vector or a
+grid-shaped matrix). Columns that become inactive are reset to the initial
+state unless `reset_newly_inactive=false`.
+"""
 set_active_mask!(integrator::SimulationIntegrator, mask; kwargs...) =
     _set_active_mask!(integrator, mask; kwargs...)
 

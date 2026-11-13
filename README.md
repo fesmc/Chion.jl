@@ -4,13 +4,11 @@ Chion is a fast, intermediate-complexity snowpack mass and energy balance model.
 It supports single-column and gridded snowpack runs, CPU execution,
 single-GPU execution through `CUDA.jl`, and optional NetCDF output.
 
-The current public workflow is:
-
-1. Build a `SnowpackGrid`.
-2. Build a `BESSIModel`, `PDDModel`, or `ITMModel`.
-3. Build a `SnowpackForcing`, or load one with `load_forcing_file`.
-4. Build a `Simulation`.
-5. Execute it with `run!`.
+Runs from forcing files are described by an `Experiment` (model, forcing,
+spin-up and outputs; see below), in Julia or as a TOML file. Underneath it, the
+low-level `Simulation` API runs forcing held in memory and supports
+step-by-step coupling (`SnowpackGrid` → model → `SnowpackForcing` →
+`Simulation` → `run!`).
 
 This model is still work in progress. Not everything is validated yet, and the
 API may still change.
@@ -45,8 +43,11 @@ Then load the package with:
 using Chion
 ```
 
-GPU runs require a working CUDA environment that `CUDA.jl` can use. NetCDF
-loading and output use `NCDatasets.jl`.
+GPU runs require a working CUDA environment. `CUDA.jl` is a weak dependency:
+add it to your own environment (`Pkg.add("CUDA")`) and run `using CUDA` before
+using `backend=:gpu` (`run_config` loads it itself). NetCDF loading and output
+use `NCDatasets.jl`. Running a configuration with `julia -m Chion` needs
+Julia ≥ 1.11.
 
 ## Running An Experiment
 
@@ -77,6 +78,7 @@ The same experiment as a TOML file (see `examples/configs/`):
 
 ```bash
 julia --project -m Chion examples/configs/greenland_parameterized.toml --backend=gpu
+julia --project -m Chion my_run.toml --set model.alpha_dry=0.84   # override any entry
 ```
 
 - `Forcing(path; format, surface_fluxes, …)` reads MAR output (`format=:mar`: variable names, ice
@@ -120,7 +122,7 @@ forcing = SnowpackForcing(
 
 simulation = Simulation(model;
     forcing=forcing,
-    years=1,
+    years=1,              # the defaults: one pass, CPU, no NetCDF output
     backend=:threads,
     write_netcdf=false,
 )
@@ -128,6 +130,12 @@ simulation = Simulation(model;
 result = run!(simulation)
 state = simulation.now
 ```
+
+Useful return values:
+
+- `result.status`: run termination status
+- `result.history`: per-year BESSI summary records
+- `result.netcdf_path`: NetCDF output path when enabled
 
 For coupled runs, use the initialized stepper API:
 
@@ -179,6 +187,10 @@ loaded = load_forcing_file("forcing.nc";
 
 ## Examples
 
+The `examples/` folder is currently kept out of the repository (it is
+git-ignored), and its configurations point to forcing data on the PIK cluster.
+Where it is available, it contains:
+
 | Folder | Contents |
 | --- | --- |
 | `examples/configs/` | complete experiments as TOML files, run with `julia --project -m Chion <file>.toml` |
@@ -198,21 +210,16 @@ Read the [Chion.jl documentation](https://fesmc.github.io/Chion.jl/dev/).
 The documentation source lives in `docs/src/`. Build it locally with:
 
 ```bash
+julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```
-
-Useful return values:
-
-- `result.status`: run termination status
-- `result.history`: per-year BESSI summary records
-- `result.netcdf_path`: NetCDF output path when enabled
 
 ## Outputs And Backends
 
 - `backend=:threads` runs on CPU.
 - `backend=:gpu` runs on a CUDA device; load CUDA.jl first (`using CUDA`), which
   activates the `ChionCUDAExt` package extension.
-- `write_netcdf=false` skips NetCDF entirely.
+- `write_netcdf=false` (the `Simulation` default) skips NetCDF entirely.
 - NetCDF output requires spatial grid coordinates.
 - `history_year_stride` controls how often BESSI year metrics are recorded.
 - `netcdf_variables=:all` selects the fields exposed by the chosen model.

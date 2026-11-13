@@ -7,6 +7,12 @@ CurrentModule = Chion
 This page summarizes the state layout and the main execution order implemented
 in `src/step.jl`.
 
+![Schematic of the multilayer snowpack model](assets/F0_model_schematic.png)
+
+*Schematic of the multilayer snowpack model: forcing, the layered snow and firn
+column with refined near-surface layers over the thermal ice substrate, and the
+order of processes within one time step.*
+
 ## State Model
 
 `Simulation` owns both state snapshots:
@@ -32,6 +38,7 @@ with layer-wise arrays for:
 | `runoff` | cumulative liquid-water export | `kg m^-2` |
 | `melt` | cumulative melted solid mass | `kg m^-2` |
 | `refreezing` | cumulative refrozen liquid mass | `kg m^-2` |
+| `vapor_mass` | cumulative net vapour exchange (deposition and condensation positive) | `kg m^-2` |
 | `sublimation` | cumulative sublimated mass | `kg m^-2` |
 | `latent_heat_flux_sum` | time-integrated latent heat-flux diagnostic | `W m^-2 day` |
 | `shortwave_down_sum`, `shortwave_net_sum` | time-integrated shortwave down and absorbed | `W m^-2 day` |
@@ -39,6 +46,9 @@ with layer-wise arrays for:
 | `sensible_heat_flux_sum`, `rain_heat_flux_sum` | time-integrated sensible heat and rain heat | `W m^-2 day` |
 | `Tsrf` | snow–air (or ice–air) interface temperature | `K` |
 | `albedo` | surface albedo used by the energy solver | `1` |
+| `snow_age_days` | time since the last snowfall (`albedo=:aging`) | `day` |
+| `w_snow_max` | seasonal maximum snow water equivalent (`albedo=:semix`) | `kg m^-2` |
+| `thickness`, `wet_mass`, `bulk_density`, `liquid_water` | column diagnostics refreshed by `update_diagnostics!` | `m`, `kg m^-2`, `kg m^-3`, `kg m^-2` |
 | `ice_temperature` | temperatures of the ice-substrate layers, `(ice_substrate_layers, column)` | `K` |
 
 The surface energy balance sums are positive into the surface. Under snow and
@@ -80,17 +90,21 @@ from the daily forcing before that split. Each substep then executes, for a
 snow-covered column:
 
 1. accumulation and rainfall input; snow falling on a previously bare surface
-   takes the air temperature
+   takes ``\min(T_{\mathrm{air}}, T_0)``; layers emptied below a trace
+   threshold are removed and their water runs off
 2. near-surface remeshing to the `near_surface_layer_max_thicknesses_m` profile
 3. albedo update
 4. densification
 5. energy solve of the snow column and the ice substrate
-6. melt, when the energy solve diagnoses melt energy
-7. percolation
-8. HTESSEL liquid-water compaction, when that scheme is active and liquid water remains
-9. refreezing
-10. near-surface remeshing again, so that the next energy solve sees the
-    prescribed thin top layers
+6. turbulent vapour exchange (sublimation/deposition, or evaporation/
+   condensation at the melting point) on the surface layer
+7. melt, when the energy solve diagnoses melt energy; melt in excess of the
+   snow melts the underlying ice and runs off
+8. percolation
+9. HTESSEL liquid-water compaction, when that scheme is active and liquid water remains
+10. refreezing
+11. near-surface remeshing again, so that the next energy solve sees the
+    prescribed thin top layers, and the final albedo/snow-age update
 
 If a column has no snow after accumulation, `step!` takes the bare-ice branch
 and skips the snow-column process chain. With an ice substrate (the default),
@@ -122,19 +136,13 @@ calibrated against MAR v3.14.3 over Greenland with daily forcing.
 
 ## Advanced Entry Points
 
-Most users should run through `Simulation` and `run!`. Coupled workflows can
+Most users should run through an `Experiment` (see
+[Running Experiments](experiments.md)) or a `Simulation` and `run!`. Coupled workflows can
 use `init_integrator`, update `integrator.sim.forcing`, call
 `sync_forcing!`, step the initialized integrator, and finish with `finalize!`.
 The lower-level state `step!` methods remain available for advanced workflows
 that manage state, forcing slices, and workspaces directly.
 
 ```@docs
-SnowpackStepForcing
-BESSIState
-PDDState
-initial_state
-init_integrator
-sync_forcing!
-finalize!
 step!
 ```

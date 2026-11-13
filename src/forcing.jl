@@ -454,7 +454,37 @@ struct OptionalForcingField{V,M}
     available::M
 end
 
-"""Time-varying atmospheric boundary conditions for a snowpack model."""
+"""
+    SnowpackForcing(; dt_days, air_temperature_c, snowfall_mm_day, rainfall_mm_day,
+                    shortwave_down, time_values=nothing, ncol=nothing, kwargs...)
+
+Time-varying atmospheric boundary conditions for a snowpack model, one value
+per column and forcing step. Fields are given as a matrix `(ncol, ntime)`, a
+vector over time (one column, or the same for every column), or a scalar.
+
+Required:
+- `dt_days`: length of each forcing step (days); its length sets `ntime`.
+- the air temperature and precipitation, either as `air_temperature_c` (°C),
+  `snowfall_mm_day`, `rainfall_mm_day` (mm w.e. day⁻¹) or in model units as
+  `air_temperature` (K), `snowfall_rate`, `rainfall_rate` (kg m⁻² s⁻¹).
+- `shortwave_down` (W m⁻²).
+
+Optional (missing fields use the parameterisations of the model):
+- `time_values`: `DateTime` of each step (default: daily from 2001-01-01 12:00);
+  sets the calendar years and the solar geometry.
+- `latitude_deg`, `surface_height` (m): needed by the diurnal substeps and
+  the cloud-proxy longwave; `surface_height` also gives the barometric
+  `air_pressure` when no pressure is supplied.
+- `wind_speed` (m s⁻¹, default 5), `relative_humidity` (fraction or %),
+  `air_pressure` (Pa).
+- prescribed surface fluxes `q_sw_net`, `q_lw_down`, `q_sh`, `q_lh` (W m⁻²),
+  `prescribed_albedo` (with `albedo=:prescribed`), `prescribed_melt`
+  (kg m⁻² per step). Each has an optional `has_*` mask to prescribe it only
+  for some columns or steps.
+- SEMIX albedo inputs `cloud`, `coszm`, `dust_deposition`, `z_sur_std`,
+  `prescribed_ice_albedo`.
+- `ice_thickness`, `annual_pdd`: ITM inputs.
+"""
 struct SnowpackForcing{C<:ForcingCalendar,F<:NamedTuple}
     calendar::C
     fields::F
@@ -1006,6 +1036,12 @@ function SnowpackForcing(;
     return SnowpackForcing(calendar, fields)
 end
 
+"""
+    update_air_pressure!(forcing::SnowpackForcing; temperature_mode=:instantaneous, ...)
+
+Overwrite `forcing.air_pressure` with the barometric pressure diagnosed from
+`surface_height` and the air temperature (`air_pressure_from_surface_height`).
+"""
 function update_air_pressure!(
     forcing::SnowpackForcing;
     temperature_mode=:instantaneous,

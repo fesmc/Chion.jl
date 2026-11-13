@@ -13,9 +13,12 @@ module-qualified rather than exported.
 ```@docs
 get_state
 print_state
+update_diagnostics!
 ```
 
 ## Backends
+
+The GPU functions need `using CUDA` (see [Installation](index.md#Installation)).
 
 ```@docs
 cuda_available

@@ -71,6 +71,12 @@ function _copy_forcing!(dest::ITMForcing, src::SnowpackForcing)
     return dest
 end
 
+"""
+    sync_forcing!(integrator)
+
+Copy `integrator.sim.forcing` to the device after it was changed in place
+(a no-op on the CPU). Call it between steps of a coupled run on the GPU.
+"""
 function sync_forcing!(integrator::SimulationIntegrator)
     data = integrator.model_runtime.data
     getproperty(data, :is_gpu) || return integrator

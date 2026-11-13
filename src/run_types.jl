@@ -19,6 +19,16 @@ end
 
 const YearHistory = Vector{YearMetrics}
 
+"""
+    RunOptions(; name="chion_run", output_dir, netcdf_path="", write_netcdf=true,
+               netcdf_variables, years=10, backend=:threads, history_year_stride=1,
+               compute_year_metrics=true)
+
+Execution and output options of a `Simulation`. `netcdf_variables` is `:all`,
+`:monthly` or a list of names; `backend` is `:threads` or `:gpu`. The
+`Simulation` keywords override these fields (and default to one year without
+NetCDF output).
+"""
 struct RunOptions
     name::String
     input_label::String
@@ -76,6 +86,13 @@ function RunOptions(;
     )
 end
 
+"""
+    SimulationResult
+
+Returned by `run!(sim)` and `finalize!(integrator)`: per-year `history`
+metrics, `status` (`:complete`/`:incomplete`), `years_completed`, `timings`,
+`run_wall_sec` and the `netcdf_path` ("" without NetCDF output).
+"""
 struct SimulationResult
     history::YearHistory
     status::Symbol
@@ -98,6 +115,13 @@ struct ModelRuntimeData{S,F,W}
     is_gpu::Bool
 end
 
+"""
+    SimulationIntegrator
+
+Explicit stepper over a `Simulation`, created by `init_integrator(sim)`.
+Advance it with `step!`, change `integrator.sim.forcing` between steps and call
+`sync_forcing!`, and finish with `finalize!`.
+"""
 mutable struct SimulationIntegrator{S,R<:ModelRuntime,I<:IO}
     sim::S
     io::I

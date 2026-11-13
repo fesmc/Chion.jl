@@ -4,8 +4,13 @@ CurrentModule = Chion
 
 # Percolation
 
-`go_percolation!` redistributes retained liquid water downward until each layer
-is at or below the configured retention threshold.
+`go_percolation!` moves liquid water downward with a bucket scheme. Each layer
+retains water up to a volumetric content of `max_lwc` = 0.1 of its pore volume.
+The pass runs once from the surface downward, before refreezing, so water in
+excess of the holding capacity passes cold layers within the same step. Water
+leaving the deepest layer runs off, because the underlying ice is impermeable.
+Lateral runoff of water ponding on ice layers within the firn is not
+represented.
 
 ## Model Formulation
 
@@ -39,12 +44,13 @@ If the pore volume is nonpositive, the current implementation routes all liquid
 water in that layer downward immediately, or to runoff if there is no deeper
 active snow layer.
 
-Layers with zero solid mass are treated the same way: their stored liquid water
-is routed onward because they cannot retain it.
+Layers with zero solid mass cannot retain water: their liquid water goes
+directly to runoff.
 
 ## Notes
 
-- the current default is `max_lwc = 0.1`
+- `max_lwc = 0.1` is fixed inside `step!`; it is a keyword only of the
+  standalone `go_percolation!`
 - returned runoff has units ``\mathrm{kg\,m^{-2}}``
 
 ## API

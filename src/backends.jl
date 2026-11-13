@@ -40,6 +40,12 @@ function _require_functional(backend::ComputeBackend)
     error("`backend=$(backend_name(backend))` requested, but it is not functional in the current environment.")
 end
 
+"""
+    cuda_available() -> Bool
+
+Whether the GPU backend can be used: CUDA.jl is loaded (`using CUDA`, which
+activates the `ChionCUDAExt` extension) and a functional GPU is present.
+"""
 @inline cuda_available() = backend_functional(GPUBackend())
 @inline gpu_storage_type() = storage_type(GPUBackend())
 

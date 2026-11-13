@@ -13,7 +13,7 @@ Manifest.toml
 *.png
 *.f90
 *.jls
-!docs/src/assets/physics_flow.svg
+!docs/src/assets/*.png
 *.sh
 !run_snowpack_column_benchmark.sh
 !run_config_gpu.sh

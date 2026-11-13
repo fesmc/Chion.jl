@@ -246,6 +246,12 @@ end
 # `Array` of a `TransposedLayerMatrix` restores the logical `(layer, column)` layout.
 @inline _cpu_state_array(state::BESSIState, name::Symbol) = Array(getfield(state, name))
 
+"""
+    cpu_state(state::BESSIState) -> BESSIState
+
+Copy of `state` with every array on the host (`Array`), e.g. to inspect or save
+the state of a GPU run.
+"""
 function cpu_state(state::BESSIState)
     return BESSIState(
         state.parameters,
@@ -261,6 +267,12 @@ end
     _gpu_layer_matrix(getfield(state, name), storage_type) :
     adapt(storage_type, getfield(state, name))
 
+"""
+    gpu_state(state::BESSIState[, storage_type]) -> BESSIState
+
+Copy of `state` on the GPU (layer fields transposed to column-major per layer).
+Needs `using CUDA` and a functional GPU.
+"""
 function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
     return BESSIState(
         state.parameters,
@@ -295,6 +307,15 @@ function PDDState(model::PDDModel)
         zeros(NF, ncol),
     )
 end
+
+"""
+    initial_state(model) -> BESSIState | PDDState | ITMState
+
+Fresh model state for `model` on the CPU, initialised from the model's
+`density_init`, `temperature_init` and layer settings. Pass it (possibly
+modified) as `Simulation(model; state=...)` or `Experiment(...; state=...)`.
+"""
+function initial_state end
 
 initial_state(model::PDDModel) = PDDState(model)
 Adapt.@adapt_structure PDDState
@@ -362,6 +383,12 @@ function _copy_bessi_state!(dest::BESSIState, src::BESSIState)
     return dest
 end
 
+"""
+    update_diagnostics!(state::BESSIState)
+
+Recompute the column diagnostics `thickness`, `wet_mass`, `bulk_density` and
+`liquid_water` from the layer fields. `run!` calls it at the end of a run.
+"""
 function update_diagnostics!(state::BESSIState)
     summarize_domain_state!(
         state.thickness,
