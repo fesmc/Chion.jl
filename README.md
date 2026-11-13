@@ -230,8 +230,8 @@ julia --project=docs docs/make.jl
 `ITMModel` is the Fortran-compatible insolation-temperature-melt bulk model.
 It requires explicit `latitude_deg`, `surface_height`, `ice_thickness` (m),
 and `annual_pdd` (K day) forcing. ITM uses `q_sw_net` as its insolation input
-when supplied; otherwise it uses `shortwave_down`. This insolation is
-top-of-atmosphere radiation, which ITM attenuates with its elevation-dependent
-transmissivity; supplying surface shortwave such as MAR `SWD` attenuates it
-twice and strongly underestimates melt. Its internal budgets retain the
-Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics.
+when supplied; otherwise it uses `shortwave_down`. Its internal budgets retain
+the Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics. The
+offset varies with latitude as `itm_c + itm_b*(|lat| - |itm_lat0|)`, the same
+in both hemispheres (`itm_lat0` [deg] is the reference latitude, its absolute
+value; `|itm_lat0| >= 90` disables this).

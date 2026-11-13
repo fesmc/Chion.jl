@@ -61,7 +61,9 @@ with its elevation-dependent transmissivity; supplying surface shortwave (for
 example MAR `SWD`) attenuates it twice and strongly underestimates melt. It
 preserves the
 Fortran scheme's per-step `mmWE day^-1` fields (`smb`, `smbi`, `melt`,
-`runoff`, `refreezing`) and cumulative `mmWE` fields.
+`runoff`, `refreezing`) and cumulative `mmWE` fields. Its offset varies with
+latitude as `itm_c + itm_b*(|lat| - |itm_lat0|)`, the same in both
+hemispheres; `|itm_lat0| >= 90` disables this.
 
 ## Input Units
 

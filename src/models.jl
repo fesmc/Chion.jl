@@ -237,6 +237,12 @@ Fortran `fesmc/chion`/smbpal implementation. ITM requires explicit
 `surface_height`, `ice_thickness`, `annual_pdd`, and `latitude_deg` fields in
 `SnowpackForcing`; `q_sw_net` is used as its insolation driver when supplied,
 otherwise `shortwave_down` is used.
+
+The ITM offset depends on latitude as `itm_c + itm_b*(|lat| - |itm_lat0|)`, the
+same in both hemispheres: `itm_b` [W m^-2 deg^-1] is the slope in |latitude| and
+`itm_lat0` [deg] the reference latitude (its absolute value; either hemisphere).
+`|itm_lat0| >= 90` disables the latitude dependence. The defaults
+(`itm_c = -45`, `itm_b = -2`, `itm_lat0 = 65`) are Greenland-tuned.
 """
 struct ITMModel{
         NF <: AbstractFloat,
