@@ -58,6 +58,12 @@ end
     return visible(rv, true), min(one(grain),oftype(grain,.6596)-oftype(grain,.1927)*rn_direct-oftype(grain,.0229)*rn_direct^2)-roughness, avf, anf
 end
 
+"""Spectral (visible/near-infrared, direct/diffuse) snow albedo bands of the SEMIX scheme."""
+@inline _semix_snow_bands(::DangSnowAlbedo, grain, dust, coszm, z_sur_std, c) =
+    _semix_dang_bands(grain, dust, coszm, z_sur_std, c)
+@inline _semix_snow_bands(::WarrenWiscombeSnowAlbedo, grain, dust, coszm, z_sur_std, c) =
+    _semix_ww_bands(grain, dust, coszm, c)
+
 @inline function _semix_daily_coszm(latitude_deg, solar_longitude_deg)
     (!isfinite(latitude_deg) || !isfinite(solar_longitude_deg)) && return zero(latitude_deg)
     declination = asin(sin(oftype(latitude_deg, π) / oftype(latitude_deg,180) * oftype(latitude_deg,23.44)) * sin(solar_longitude_deg * oftype(latitude_deg,π)/oftype(latitude_deg,180)))
@@ -86,9 +92,7 @@ end
     z_sur_std = ifelse(forcing.has_z_sur_std, max(forcing.z_sur_std, zero(snow_swe)), zero(snow_swe))
     dust_deposition = ifelse(forcing.has_dust_deposition, max(forcing.dust_deposition, zero(snow_swe)), zero(snow_swe))
     dust = _semix_dust_concentration(dust_deposition, snowfall_rate, snow_swe, seasonal_max, c)
-    bands = c.semix_snow_albedo == SEMIX_ALBEDO_DANG ?
-            _semix_dang_bands(grain, dust, coszm, z_sur_std, c) :
-            _semix_ww_bands(grain, dust, coszm, c)
+    bands = _semix_snow_bands(semix_snow_albedo(c), grain, dust, coszm, z_sur_std, c)
     updated = clamp(_semix_broadband_albedo(bands..., cloud, c), zero(snow_swe), one(snow_swe))
     _set_scalar!(albedo, idx, updated)
     return updated

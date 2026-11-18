@@ -17,3 +17,16 @@ end
         end
     end
 end
+
+# No scheme is selected by a flag or a symbol comparison inside the model code.
+@testset "Schemes by dispatch" begin
+    src = joinpath(pkgdir(Chion), "src")
+    for f in (joinpath(root, f) for (root, _, fs) in walkdir(src) for f in fs if endswith(f, ".jl"))
+        text = read(f, String)
+        @testset "$(relpath(f, src))" begin
+            @test !occursin(r"::UInt8\b", text)
+            @test !occursin(r"_uses_semix|SEB_SEMIX|SEB_BESSI|LONGWAVE_GRAYBODY|SEMIX_ALBEDO_", text)
+            @test !occursin(r"isa\s+(Constant|Dynamic|Prescribed|Aging|Semix)Albedo\b", text)
+        end
+    end
+end

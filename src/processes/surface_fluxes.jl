@@ -79,14 +79,19 @@ the cloud fraction n from `_cloud_proxy_cloud_fraction`.
 end
 
 """
-    _with_parameterized_longwave(c, forcing)
+    _with_parameterized_longwave(c, forcing, terms)
 
-For the `:cloud_proxy` longwave scheme, resolve the daily longwave down once from
+For the `CloudProxyLongwave` scheme, resolve the daily longwave down once from
 the daily forcing and pass it on as a fixed flux, so the diurnal substeps reuse
 the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
 """
-@inline function _with_parameterized_longwave(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
-    (c.longwave_scheme == LONGWAVE_CLOUD_PROXY) & !forcing.has_q_lw_down || return forcing
+@inline _with_parameterized_longwave(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms) =
+    _with_parameterized_longwave(longwave_scheme(c), c, forcing, terms)
+
+@inline _with_parameterized_longwave(::GraybodyLongwave, c, forcing::SnowpackStepForcing, terms) = forcing
+
+@inline function _with_parameterized_longwave(::CloudProxyLongwave, c, forcing::SnowpackStepForcing, terms)
+    forcing.has_q_lw_down && return forcing
     q_lw_down = _cloud_proxy_emissivity(c, forcing, terms) * c.σ * forcing.air_temperature^4
     return _with_step_forcing(forcing, (; q_lw_down, has_q_lw_down=true))
 end
@@ -94,6 +99,75 @@ end
 """Longwave down (W m⁻²): the forcing's, or the graybody sky's ϵ_air σ T_a⁴."""
 @inline _longwave_down(c::SnowpackPhysicalConstants, air_temperature, use_q_lw_down::Bool, q_lw_down_value) =
     use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
+
+"""
+    _net_longwave(scheme, c, emissivity, longwave_down, surface_temperature)
+
+Net longwave flux into the surface (W m⁻²) at the surface temperature `T_s` (K).
+SEMIX: ε (L↓ − σ T_s⁴); BESSI: L↓ − ε_snow σ T_s⁴.
+"""
+@inline _net_longwave(::SemixSurfaceEnergyBalance, c, emissivity, longwave_down, surface_temperature) =
+    emissivity * (longwave_down - c.σ * surface_temperature^4)
+@inline _net_longwave(::BESSISurfaceEnergyBalance, c, emissivity, longwave_down, surface_temperature) =
+    longwave_down - c.σ * c.ϵ_snow * surface_temperature^4
+
+"""
+    _turbulent_heat_fluxes(scheme, c, surface_temperature, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
+
+Parameterized sensible and latent heat fluxes into the surface (W m⁻²) at the surface temperature
+(K). SEMIX: the bulk formulation with stability (`_semix_turbulent_flux_linearized`); BESSI:
+`D_sh (T_a − T_s)` and the vapour-gradient latent heat (`_bessi_latent_vapor_flux`).
+"""
+@inline function _turbulent_heat_fluxes(::SemixTurbulentFluxes, c, surface_temperature, air_temperature,
+        relative_humidity, air_pressure, wind_speed, z0m)
+    sensible_constant, sensible_linear, latent_constant, latent_linear = _semix_turbulent_flux_linearized(
+        surface_temperature, c, air_temperature, relative_humidity, air_pressure, wind_speed, z0m,
+    )
+    return (
+        sensible_constant - sensible_linear * surface_temperature,
+        latent_constant - latent_linear * surface_temperature,
+    )
+end
+
+@inline function _turbulent_heat_fluxes(::BESSITurbulentFluxes, c, surface_temperature, air_temperature,
+        relative_humidity, air_pressure, wind_speed, z0m)
+    return (
+        c.D_sh * (air_temperature - surface_temperature),
+        _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure),
+    )
+end
+
+"""
+    _bare_ice_latent_heat_flux(scheme, c, latent_heat_flux, use_q_lh, use_relative_humidity, air_temperature, relative_humidity, air_pressure)
+
+Latent heat flux over bare ice (W m⁻²). Bare ice remains a solid surface at the melting point: its
+direct vapour exchange is sublimation/deposition and therefore carries Lᵥ + Lₘ. BESSI evaluates its
+vapour-gradient flux with that latent heat; SEMIX keeps its bulk flux.
+"""
+@inline _bare_ice_latent_heat_flux(::SemixTurbulentFluxes, c, latent_heat_flux, use_q_lh::Bool,
+    use_relative_humidity::Bool, air_temperature, relative_humidity, air_pressure) = latent_heat_flux
+
+@inline function _bare_ice_latent_heat_flux(::BESSITurbulentFluxes, c, latent_heat_flux, use_q_lh::Bool,
+        use_relative_humidity::Bool, air_temperature, relative_humidity, air_pressure)
+    return !use_q_lh && use_relative_humidity ?
+        _bessi_latent_vapor_flux(c.T0, c, air_temperature, relative_humidity, air_pressure, c.Lv + c.Lm) :
+        latent_heat_flux
+end
+
+"""
+    _parameterized_vapor_mass(scheme, c, latent_heat_flux, dt_seconds, surface_temperature, air_temperature, relative_humidity, air_pressure)
+
+Vapour mass exchanged with the atmosphere over `dt_seconds` (kg m⁻², positive = deposition) for
+parameterized fluxes. SEMIX converts its resolved energy flux with the phase-appropriate latent
+heat; BESSI keeps its direct vapour-gradient bookkeeping.
+"""
+@inline _parameterized_vapor_mass(::SemixTurbulentFluxes, c, latent_heat_flux, dt_seconds, surface_temperature,
+    air_temperature, relative_humidity, air_pressure) =
+    latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c)
+
+@inline _parameterized_vapor_mass(::BESSITurbulentFluxes, c, latent_heat_flux, dt_seconds, surface_temperature,
+    air_temperature, relative_humidity, air_pressure) =
+    _bessi_vapor_mass_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure) * dt_seconds
 
 @inline function _surface_vapor_fluxes(vapor_mass, latent_heat_flux)
     return (
@@ -130,22 +204,13 @@ surface-flux units.
     emissivity,
 )
     longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
-    longwave_flux = _uses_semix_seb(c) ?
-        emissivity * (longwave_down - c.σ * surface_temperature^4) :
-        longwave_down - c.σ * c.ϵ_snow * surface_temperature^4
-    semix_sensible_constant, semix_sensible_linear, semix_latent_constant, semix_latent_linear =
-        _semix_turbulent_flux_linearized(
-            surface_temperature, c, air_temperature, relative_humidity,
-            air_pressure, wind_speed, z0m,
-        )
-    sensible_heat_flux = use_q_sh ? q_sh_value :
-                         _uses_semix_turbulence(c) ? semix_sensible_constant - semix_sensible_linear * surface_temperature :
-                         c.D_sh * (air_temperature - surface_temperature)
-    latent_heat_flux = use_q_lh ? q_lh_value :
-                       use_relative_humidity ?
-                       (_uses_semix_turbulence(c) ? semix_latent_constant - semix_latent_linear * surface_temperature :
-                        _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)) :
-                       zero(dt_seconds)
+    longwave_flux = _net_longwave(surface_energy_balance_scheme(c), c, emissivity, longwave_down, surface_temperature)
+    parameterized_sensible, parameterized_latent = _turbulent_heat_fluxes(
+        turbulent_flux_scheme(c), c, surface_temperature, air_temperature, relative_humidity,
+        air_pressure, wind_speed, z0m,
+    )
+    sensible_heat_flux = use_q_sh ? q_sh_value : parameterized_sensible
+    latent_heat_flux = use_q_lh ? q_lh_value : use_relative_humidity ? parameterized_latent : zero(dt_seconds)
     rain_heat_flux = rainfall_rate * c.cw * (air_temperature - c.T0)
     return longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux
 end
@@ -200,13 +265,11 @@ energy.
             c.semix_z0m_ice,
             c.eps_ice,
         )
-    # Bare ice remains a solid surface at the melting point: its direct
-    # vapour exchange is sublimation/deposition and therefore carries Lᵥ+Lₘ.
     # (Snow with liquid water uses Lᵥ in the snow-surface routine.)
-    latent_heat_flux = !use_q_lh && use_relative_humidity && !_uses_semix_turbulence(c) ?
-        _bessi_latent_vapor_flux(
-            c.T0, c, air_temperature, relative_humidity, air_pressure, c.Lv + c.Lm,
-        ) : latent_heat_flux
+    latent_heat_flux = _bare_ice_latent_heat_flux(
+        turbulent_flux_scheme(c), c, latent_heat_flux, use_q_lh, use_relative_humidity,
+        air_temperature, relative_humidity, air_pressure,
+    )
     return (
         absorbed_shortwave,
         longwave_flux,
@@ -339,14 +402,12 @@ end
         return q_lh_value
     elseif !use_relative_humidity
         return zero(surface_temperature)
-    elseif _uses_semix_turbulence(c)
-        _, _, latent_constant, latent_linear = _semix_turbulent_flux_linearized(
-            surface_temperature, c, air_temperature, relative_humidity,
-            air_pressure, wind_speed, c.semix_z0m_snow,
-        )
-        return latent_constant - latent_linear * surface_temperature
     end
-    return _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+    _, latent_heat_flux = _turbulent_heat_fluxes(
+        turbulent_flux_scheme(c), c, surface_temperature, air_temperature, relative_humidity,
+        air_pressure, wind_speed, c.semix_z0m_snow,
+    )
+    return latent_heat_flux
 end
 
 """
@@ -400,15 +461,10 @@ function _apply_snow_surface_vapor_mass_flux!(
     # vapour-gradient bookkeeping.
     vapor_mass = forcing.has_q_lh ?
                  latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c) :
-                 _uses_semix_turbulence(c) ?
-                 latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c) :
-                 _bessi_vapor_mass_flux(
-                     surface_temperature,
-                     c,
-                     forcing.air_temperature,
-                     forcing.relative_humidity,
-                     forcing.air_pressure,
-                 ) * dt_seconds
+                 _parameterized_vapor_mass(
+                     turbulent_flux_scheme(c), c, latent_heat_flux, dt_seconds, surface_temperature,
+                     forcing.air_temperature, forcing.relative_humidity, forcing.air_pressure,
+                 )
 
     if surface_temperature < c.T0
         previous_surface_mass = _get_layer(mass, 1, idx)

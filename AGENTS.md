@@ -253,7 +253,12 @@ column_step!(fields, parameters, idx, forcing, config, workspace)
 ```
 
 - Columns are independent: the step order across columns and the time blocking never change results.
-  A refactor of the step must be bitwise identical on CPU and GPU (compare `sim.now` fields)
+  A refactor of the step must be bitwise identical on the CPU (`test/regression/bitwise.jl`). On the
+  GPU, bitwise identity holds only while the control flow is unchanged: `ptxas` fuses multiply-adds
+  into FMAs per basic block, and GPU bits also change with the CUDA.jl/LLVM version. A refactor that
+  removes branches (e.g. a flag test replaced by dispatch) must instead keep the GPU differences at
+  roundoff level, below the difference between the unchanged code's own GPU and CPU results
+  (compare baseline and change with the same CUDA environment on the same GPU model)
 - `ColumnarStepWorkspace` holds per-column scratch (`energy` heat-solve arrays,
   `liquid_water_before_energy`), overwritten by every step: do not read it across steps. The
   exception is `boundary_enthalpy`, a cumulative diagnostic for the enthalpy budget
@@ -345,7 +350,8 @@ v3.14.3 (daily forcing); the Antarctic runs add the `DOMAIN_PARAMETERS` override
 the Fortran budgets by tests in `test/test_case_api.jl`.
 
 - Never change what the defaults produce as a side effect of another change: a refactor is bitwise
-  identical on CPU and GPU, in Float64 and Float32
+  identical on the CPU, in Float64 and Float32, and within the GPU roundoff envelope on the GPU (see
+  Time-Step Flow)
 - A new scheme or option keeps the existing default; a config or experiment pins any setting it relies
   on explicitly
 - Changing a model-wide default requires checking the GrIS SMB, melt and runoff against MAR (and the

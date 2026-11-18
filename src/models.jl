@@ -96,8 +96,8 @@ end
 function BESSIModel(
     grid::SnowpackGrid;
     albedo::Union{Symbol, AbstractAlbedoScheme}=:dynamic,
-    seb_scheme::Symbol=:semix,
-    turbulent_flux_scheme::Symbol=:semix,
+    seb_scheme::Union{Symbol, AbstractSurfaceEnergyBalanceScheme}=:semix,
+    turbulent_flux_scheme::Union{Symbol, AbstractTurbulentFluxScheme}=:semix,
     densification::Union{Symbol, AbstractDensificationScheme}=:bessi,
     fresh_snow_density::Union{Symbol, AbstractFreshSnowDensityScheme}=:constant,
     Ntot::Int=DEFAULT_NTOT,
@@ -184,13 +184,10 @@ struct SimplePDD <: AbstractPDDMethod end
 """Calov-Greve expectation integral of a normally distributed temperature (as in PISM)."""
 struct PISMPDD <: AbstractPDDMethod end
 
-const _PDD_METHODS = (simple=SimplePDD(), pism=PISMPDD())
-
-@inline _normalize_pdd_method(method::AbstractPDDMethod) = method
-@inline function _normalize_pdd_method(method::Symbol)
-    haskey(_PDD_METHODS, method) || error("Unsupported PDD method '$method'. Use :simple or :pism.")
-    return _PDD_METHODS[method]
-end
+_scheme_names(::Type{AbstractPDDMethod}) = (:simple, :pism)
+_scheme_description(::Type{AbstractPDDMethod}) = "PDD method"
+_scheme(::Type{AbstractPDDMethod}, ::Val{:simple}) = SimplePDD()
+_scheme(::Type{AbstractPDDMethod}, ::Val{:pism}) = PISMPDD()
 
 """
     PDDModel(grid; ddf_snow=3.0, ddf_ice=8.0, refreezing_fraction=0.6,
@@ -320,7 +317,7 @@ function PDDModel(
     temperature_sigma > 0 || error("`temperature_sigma` must be positive.")
     H_snow_max > 0 || error("`H_snow_max` must be positive.")
 
-    method = _normalize_pdd_method(pdd_method)
+    method = _scheme(AbstractPDDMethod, pdd_method)
     NF = number_type
     c = SnowpackPhysicalConstants(NF; kwargs...)
     return PDDModel{typeof(method), NF, typeof(grid), typeof(c)}(

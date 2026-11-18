@@ -124,8 +124,8 @@ end
 
     @testset "SEMIX aerodynamic resistance follows atmospheric stability" begin
         c = Chion.SnowpackPhysicalConstants(Float64)
-        @test c.turbulent_flux_scheme == Chion.SEB_SEMIX
-        @test c.seb_scheme == Chion.SEB_SEMIX
+        @test c.turbulent_flux_scheme === Chion.SemixTurbulentFluxes()
+        @test c.seb_scheme === Chion.SemixSurfaceEnergyBalance()
         neutral = Chion._semix_aerodynamic_resistance(c, 268.0, 268.0, 80_000.0, 5.0, c.semix_z0m_snow)
         stable = Chion._semix_aerodynamic_resistance(c, 268.0, 273.0, 80_000.0, 5.0, c.semix_z0m_snow)
         unstable = Chion._semix_aerodynamic_resistance(c, 273.0, 268.0, 80_000.0, 5.0, c.semix_z0m_snow)
@@ -154,7 +154,7 @@ end
         @test latent ≈ latent_constant - latent_linear * surface_temperature
 
         bessi = Chion.SnowpackPhysicalConstants(Float64; turbulent_flux_scheme=:bessi)
-        @test bessi.turbulent_flux_scheme == Chion.SEB_BESSI
+        @test bessi.turbulent_flux_scheme === Chion.BESSITurbulentFluxes()
         _, bessi_sensible, bessi_latent, _ = Chion._resolved_nonshortwave_surface_flux_components(
             bessi, air_temperature, 0.0, 86_400.0, surface_temperature,
             true, 0.0, false, 0.0, false, 0.0, true, relative_humidity,
@@ -324,9 +324,9 @@ end
         @test BESSIModel(grid; densification=Chion.HTESSELDensification()).c.low_density_densification isa
               Chion.HTESSELDensification
         @test typeof(m2.c) == typeof(BESSIModel(grid; albedo=Chion.ConstantAlbedo()).c)
-        @test m6.c.turbulent_flux_scheme == Chion.SEB_SEMIX
-        @test m6.c.seb_scheme == Chion.SEB_SEMIX
-        @test m7.c.turbulent_flux_scheme == Chion.SEB_BESSI
+        @test m6.c.turbulent_flux_scheme === Chion.SemixTurbulentFluxes()
+        @test m6.c.seb_scheme === Chion.SemixSurfaceEnergyBalance()
+        @test m7.c.turbulent_flux_scheme === Chion.BESSITurbulentFluxes()
 
         for kwargs in (
             (; fresh_snow_density=:bessi),
@@ -353,7 +353,7 @@ end
         @test_throws Exception PDDModel(grid; pdd_method=:calov_greve)
         @test Chion.SnowpackPhysicalConstants(
             Float64; semix_snow_albedo=:warren_wiscombe,
-        ).semix_snow_albedo == Chion.SEMIX_ALBEDO_WW
+        ).semix_snow_albedo === Chion.WarrenWiscombeSnowAlbedo()
         @test RunOptions(backend=:threads).backend === Chion.ThreadsBackend()
         @test RunOptions(backend="GPU").backend === Chion.GPUBackend()
         @test RunOptions(backend=Chion.GPUBackend()).backend === Chion.GPUBackend()

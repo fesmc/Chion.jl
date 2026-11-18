@@ -629,11 +629,8 @@ Base.@propagate_inbounds function column_step_core!(
     # not an energy diagnostic when Ts changes appreciably within a substep.
     resolved_surface_temperature = _get_scalar(Tsrf, idx)
     longwave_down = _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down)
-    exact_net_longwave = ifelse(
-        _uses_semix_seb(c),
-        c.ϵ_snow * (longwave_down - c.σ * resolved_surface_temperature^4),
-        longwave_down - c.σ * c.ϵ_snow * resolved_surface_temperature^4,
-    )
+    exact_net_longwave = _net_longwave(surface_energy_balance_scheme(c), c, c.ϵ_snow, longwave_down,
+        resolved_surface_temperature)
     # The snow energy solver carries precipitation enthalpy in its effective
     # latent-heat coefficients. Record its rain component separately for the
     # energy diagnostic. Snowfall takes precedence when both phases occur,

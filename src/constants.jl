@@ -69,45 +69,126 @@ struct BESSIDensification <: AbstractDensificationScheme end
 """HTESSEL low-density densification with liquid-water compaction."""
 struct HTESSELDensification <: AbstractDensificationScheme end
 
-const _FRESH_SNOW_DENSITY_SCHEMES = (
-    constant=ConstantFreshSnowDensity(),
-    parameterized=ParameterizedFreshSnowDensity(),
-)
-const _ALBEDO_SCHEMES = (
-    constant=ConstantAlbedo(),
-    dynamic=DynamicAlbedo(),
-    prescribed=PrescribedAlbedo(),
-    aging=AgingAlbedo(),
-    semix=SemixAlbedo(),
-)
-const _DENSIFICATION_SCHEMES = (bessi=BESSIDensification(), htessel=HTESSELDensification())
+abstract type AbstractSurfaceEnergyBalanceScheme end
+"""SEMIX graybody exchange: the surface absorbs and emits longwave radiation with the snow or
+ice emissivity ε, Q_LW = ε (L↓ − σ T_s⁴)."""
+struct SemixSurfaceEnergyBalance <: AbstractSurfaceEnergyBalanceScheme end
+"""Original BESSI: all incident longwave is absorbed and the snow emissivity enters only the
+emission, Q_LW = L↓ − ε_snow σ T_s⁴."""
+struct BESSISurfaceEnergyBalance <: AbstractSurfaceEnergyBalanceScheme end
+
+abstract type AbstractTurbulentFluxScheme end
+"""SEMIX bulk sensible and latent heat with Richardson-number stability
+(`_semix_turbulent_flux_linearized`)."""
+struct SemixTurbulentFluxes <: AbstractTurbulentFluxScheme end
+"""BESSI sensible heat `D_sh (T_a − T_s)` and vapour-gradient latent heat."""
+struct BESSITurbulentFluxes <: AbstractTurbulentFluxScheme end
+
+abstract type AbstractLongwaveScheme end
+"""Longwave down from a cloud fraction diagnosed from the shortwave transmissivity
+(Konzelmann et al., 1994), resolved once per daily forcing step."""
+struct CloudProxyLongwave <: AbstractLongwaveScheme end
+"""Longwave down of a graybody sky, `ϵ_air σ T_a⁴`."""
+struct GraybodyLongwave <: AbstractLongwaveScheme end
+
+abstract type AbstractSemixSnowAlbedo end
+"""Dang et al. (2015) spectral snow albedo bands, including surface roughness."""
+struct DangSnowAlbedo <: AbstractSemixSnowAlbedo end
+"""Warren and Wiscombe (1980) spectral snow albedo bands."""
+struct WarrenWiscombeSnowAlbedo <: AbstractSemixSnowAlbedo end
 
 # ---------------------------------------------------------------------------
-# Runtime scheme flags
+# Scheme selection: names (keywords, TOML) are converted once, by dispatch
 # ---------------------------------------------------------------------------
-const SEB_BESSI = UInt8(1)
-const SEB_SEMIX = UInt8(2)
-const LONGWAVE_GRAYBODY = UInt8(1)
-const LONGWAVE_CLOUD_PROXY = UInt8(2)
-const SEMIX_ALBEDO_WW = UInt8(1)
-const SEMIX_ALBEDO_DANG = UInt8(2)
+
+"""
+    _scheme(kind, scheme)
+
+The scheme instance of abstract type `kind` that `scheme` names: an instance of `kind` is returned
+as it is, a `Symbol` or string is converted by the `_scheme(kind, ::Val{name})` methods. An
+unknown name lists the available ones.
+"""
+@inline _scheme(::Type{K}, scheme::K) where {K} = scheme
+_scheme(::Type{K}, name::Union{Symbol, AbstractString}) where {K} = _scheme(K, Val(Symbol(name)))
+function _scheme(::Type{K}, ::Val{name}) where {K, name}
+    names = join((":" * String(n) for n in _scheme_names(K)), ", ")
+    throw(ArgumentError("Unsupported $(_scheme_description(K)) '$name'. Use $names."))
+end
+function _scheme(::Type{K}, scheme) where {K}
+    throw(ArgumentError("Expected a $(_scheme_description(K)) (a name or an `$(nameof(K))`), got $(repr(scheme))."))
+end
+
+# One table of the scheme names: it defines the `_scheme(kind, ::Val{name})` methods and the
+# names listed in errors.
+const _SCHEME_TABLE = (
+    (AbstractFreshSnowDensityScheme, "fresh-snow density scheme",
+        (constant = ConstantFreshSnowDensity(), parameterized = ParameterizedFreshSnowDensity())),
+    (AbstractAlbedoScheme, "albedo scheme",
+        (constant = ConstantAlbedo(), dynamic = DynamicAlbedo(), prescribed = PrescribedAlbedo(),
+         aging = AgingAlbedo(), semix = SemixAlbedo())),
+    (AbstractDensificationScheme, "low-density densification scheme",
+        (bessi = BESSIDensification(), htessel = HTESSELDensification())),
+    (AbstractSurfaceEnergyBalanceScheme, "surface-energy-balance scheme",
+        (semix = SemixSurfaceEnergyBalance(), bessi = BESSISurfaceEnergyBalance())),
+    (AbstractTurbulentFluxScheme, "turbulent flux scheme",
+        (semix = SemixTurbulentFluxes(), bessi = BESSITurbulentFluxes())),
+    (AbstractLongwaveScheme, "longwave scheme",
+        (cloud_proxy = CloudProxyLongwave(), graybody = GraybodyLongwave())),
+    (AbstractSemixSnowAlbedo, "`semix_snow_albedo`",
+        (dang = DangSnowAlbedo(), warren_wiscombe = WarrenWiscombeSnowAlbedo())),
+)
+
+for (kind, description, schemes) in _SCHEME_TABLE
+    @eval _scheme_names(::Type{$kind}) = $(keys(schemes))
+    @eval _scheme_description(::Type{$kind}) = $description
+    for (name, scheme) in pairs(schemes)
+        @eval _scheme(::Type{$kind}, ::Val{$(QuoteNode(name))}) = $scheme
+    end
+end
+
+"""
+    _scheme_name(scheme)
+
+The keyword/TOML name of the scheme instance `scheme` (e.g. `:semix` for
+`SemixSurfaceEnergyBalance()`), or its type name for a scheme without one. Host side only.
+"""
+function _scheme_name(scheme)
+    for (kind, _, schemes) in _SCHEME_TABLE
+        scheme isa kind || continue
+        for (name, candidate) in pairs(schemes)
+            candidate === scheme && return name
+        end
+    end
+    return nameof(typeof(scheme))
+end
+
+"""Check scheme-specific constraints on the constants; the default accepts everything."""
+_validate_albedo_scheme(::AbstractAlbedoScheme, alpha_dry, alpha_wet) = nothing
+_validate_albedo_scheme(::AgingAlbedo, alpha_dry, alpha_wet) =
+    0 <= alpha_wet <= alpha_dry <= 1 ||
+    throw(ArgumentError("Aging albedos must satisfy 0 <= alpha_wet <= alpha_dry <= 1."))
 
 # ---------------------------------------------------------------------------
 # Physical constants struct and constructors
 # ---------------------------------------------------------------------------
 
 """
-    SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification}
+    SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification, SurfaceEnergyBalance,
+                              TurbulentFluxes, Longwave, SemixSnowAlbedo}
 
-Container for physical constants, empirical coefficients, and scheme flags
-used by the snowpack model. The fresh-snow density, albedo and low-density
-densification schemes are type parameters (see `AbstractAlbedoScheme` etc.).
+Container for physical constants and empirical coefficients used by the snowpack model. Every
+scheme choice is a type parameter (see `AbstractAlbedoScheme` etc.), so process code selects
+the scheme by dispatch, at compile time.
 """
 struct SnowpackPhysicalConstants{
         NF <: AbstractFloat,
         FreshSnowDensity <: AbstractFreshSnowDensityScheme,
         Albedo <: AbstractAlbedoScheme,
         Densification <: AbstractDensificationScheme,
+        SurfaceEnergyBalance <: AbstractSurfaceEnergyBalanceScheme,
+        TurbulentFluxes <: AbstractTurbulentFluxScheme,
+        Longwave <: AbstractLongwaveScheme,
+        SemixSnowAlbedo <: AbstractSemixSnowAlbedo,
     }
     rho_s::NF
     rho_i::NF
@@ -129,7 +210,6 @@ struct SnowpackPhysicalConstants{
     aging_cold_timescale_days::NF
     aging_melting_timescale_days::NF
     ϵ_air::NF
-    longwave_scheme::UInt8
     lw_clear_sky_transmissivity::NF
     lw_clear_sky_transmissivity_per_km::NF
     lw_clear_sky_transmissivity_insolation::NF
@@ -147,8 +227,6 @@ struct SnowpackPhysicalConstants{
     σ::NF
     T0::NF
     seconds_per_day::NF
-    seb_scheme::UInt8
-    turbulent_flux_scheme::UInt8
     eps_ice::NF
     semix_karman::NF
     semix_surface_height::NF
@@ -158,7 +236,6 @@ struct SnowpackPhysicalConstants{
     semix_sensible_exchange_factor::NF
     semix_stable_coefficient::NF
     semix_latent_exchange_factor::NF
-    semix_snow_albedo::UInt8
     semix_frac_vu::NF
     semix_alb_snow_vis_new::NF
     semix_alb_snow_nir_new::NF
@@ -184,16 +261,31 @@ end
 @inline albedo_scheme(::SnowpackPhysicalConstants{NF, F, A}) where {NF, F, A} = A()
 """Low-density densification scheme of `c` (an `AbstractDensificationScheme` instance)."""
 @inline densification_scheme(::SnowpackPhysicalConstants{NF, F, A, D}) where {NF, F, A, D} = D()
+"""Surface-energy-balance scheme of `c` (an `AbstractSurfaceEnergyBalanceScheme` instance)."""
+@inline surface_energy_balance_scheme(::SnowpackPhysicalConstants{NF, F, A, D, S}) where {NF, F, A, D, S} = S()
+"""Turbulent flux scheme of `c` (an `AbstractTurbulentFluxScheme` instance)."""
+@inline turbulent_flux_scheme(::SnowpackPhysicalConstants{NF, F, A, D, S, T}) where {NF, F, A, D, S, T} = T()
+"""Longwave scheme of `c` (an `AbstractLongwaveScheme` instance)."""
+@inline longwave_scheme(::SnowpackPhysicalConstants{NF, F, A, D, S, T, L}) where {NF, F, A, D, S, T, L} = L()
+"""SEMIX snow albedo bands of `c` (an `AbstractSemixSnowAlbedo` instance)."""
+@inline semix_snow_albedo(::SnowpackPhysicalConstants{NF, F, A, D, S, T, L, W}) where {NF, F, A, D, S, T, L, W} = W()
+
+const _SCHEME_PROPERTIES = (:fresh_snow_density_scheme, :albedo_scheme, :low_density_densification,
+    :seb_scheme, :turbulent_flux_scheme, :longwave_scheme, :semix_snow_albedo)
 
 @inline function Base.getproperty(c::SnowpackPhysicalConstants, name::Symbol)
     name === :fresh_snow_density_scheme && return fresh_snow_density_scheme(c)
     name === :albedo_scheme && return albedo_scheme(c)
     name === :low_density_densification && return densification_scheme(c)
+    name === :seb_scheme && return surface_energy_balance_scheme(c)
+    name === :turbulent_flux_scheme && return turbulent_flux_scheme(c)
+    name === :longwave_scheme && return longwave_scheme(c)
+    name === :semix_snow_albedo && return semix_snow_albedo(c)
     return getfield(c, name)
 end
 
 Base.propertynames(c::SnowpackPhysicalConstants, private::Bool=false) =
-    (fieldnames(typeof(c))..., :fresh_snow_density_scheme, :albedo_scheme, :low_density_densification)
+    (fieldnames(typeof(c))..., _SCHEME_PROPERTIES...)
 
 Base.eltype(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 
@@ -204,77 +296,8 @@ Return the floating-point element type used by the physical constants set `c`.
 """
 @inline number_type(::SnowpackPhysicalConstants{NF}) where {NF} = NF
 
-@inline _uses_semix_seb(c::SnowpackPhysicalConstants) = c.seb_scheme == SEB_SEMIX
-
-"""Whether turbulent sensible and latent heat use the SEMIX bulk formulation."""
-@inline _uses_semix_turbulence(c::SnowpackPhysicalConstants) =
-    c.turbulent_flux_scheme == SEB_SEMIX
-
 @inline _initial_snow_albedo(c::SnowpackPhysicalConstants) =
     c.alpha_dry
-
-"""
-    _normalize_low_density_densification(scheme)
-
-Validate a low-density densification scheme (`:bessi`, `:htessel` or an
-`AbstractDensificationScheme`) and return the scheme instance.
-"""
-@inline _normalize_low_density_densification(scheme::AbstractDensificationScheme) = scheme
-@inline function _normalize_low_density_densification(scheme::Symbol)
-    haskey(_DENSIFICATION_SCHEMES, scheme) ||
-        error("Unsupported low-density densification scheme '$scheme'. Use :bessi or :htessel.")
-    return _DENSIFICATION_SCHEMES[scheme]
-end
-
-"""
-    _normalize_fresh_snow_density_scheme(scheme)
-
-Validate a fresh-snow density scheme (`:constant`, `:parameterized` or an
-`AbstractFreshSnowDensityScheme`) and return the scheme instance.
-"""
-@inline _normalize_fresh_snow_density_scheme(scheme::AbstractFreshSnowDensityScheme) = scheme
-@inline function _normalize_fresh_snow_density_scheme(scheme::Symbol)
-    haskey(_FRESH_SNOW_DENSITY_SCHEMES, scheme) ||
-        error(
-            "Unsupported fresh-snow density scheme '$scheme'. " *
-            "Use :constant or :parameterized.",
-        )
-    return _FRESH_SNOW_DENSITY_SCHEMES[scheme]
-end
-
-"""
-    _normalize_albedo_scheme(scheme)
-
-Validate an albedo scheme (`:constant`, `:dynamic`, `:prescribed`, `:aging`,
-`:semix` or an `AbstractAlbedoScheme`) and return the scheme instance.
-"""
-@inline _normalize_albedo_scheme(scheme::AbstractAlbedoScheme) = scheme
-@inline function _normalize_albedo_scheme(scheme::Symbol)
-    haskey(_ALBEDO_SCHEMES, scheme) ||
-        error(
-            "Unsupported albedo scheme '$scheme'. " *
-            "Use :constant, :dynamic, :prescribed, :aging, or :semix.",
-        )
-    return _ALBEDO_SCHEMES[scheme]
-end
-
-@inline function _normalize_longwave_scheme(scheme::Symbol)
-    scheme in (:graybody, :cloud_proxy) ||
-        error("Unsupported longwave scheme '$scheme'. Use :graybody or :cloud_proxy.")
-    return scheme == :cloud_proxy ? LONGWAVE_CLOUD_PROXY : LONGWAVE_GRAYBODY
-end
-
-@inline function _normalize_seb_scheme(scheme::Symbol)
-    scheme in (:bessi, :semix) ||
-        error("Unsupported surface-energy-balance scheme '$scheme'. Use :bessi or :semix.")
-    return scheme == :semix ? SEB_SEMIX : SEB_BESSI
-end
-
-@inline function _normalize_semix_snow_albedo(scheme::Symbol)
-    scheme in (:warren_wiscombe, :dang) ||
-        error("Unsupported `semix_snow_albedo` '$scheme'. Use :warren_wiscombe or :dang.")
-    return scheme == :dang ? SEMIX_ALBEDO_DANG : SEMIX_ALBEDO_WW
-end
 
 """
     SnowpackPhysicalConstants(::Type{NF}; kwargs...)
@@ -305,7 +328,7 @@ function SnowpackPhysicalConstants(::Type{NF};
     aging_melting_timescale_days::Real=2.0,
     albedo_scheme::Union{Symbol, AbstractAlbedoScheme}=:dynamic,
     ϵ_air::Real=0.8,
-    longwave_scheme::Symbol=:cloud_proxy,
+    longwave_scheme::Union{Symbol, AbstractLongwaveScheme}=:cloud_proxy,
     lw_clear_sky_transmissivity::Real=0.718,
     lw_clear_sky_transmissivity_per_km::Real=0.0298,
     lw_clear_sky_transmissivity_insolation::Real=0.0569,
@@ -324,8 +347,8 @@ function SnowpackPhysicalConstants(::Type{NF};
     T0::Real=273.15,
     seconds_per_day::Real=DEFAULT_SECONDS_PER_DAY,
     low_density_densification::Union{Symbol, AbstractDensificationScheme}=:bessi,
-    seb_scheme::Symbol=:semix,
-    turbulent_flux_scheme::Symbol=:semix,
+    seb_scheme::Union{Symbol, AbstractSurfaceEnergyBalanceScheme}=:semix,
+    turbulent_flux_scheme::Union{Symbol, AbstractTurbulentFluxScheme}=:semix,
     eps_ice::Real=0.98,
     semix_karman::Real=0.4,
     semix_surface_height::Real=10.0,
@@ -335,7 +358,7 @@ function SnowpackPhysicalConstants(::Type{NF};
     semix_sensible_exchange_factor::Real=3.0,
     semix_stable_coefficient::Real=40.0,
     semix_latent_exchange_factor::Real=1.0,
-    semix_snow_albedo::Symbol=:dang,
+    semix_snow_albedo::Union{Symbol, AbstractSemixSnowAlbedo}=:dang,
     semix_frac_vu::Real=0.45,
     semix_alb_snow_vis_new::Real=0.99,
     semix_alb_snow_nir_new::Real=0.65,
@@ -354,20 +377,18 @@ function SnowpackPhysicalConstants(::Type{NF};
     semix_k_sigma_orog::Real=0.0,
     semix_sigma_orog_crit::Real=1000.0,
 ) where {NF <: AbstractFloat}
-    resolved_albedo_scheme = _normalize_albedo_scheme(albedo_scheme)
-    if resolved_albedo_scheme isa AgingAlbedo
-        0 <= alpha_wet <= alpha_dry <= 1 || error(
-            "Aging albedos must satisfy 0 <= alpha_wet <= alpha_dry <= 1.",
-        )
-    end
+    schemes = (
+        _scheme(AbstractFreshSnowDensityScheme, fresh_snow_density_scheme),
+        _scheme(AbstractAlbedoScheme, albedo_scheme),
+        _scheme(AbstractDensificationScheme, low_density_densification),
+        _scheme(AbstractSurfaceEnergyBalanceScheme, seb_scheme),
+        _scheme(AbstractTurbulentFluxScheme, turbulent_flux_scheme),
+        _scheme(AbstractLongwaveScheme, longwave_scheme),
+        _scheme(AbstractSemixSnowAlbedo, semix_snow_albedo),
+    )
+    _validate_albedo_scheme(schemes[2], alpha_dry, alpha_wet)
     aging_cold_timescale_days > 0 || error("`aging_cold_timescale_days` must be positive.")
     aging_melting_timescale_days > 0 || error("`aging_melting_timescale_days` must be positive.")
-    resolved_fresh_snow_density_scheme = _normalize_fresh_snow_density_scheme(fresh_snow_density_scheme)
-    resolved_densification_scheme = _normalize_low_density_densification(low_density_densification)
-    seb_flag = _normalize_seb_scheme(seb_scheme)
-    turbulent_flux_flag = _normalize_seb_scheme(turbulent_flux_scheme)
-    semix_albedo_flag = _normalize_semix_snow_albedo(semix_snow_albedo)
-    longwave_flag = _normalize_longwave_scheme(longwave_scheme)
     lw_clear_sky_transmissivity > 0 || error("`lw_clear_sky_transmissivity` must be positive.")
     lw_cloud_transmission_coefficient > 0 || error("`lw_cloud_transmission_coefficient` must be positive.")
     lw_cloud_transmission_exponent > 0 || error("`lw_cloud_transmission_exponent` must be positive.")
@@ -382,12 +403,7 @@ function SnowpackPhysicalConstants(::Type{NF};
     semix_sensible_exchange_factor > 0 || error("`semix_sensible_exchange_factor` must be positive.")
     semix_stable_coefficient >= 0 || error("`semix_stable_coefficient` must be nonnegative.")
     semix_latent_exchange_factor > 0 || error("`semix_latent_exchange_factor` must be positive.")
-    return SnowpackPhysicalConstants{
-        NF,
-        typeof(resolved_fresh_snow_density_scheme),
-        typeof(resolved_albedo_scheme),
-        typeof(resolved_densification_scheme),
-    }(
+    return SnowpackPhysicalConstants{NF, map(typeof, schemes)...}(
         convert(NF, rho_s),
         convert(NF, rho_i),
         convert(NF, rho_w),
@@ -408,7 +424,6 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, aging_cold_timescale_days),
         convert(NF, aging_melting_timescale_days),
         convert(NF, ϵ_air),
-        longwave_flag,
         convert(NF, lw_clear_sky_transmissivity),
         convert(NF, lw_clear_sky_transmissivity_per_km),
         convert(NF, lw_clear_sky_transmissivity_insolation),
@@ -426,8 +441,6 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, σ),
         convert(NF, T0),
         convert(NF, seconds_per_day),
-        seb_flag,
-        turbulent_flux_flag,
         convert(NF, eps_ice),
         convert(NF, semix_karman),
         convert(NF, semix_surface_height),
@@ -437,7 +450,6 @@ function SnowpackPhysicalConstants(::Type{NF};
         convert(NF, semix_sensible_exchange_factor),
         convert(NF, semix_stable_coefficient),
         convert(NF, semix_latent_exchange_factor),
-        semix_albedo_flag,
         convert(NF, semix_frac_vu),
         convert(NF, semix_alb_snow_vis_new),
         convert(NF, semix_alb_snow_nir_new),

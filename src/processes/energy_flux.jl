@@ -128,6 +128,47 @@ end
 end
 
 """
+    _linearized_net_longwave(scheme, c, emissivity, longwave_down, T³, T⁴)
+
+Net longwave flux into the surface linearised about the previous surface temperature T
+(T³ and T⁴ given), as `(constant, linear)` with Q_LW(T_s) ≈ constant − linear T_s:
+σ T_s⁴ ≈ σ (4 T³ T_s − 3 T⁴). SEMIX scales emission and absorption by ε, BESSI only the emission
+by ε_snow (see `_net_longwave`).
+"""
+@inline function _linearized_net_longwave(::SemixSurfaceEnergyBalance, c, emissivity, longwave_down,
+        surface_temperature_cube, surface_temperature_fourth)
+    return (
+        emissivity * (longwave_down + c.σ * oftype(longwave_down, 3.0) * surface_temperature_fourth),
+        c.σ * emissivity * oftype(longwave_down, 4.0) * surface_temperature_cube,
+    )
+end
+
+@inline function _linearized_net_longwave(::BESSISurfaceEnergyBalance, c, emissivity, longwave_down,
+        surface_temperature_cube, surface_temperature_fourth)
+    return (
+        longwave_down + c.σ * c.ϵ_snow * oftype(longwave_down, 3.0) * surface_temperature_fourth,
+        c.σ * c.ϵ_snow * oftype(longwave_down, 4.0) * surface_temperature_cube,
+    )
+end
+
+"""
+    _linearized_turbulent_heat_fluxes(scheme, c, surface_temperature, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
+
+Sensible and latent heat fluxes linearised about the previous surface temperature, as
+`(sensible_constant, sensible_linear, latent_constant, latent_linear)` with Q ≈ constant − linear T_s.
+"""
+@inline _linearized_turbulent_heat_fluxes(::SemixTurbulentFluxes, c, surface_temperature, air_temperature,
+    relative_humidity, air_pressure, wind_speed, z0m) =
+    _semix_turbulent_flux_linearized(surface_temperature, c, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
+
+@inline function _linearized_turbulent_heat_fluxes(::BESSITurbulentFluxes, c, surface_temperature, air_temperature,
+        relative_humidity, air_pressure, wind_speed, z0m)
+    latent_constant, latent_linear =
+        _bessi_latent_vapor_flux_linearized(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+    return air_temperature * c.D_sh, c.D_sh, latent_constant, latent_linear
+end
+
+"""
     shortwave_absorbed(shortwave_down; surface_albedo)
 
 Return the absorbed shortwave flux after applying `surface_albedo`.
@@ -373,28 +414,21 @@ function _go_energy_flux_resolved!(
         q_sw_net_value :
         shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
     longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
-    longwave_flux_constant = if _uses_semix_seb(c)
-        emissivity * (longwave_down + c.σ * oftype(air_temperature, 3.0) * surface_temperature_fourth)
-    else
-        longwave_down + c.σ * c.ϵ_snow * oftype(air_temperature, 3.0) * surface_temperature_fourth
-    end
-    longwave_flux_linear = c.σ * (_uses_semix_seb(c) ? emissivity : c.ϵ_snow) *
-                           oftype(air_temperature, 4.0) * surface_temperature_cube
-    semix_sensible_constant, semix_sensible_linear, semix_latent_constant, semix_latent_linear =
-        _semix_turbulent_flux_linearized(
-            previous_surface_temperature, c, air_temperature, relative_humidity,
-            air_pressure, wind_speed, z0m,
-        )
-    sensible_heat_flux_constant = use_q_sh ? q_sh_value :
-                                  _uses_semix_turbulence(c) ? semix_sensible_constant : air_temperature * c.D_sh
-    sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) :
-                                _uses_semix_turbulence(c) ? semix_sensible_linear : c.D_sh
+    longwave_flux_constant, longwave_flux_linear = _linearized_net_longwave(
+        surface_energy_balance_scheme(c), c, emissivity, longwave_down,
+        surface_temperature_cube, surface_temperature_fourth,
+    )
+    parameterized_sensible_constant, parameterized_sensible_linear,
+    parameterized_latent_constant, parameterized_latent_linear = _linearized_turbulent_heat_fluxes(
+        turbulent_flux_scheme(c), c, previous_surface_temperature, air_temperature, relative_humidity,
+        air_pressure, wind_speed, z0m,
+    )
+    sensible_heat_flux_constant = use_q_sh ? q_sh_value : parameterized_sensible_constant
+    sensible_heat_flux_linear = use_q_sh ? zero(dt_seconds) : parameterized_sensible_linear
     turbulent_latent_heat_constant, turbulent_latent_heat_linear = if use_q_lh
         q_lh_value, zero(dt_seconds)
     elseif use_relative_humidity
-        _uses_semix_turbulence(c) ?
-        (semix_latent_constant, semix_latent_linear) :
-        _bessi_latent_vapor_flux_linearized(previous_surface_temperature, c, air_temperature, relative_humidity, air_pressure)
+        parameterized_latent_constant, parameterized_latent_linear
     else
         zero(dt_seconds), zero(dt_seconds)
     end
