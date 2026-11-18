@@ -100,7 +100,7 @@ export temperature_variability_sigma, red_noise_monthly, update_air_pressure!
 # Simulation and output
 export Simulation, Clock, DebugConfig, run!, time_step!, spin_up!, finished, yearly_step!, smbstats
 export NoSpinup, CycledSpinup, ClimatologySpinup
-export Output, OutputConfig, available_output_variables, run_config, write_restart
+export Output, OutputConfig, EveryStep, Daily, Monthly, Yearly, Every, Columns, AreaSum, AreaMean, Mean, Snapshot, available_output_variables, run_config, write_restart
 export Hour, Day, Week, Month, Year     # output frequencies, from Dates
 
 end

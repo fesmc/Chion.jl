@@ -352,6 +352,19 @@ end
     end
 end
 
+@testset "Output choices as types" begin
+    o = Output("a.nc"; frequency = :monthly, aggregate = :columns, kind = :snapshot)
+    @test o.frequency === Monthly() && o.aggregate === Columns() && o.kind === Snapshot() && o.format === Chion.NetCDFFormat()
+    @test Output("b.csv"; frequency = Month(6), aggregate = AreaSum()).frequency === Every(Month(6))
+    @test Output("c.nc"; frequency = Yearly(), kind = Mean()).kind === Mean()
+    @test Chion._label(Every(Month(6))) == "6 months" && Chion._label(AreaSum()) == "area_sum"
+    @test_throws ArgumentError Output("d.nc"; frequency = :hourly)
+    @test_throws ArgumentError Output("d.nc"; aggregate = :sum)
+    @test_throws ArgumentError Output("d.txt")
+    @test_throws ArgumentError Output("d.nc"; frequency = Day(0))
+    @test_throws ArgumentError Output("d.nc"; regions = (a = [true],))           # regions need area aggregation
+end
+
 @testset "configuration overrides" begin
     @test Chion._set_value("0.84") == 0.84 && Chion._set_value("prescribed") == "prescribed"
     @test Chion._set_value("[1940, 1969]") == [1940, 1969]
