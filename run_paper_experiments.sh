@@ -31,7 +31,7 @@ mkdir -p logs/paper
 GROUP=$1
 C=examples/configs
 CONFIG="-m Chion"
-PRESCRIBED="--set forcing.surface_fluxes=prescribed --set model.albedo=prescribed"
+PRESCRIBED="--set forcing.surface_fluxes=prescribed --set model.albedo_scheme=prescribed"
 
 if [[ $GROUP == native ]]; then
     # Spin-up: 5 cycles of the daily MAR years 1940-1969, then 1940-1979 on daily MAR, then the
@@ -47,10 +47,10 @@ fi
 runs() {
     case $GROUP in
     greenland)
-        echo "greenland_prescribed_steps_8|output/greenland_prescribed_steps_8/budget_yearly.csv|$CONFIG $C/greenland_prescribed.toml --backend=gpu --output-dir=output/greenland_prescribed_steps_8 --set model.diurnal_shortwave_max_substeps=8"
+        echo "greenland_prescribed_steps_8|output/greenland_prescribed_steps_8/budget_yearly.csv|$CONFIG $C/greenland_prescribed.toml --backend=gpu --output-dir=output/greenland_prescribed_steps_8 --set model.diurnal_cycle.type=substeps --set model.diurnal_cycle.max_substeps=8"
         echo "greenland_parameterized|output/greenland_parameterized/budget_yearly.csv|$CONFIG $C/greenland_parameterized.toml --backend=gpu"
         echo "greenland_firn_parameterized|output/greenland_firn_parameterized/firn_profiles.nc|$CONFIG $C/greenland_firn.toml --backend=gpu --output-dir=output/greenland_firn_parameterized"
-        echo "greenland_firn_parameterized_ntot30|output/greenland_firn_parameterized_ntot30/firn_profiles.nc|$CONFIG $C/greenland_firn.toml --backend=gpu --output-dir=output/greenland_firn_parameterized_ntot30 --set model.Ntot=30"
+        echo "greenland_firn_parameterized_ntot30|output/greenland_firn_parameterized_ntot30/firn_profiles.nc|$CONFIG $C/greenland_firn.toml --backend=gpu --output-dir=output/greenland_firn_parameterized_ntot30 --set grid.Ntot=30"
         echo "greenland_firn_prescribed|output/greenland_firn_prescribed/firn_profiles.nc|$CONFIG $C/greenland_firn.toml --backend=gpu --output-dir=output/greenland_firn_prescribed $PRESCRIBED"
         ;;
     native)
@@ -62,7 +62,7 @@ runs() {
             echo "antarctica_$m|output/antarctica_$m/budget_yearly.csv|$CONFIG $C/antarctica_$m.toml --backend=gpu"
             echo "antarctica_firn_$m|output/antarctica_firn_$m/firn_profiles.nc|$CONFIG $C/antarctica_firn.toml --backend=gpu --output-dir=output/antarctica_firn_$m $set_m"
         done
-        echo "antarctica_firn_parameterized_ntot30|output/antarctica_firn_parameterized_ntot30/firn_profiles.nc|$CONFIG $C/antarctica_firn.toml --backend=gpu --output-dir=output/antarctica_firn_parameterized_ntot30 --set model.Ntot=30"
+        echo "antarctica_firn_parameterized_ntot30|output/antarctica_firn_parameterized_ntot30/firn_profiles.nc|$CONFIG $C/antarctica_firn.toml --backend=gpu --output-dir=output/antarctica_firn_parameterized_ntot30 --set grid.Ntot=30"
         ;;
     snow)
         echo "snowmip_sites|output/snowmip/runs/cdp.csv|examples/runs/snowmip_sites.jl"
