@@ -33,3 +33,12 @@ the derivative with respect to `x` for `p < 1`.
     positive = x > zero(x)
     return ifelse(positive, ifelse(positive, x, one(x))^p, zero(x))
 end
+
+"""
+    _primal(x)
+
+The value of `x` without derivative information: `x` itself for plain numbers; the
+`ChionForwardDiffExt` extension returns the value of a ForwardDiff `Dual`. Host-side code that
+leaves the model's number type (outputs, logs, metadata) converts through it.
+"""
+@inline _primal(x) = x

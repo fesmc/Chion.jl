@@ -86,7 +86,8 @@ end
 # A parameter value as TOML: numbers as they are, schemes as tables with their name under `type`.
 _toml_value(value::Integer) = value
 _toml_value(value::AbstractFloat) = Float64(value)
-_toml_value(value::Tuple) = collect(value)
+_toml_value(value::Real) = Float64(_primal(value))
+_toml_value(value::Tuple) = collect(map(_toml_value, value))
 function _toml_value(scheme)
     table = Dict{String, Any}("type" => String(_scheme_name(scheme)))
     for name in fieldnames(typeof(scheme))

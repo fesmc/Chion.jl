@@ -77,7 +77,7 @@ output_variables(::PDDModel) = PDD_OUTPUT_VARS
 output_variables(::ITMModel) = ITM_OUTPUT_VARS
 
 @inline _host_vector(data::Vector{Float64}; copy_array::Bool=false) = copy_array ? copy(data) : data
-@inline _host_vector(data; copy_array::Bool=false) = Float64.(Array(data))
+@inline _host_vector(data; copy_array::Bool=false) = Float64.(_primal.(Array(data)))
 
 const NETCDF_TIME_EPOCH = DateTime(1970, 1, 1)
 const NETCDF_TIME_UNITS = "days since 1970-01-01 00:00:00"

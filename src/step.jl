@@ -1,6 +1,6 @@
 """BESSI column stepping and CPU/GPU schedulers."""
 
-@inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N} =
+@inline _workspace_array(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: Real, N} =
     similar(storage, NF, dims...)
 
 """Scratch rows of the column heat-diffusion solve (see `_eliminate_heat_diffusion_upward!`):
@@ -12,7 +12,7 @@ struct EnergyWorkspace{A}
     rhs::A
 end
 
-function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: AbstractFloat, N}
+function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: Real, N}
     allocate() = _workspace_array(storage, NF, dims...)
     return EnergyWorkspace(allocate(), allocate(), allocate())
 end
@@ -31,7 +31,7 @@ struct ColumnarStepWorkspace{LWT,ET,BHE}
     boundary_enthalpy::BHE
 end
 
-function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: AbstractFloat}
+function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where {NF <: Real}
     boundary_enthalpy = _workspace_array(storage, NF, ncol)
     fill!(boundary_enthalpy, zero(NF))
     return ColumnarStepWorkspace(

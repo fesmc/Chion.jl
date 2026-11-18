@@ -410,7 +410,7 @@ function _accumulate_step!(rec::OutputRecorder, state, dt_days::Float64)
     _update_derived!(rec, state)
     for (name, acc) in rec.sums
         src = _column_source(rec, state, name)
-        acc .+= src .* dt_days
+        acc .+= _primal.(src) .* dt_days
     end
     return nothing
 end
@@ -446,7 +446,7 @@ function _period_values(rec::OutputRecorder, state, host_state)
         elseif v.shape == :column
             out[name] = _host_vector(_column_source(rec, state, name); copy_array=true)
         elseif v.shape in (:layer, :substrate)
-            out[name] = Float64.(Array(getproperty(host_state, name)))           # (layer, column)
+            out[name] = Float64.(_primal.(Array(getproperty(host_state, name))))   # (layer, column)
         elseif v.shape == :depth
             out[name] = _depth_profile(host_state, name, rec.spec.depths, rec.model)   # (depth, column)
         end
@@ -457,10 +457,11 @@ end
 
 """Density in the depth bins (edges `depths`) or temperature at the depths `depths`, per column."""
 function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64}, model)
-    N, m, ρ, T, Ti = Array(state.N), Array(state.mass), Array(state.density), Array(state.temperature), Array(state.ice_temperature)
-    rho_ice = Float64(model.params.rho_i)
+    N = Array(state.N)
+    m, ρ, T, Ti = (_primal.(Array(x)) for x in (state.mass, state.density, state.temperature, state.ice_temperature))
+    rho_ice = Float64(_primal(model.params.rho_i))
     nsub = size(Ti, 1)
-    sub_dz = [model.grid.layering.ice_substrate_top_thickness_m * 2.0^(k - 1) for k in 1:nsub]
+    sub_dz = [_primal(model.grid.layering.ice_substrate_top_thickness_m) * 2.0^(k - 1) for k in 1:nsub]
     ncol = length(N)
     nout = name == :density_profile ? length(depths) - 1 : length(depths)
     out = fill(NaN, nout, ncol)

@@ -26,7 +26,7 @@ Fresh snow takes a constant density, clamped to [50 kg m⁻³, `rho_i`].
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct ConstantFreshSnowDensity{NF <: AbstractFloat} <: AbstractFreshSnowDensityScheme
+@kwdef struct ConstantFreshSnowDensity{NF <: Real} <: AbstractFreshSnowDensityScheme
     "density of fresh snow (kg m⁻³, default `315`)"
     density::NF = 315.0
 end
@@ -41,7 +41,7 @@ Fresh-snow density from the air temperature T_a and the wind speed U,
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct ParameterizedFreshSnowDensity{NF <: AbstractFloat} <: AbstractFreshSnowDensityScheme
+@kwdef struct ParameterizedFreshSnowDensity{NF <: Real} <: AbstractFreshSnowDensityScheme
     "density at the melting point without wind, a (kg m⁻³, default `109`)"
     intercept::NF = 109.0
     "temperature coefficient b (kg m⁻³ K⁻¹, default `6`)"
@@ -100,7 +100,7 @@ Knap, 1998). Snowfall resets the albedo to `alpha_dry`.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct AgingAlbedo{NF <: AbstractFloat} <: AbstractAlbedoScheme
+@kwdef struct AgingAlbedo{NF <: Real} <: AbstractAlbedoScheme
     "e-folding time of the albedo decay of a subfreezing surface (day, default `20`)"
     cold_timescale_days::NF = 20.0
     "e-folding time of the albedo decay of a melting surface (day, default `2`)"
@@ -131,7 +131,7 @@ else `alpha_ice`.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct SemixAlbedo{NF <: AbstractFloat, B <: AbstractSemixSnowAlbedo} <: AbstractAlbedoScheme
+@kwdef struct SemixAlbedo{NF <: Real, B <: AbstractSemixSnowAlbedo} <: AbstractAlbedoScheme
     "spectral snow albedo bands (default `DangSnowAlbedo()`)"
     snow_bands::B = DangSnowAlbedo()
     "visible fraction of the shortwave down under a clear sky (–, default `0.45`)"
@@ -235,7 +235,7 @@ and Q_E = f_E L ρ C_H U (q_a − q_s).
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct SemixTurbulentFluxes{NF <: AbstractFloat} <: AbstractTurbulentFluxScheme
+@kwdef struct SemixTurbulentFluxes{NF <: Real} <: AbstractTurbulentFluxScheme
     "von Kármán constant κ (–, default `0.4`)"
     karman::NF = 0.4
     "height z of the air temperature, humidity and wind (m, default `10`)"
@@ -263,7 +263,7 @@ gradient, L (r D_sh / c_p) (0.622/p) (e_a − e_s(T_s)).
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct BESSITurbulentFluxes{NF <: AbstractFloat} <: AbstractTurbulentFluxScheme
+@kwdef struct BESSITurbulentFluxes{NF <: Real} <: AbstractTurbulentFluxScheme
     "sensible heat transfer coefficient D_sh (W m⁻² K⁻¹, default `10`)"
     D_sh::NF = 10.0
     "ratio r of the latent to the sensible transfer coefficient (–, default `1`)"
@@ -291,7 +291,7 @@ night and for sub-daily forcing n is `night_cloud_fraction`.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct CloudProxyLongwave{NF <: AbstractFloat} <: AbstractLongwaveScheme
+@kwdef struct CloudProxyLongwave{NF <: Real} <: AbstractLongwaveScheme
     "clear-sky transmissivity τ₀ at sea level and SW_TOA = 300 W m⁻² (–, default `0.718`)"
     clear_sky_transmissivity_sea_level::NF = 0.718
     "increase τ_z of the clear-sky transmissivity with height (km⁻¹, default `0.0298`)"
@@ -363,7 +363,7 @@ daily mean, peaking in the afternoon; each substep takes its interval average.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct DiurnalTemperatureCycle{NF <: AbstractFloat} <: AbstractDiurnalTemperatureCycle
+@kwdef struct DiurnalTemperatureCycle{NF <: Real} <: AbstractDiurnalTemperatureCycle
     "amplitude A₀ (K, default `1`)"
     amplitude::NF = 1.0
     "increase γ of the amplitude with the surface height above `reference_height` (K m⁻¹, default `0`)"
@@ -385,7 +385,7 @@ or whose air temperature is below `min_air_temperature` take one step.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct DiurnalSubsteps{NF <: AbstractFloat, T <: AbstractDiurnalTemperatureCycle} <: AbstractDiurnalCycle
+@kwdef struct DiurnalSubsteps{NF <: Real, T <: AbstractDiurnalTemperatureCycle} <: AbstractDiurnalCycle
     "maximum number of substeps per forcing step (1 to 24, default `8`)"
     max_substeps::Int = 8
     "daily shortwave below which a step is not split (W m⁻², default `0`)"

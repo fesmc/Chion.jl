@@ -406,13 +406,13 @@ end
 The model on the columns of `forcing`: `BESSIModel(Grid(forcing; NF, layering); forcing, kwargs...)`
 with `params = Params(; NF)` unless given. Likewise `PDDModel(forcing)` and `ITMModel(forcing)`.
 """
-function BESSIModel(forcing::Forcing; NF::Type{<:AbstractFloat} = Float64, layering::Layering = Layering(),
+function BESSIModel(forcing::Forcing; NF::Type{<:Real} = Float64, layering::Layering = Layering(),
         params = Params(; NF), kwargs...)
     return BESSIModel(Grid(forcing; NF = number_type(params), layering); forcing, params, kwargs...)
 end
-PDDModel(forcing::Forcing; NF::Type{<:AbstractFloat} = Float64, params = PDDParams(; NF), kwargs...) =
+PDDModel(forcing::Forcing; NF::Type{<:Real} = Float64, params = PDDParams(; NF), kwargs...) =
     PDDModel(Grid(forcing; NF = number_type(params)); forcing, params, kwargs...)
-ITMModel(forcing::Forcing; NF::Type{<:AbstractFloat} = Float64, params = ITMParams(; NF), kwargs...) =
+ITMModel(forcing::Forcing; NF::Type{<:Real} = Float64, params = ITMParams(; NF), kwargs...) =
     ITMModel(Grid(forcing; NF = number_type(params)); forcing, params, kwargs...)
 
 """
@@ -420,7 +420,7 @@ ITMModel(forcing::Forcing; NF::Type{<:AbstractFloat} = Float64, params = ITMPara
 
 The grid of the columns (and their x–y layout) of a file-backed or in-memory forcing.
 """
-function Grid(forcing::Forcing; NF::Type{<:AbstractFloat} = Float64, layering::Layering = Layering())
+function Grid(forcing::Forcing; NF::Type{<:Real} = Float64, layering::Layering = Layering())
     g = forcing_grid(forcing)
     return Grid(g.ncol, g.layout, (validate(layering); _promote_param(layering, NF)))
 end

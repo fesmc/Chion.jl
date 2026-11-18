@@ -116,6 +116,33 @@ forcing steps `steps` of the loaded year, without output and without changing
 the year; `update_forcing!(model, year)` loads another year. `integrate!` is
 the entry point for automatic differentiation.
 
+## Automatic Differentiation
+
+Columns are smooth functions of the parameters and the forcing between discrete events (layer
+split/merge, snow↔ice switches), so derivatives are pathwise slopes. Two paths are tested against
+finite differences (`test/test_autodiff.jl`):
+
+- **ForwardDiff** through a whole model: build it at a dual number type and give the parameter of
+  interest a unit partial (`using ForwardDiff` loads `ChionForwardDiffExt`, which lets outputs and
+  logs take the values of the duals):
+
+```julia
+using Chion, ForwardDiff
+function melt(alpha_dry)
+    NF = typeof(alpha_dry)
+    model = BESSIModel(Grid(n; NF); forcing, params = Params(; NF, alpha_dry))
+    integrate!(model, 1:365)
+    return sum(model.state.melt)
+end
+ForwardDiff.derivative(melt, 0.81)          # kg m⁻² per unit albedo
+```
+
+- **Enzyme forward mode** through `column_step!`, on the CPU and inside the GPU kernel
+  (`autodiff_deferred`), with the state arrays as `Duplicated` arguments.
+
+Scheme coefficients differentiate the same way (`SemixTurbulentFluxes(sensible_exchange_factor =
+Dual(…))`). Reverse mode is not available for the layered model.
+
 ## Input Units
 
 `SnowpackForcing` accepts either model-native fields or user-facing fields:

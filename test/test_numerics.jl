@@ -50,6 +50,16 @@ end
     @test AgingAlbedo(cold_timescale_days = 15) === AgingAlbedo(15.0, 2.0)
     @test DiurnalSubsteps(max_substeps = 4, threshold = 1) isa DiurnalSubsteps{Float64}
     @test Layering(mass_max = 600).mass_max === 600.0
+    # All-integer coefficients become the number type of the parameters (integer fields stay Int).
+    p_int = Params(NF = Float32, albedo_scheme = AgingAlbedo(cold_timescale_days = 15, melting_timescale_days = 2),
+        diurnal_cycle = DiurnalSubsteps(max_substeps = 4, threshold = 0, min_air_temperature = 265,
+            temperature_cycle = DiurnalTemperatureCycle(amplitude = 1, amplitude_gradient = 0, reference_height = 0,
+                amplitude_max = 2)))
+    @test p_int.albedo_scheme === AgingAlbedo{Float32}(15f0, 2f0)
+    @test p_int.diurnal_cycle.max_substeps === 4 && p_int.diurnal_cycle.threshold === 0f0
+    @test p_int.diurnal_cycle.temperature_cycle.amplitude_max === 2f0
+    @test Grid(1; layering = Layering(mass_max = 600, mass_split = 300, mass_min = 100,
+        near_surface_layer_max_thicknesses_m = (1, 1, 1, 1), ice_substrate_top_thickness_m = 1)).mass_max === 600.0
     @test_throws ArgumentError Params(rho_s = 300.0)
     @test_throws ArgumentError Params(diurnal_cycle = DiurnalSubsteps(max_substeps = 30))
     @test_throws ArgumentError Params(turbulent_flux_scheme = SemixTurbulentFluxes(karman = 0))

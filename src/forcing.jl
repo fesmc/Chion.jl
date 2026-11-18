@@ -107,15 +107,15 @@ end
 
 """Adapt.jl adaptor converting floating-point forcing data (arrays and scalars inside the forcing
 wrappers) to the model's number type `NF`; Bool masks and integers are left unchanged."""
-struct NumberTypeAdaptor{NF <: AbstractFloat} end
-Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{<:AbstractFloat}) where {NF} = convert(Array{NF}, x)
+struct NumberTypeAdaptor{NF <: Real} end
 # Already in `NF`: kept as is, so forcing built on a device in the model's number type stays there.
-Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{NF}) where {NF <: AbstractFloat} = x
+Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractArray{T}) where {NF, T <: AbstractFloat} =
+    T === NF ? x : convert(Array{NF}, x)
 Adapt.adapt_storage(::NumberTypeAdaptor{NF}, x::AbstractFloat) where {NF} = NF(x)
 
 """Forcing fields in the number type `NF` (no copy for Float64)."""
 @inline forcing_fields_as(::Type{Float64}, fields) = fields
-@inline forcing_fields_as(::Type{NF}, fields) where {NF <: AbstractFloat} = adapt(NumberTypeAdaptor{NF}(), fields)
+@inline forcing_fields_as(::Type{NF}, fields) where {NF <: Real} = adapt(NumberTypeAdaptor{NF}(), fields)
 
 @inline _constant_forcing_matrix(value, dims::Tuple{Int, Int}) =
     ConstantForcingMatrix(value, dims)
@@ -647,7 +647,7 @@ end
 @inline _device_forcing_fields(forcing::SnowpackForcing) = get_fields(forcing)
 @inline _device_forcing_fields(forcing::NamedTuple) = forcing
 
-struct SnowpackStepForcing{NF <: AbstractFloat}
+struct SnowpackStepForcing{NF <: Real}
     air_temperature::NF
     dt_days::NF
     snowfall_rate::NF

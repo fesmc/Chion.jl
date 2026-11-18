@@ -97,11 +97,17 @@ differentiable.
 
 ### Differentiability
 
-- Supported AD paths: Enzyme forward mode through `column_step!` on the CPU and inside the KA kernel on
-  the GPU (`autodiff_deferred`); it must keep working. ForwardDiff through a model built at `NF = Dual`
-  and Enzyme reverse mode through Reactant are the targets: `NF <: AbstractFloat` currently excludes
-  `Dual`, and reverse mode exists only in the fixed-grid port (`fixed-grid-ad`). Do not add code that
-  blocks either path
+- Supported AD paths (`test/test_autodiff.jl`, checked against finite differences): Enzyme forward
+  mode through `column_step!` on the CPU and inside the KA kernel on the GPU (`autodiff_deferred`),
+  and ForwardDiff through a whole model built at `NF = Dual` (`Params(; NF, alpha_dry = Dual(…))`,
+  `integrate!` or a `Simulation`; `NF <: Real`). Both must keep working. Enzyme reverse mode through
+  Reactant is the target; it exists only in the fixed-grid port (`fixed-grid-ad`). Do not add code that
+  blocks any of these paths
+- Host code that leaves the number type (outputs, logs, metadata) converts with `_primal` (the value of
+  a `Dual`, from `ChionForwardDiffExt`), never with `Float64(x)` on model numbers
+- Every field of a scheme, boundary condition or `Layering` declared with the type parameter `NF` is
+  converted to the model's number type by `_promote_param` (from the struct definition); declare
+  integer fields (counts) as `Int`
 - Never call `Enzyme.API.strictAliasing!(false)`: it silently gave wrong tangents and broke reverse mode
 - No global or hidden mutable state; every input of a computation is passed explicitly. The exceptions
   are launch configuration that never changes results: `CHION_CPU_TIME_BLOCK_STEPS` /
@@ -116,9 +122,8 @@ differentiable.
 - Layer split/merge, snow↔ice switches and remeshing make annual SMB piecewise smooth (jumps of
   0.2–7 kg m⁻² per 0.01 K): AD gives the pathwise slope. Do not add new discrete switches to the
   column step where a continuous formulation exists
-- A change to the dynamics or to a scheme needs a gradient check: an Enzyme forward-mode test against
-  finite differences on a short column run (`test/test_autodiff.jl`, to be created with the first such
-  change), and the FD tests in `examples/research/differentiable_column/run_tests.jl` when the port is
+- A change to the dynamics or to a scheme needs a gradient check: extend `test/test_autodiff.jl`
+  (Enzyme forward and ForwardDiff against finite differences on a short column run), and the FD tests in `examples/research/differentiable_column/run_tests.jl` when the port is
   touched
 
 ### Physics

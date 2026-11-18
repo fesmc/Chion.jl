@@ -307,7 +307,7 @@ function _advance!(sim::Simulation, last_step::Int)
         _bucket(rec.spec.frequency, times[k], k) != _bucket(rec.spec.frequency, times[k + 1], k + 1) :
         next_first === nothing || _bucket(rec.spec.frequency, times[k], k) != _bucket(rec.spec.frequency, next_first, k + 1)
     every_step = any(rec -> rec.needs_every_step, recorders)
-    seconds_per_day = Float64(model.params.seconds_per_day)
+    seconds_per_day = Float64(_primal(model.params.seconds_per_day))
     k = clock.step
     while k <= last_step
         for rec in recorders
@@ -508,11 +508,11 @@ function smbstats(model::AbstractSnowModel)
     active = model.cache.active
     means = NamedTuple{names}(map(name -> _active_mean(getproperty(model.state, name), active), names))
     area === nothing && return (; mean_kg_m2 = means)
-    totals = NamedTuple{names}(map(name -> sum(Float64.(Array(getproperty(model.state, name)))[active] .* area[active]) * 1e-6, names))
+    totals = NamedTuple{names}(map(name -> sum(_host_vector(getproperty(model.state, name))[active] .* area[active]) * 1e-6, names))
     return (; mean_kg_m2 = means, total_Gt = totals)
 end
 
 _smbstats_fields(::BESSIModel) = (:smb_ice, :melt, :runoff, :refreezing, :sublimation)
 _smbstats_fields(::PDDModel) = (:smb_ice, :runoff)
 _smbstats_fields(::ITMModel) = (:smb_ice, :melt_cum, :runoff_cum, :refreezing_cum)
-_active_mean(values, active) = (host = Float64.(Array(values)); sum(host[active]) / count(active))
+_active_mean(values, active) = (host = _host_vector(values); sum(host[active]) / count(active))

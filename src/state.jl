@@ -239,7 +239,7 @@ State of a [`PDDModel`](@ref): the snow reservoir and the cumulative mass fluxes
 # Fields
 $(TYPEDFIELDS)
 """
-struct PDDState{ST <: AbstractVector{<:AbstractFloat}}
+struct PDDState{ST <: AbstractVector{<:Real}}
     "snow water equivalent (mm w.e.)"
     snowpack_swe::ST
     "net mass forcing of the ice sheet (mm w.e., cumulative)"
@@ -267,7 +267,7 @@ mm w.e. day⁻¹; the cumulative fields (`*_cum`, `smb_ice`) in mm w.e.
 # Fields
 $(TYPEDFIELDS)
 """
-struct ITMState{ST <: AbstractVector{<:AbstractFloat}}
+struct ITMState{ST <: AbstractVector{<:Real}}
     "snow water equivalent (mm w.e.)"
     H_snow::ST
     "surface albedo (–)"

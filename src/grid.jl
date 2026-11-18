@@ -15,7 +15,7 @@ whose thicknesses double downward from `ice_substrate_top_thickness_m`.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct Layering{NF <: AbstractFloat}
+@kwdef struct Layering{NF <: Real}
     "maximum number of snow and firn layers (default `15`)"
     Ntot::Int = DEFAULT_NTOT
     "mass above which a layer splits (kg m⁻², default `500`)"
@@ -105,7 +105,7 @@ struct Grid{NF, L <: Union{Nothing, SpatialLayout}}
     layering::Layering{NF}
 end
 
-function Grid(ncol::Integer; NF::Type{<:AbstractFloat} = Float64, layering::Layering = Layering(),
+function Grid(ncol::Integer; NF::Type{<:Real} = Float64, layering::Layering = Layering(),
         x = nothing, y = nothing, js = nothing, is = nothing, mask = nothing)
     _require(ncol > 0, "`ncol` must be positive.")
     validate(layering)
@@ -126,7 +126,7 @@ function Grid(ncol::Integer; NF::Type{<:AbstractFloat} = Float64, layering::Laye
 end
 
 """The grid of `grid`'s columns and layout with the layering `layering` and number type `NF`."""
-Grid(grid::Grid; NF::Type{<:AbstractFloat} = number_type(grid), layering::Layering = grid.layering) =
+Grid(grid::Grid; NF::Type{<:Real} = number_type(grid), layering::Layering = grid.layering) =
     (validate(layering); Grid(grid.ncol, grid.layout, _promote_param(layering, NF)))
 
 const _GRID_LAYOUT_PROPERTIES = (:x, :y, :js, :is, :mask)

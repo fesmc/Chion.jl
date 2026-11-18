@@ -29,7 +29,7 @@ F = G_s (T_s − T₁); above the melting point the surface is held at T₀ and 
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct PrescribedSurfaceFlux{NF <: AbstractFloat} <: AbstractSurfaceBoundaryCondition
+@kwdef struct PrescribedSurfaceFlux{NF <: Real} <: AbstractSurfaceBoundaryCondition
     "heat flux into the surface (W m⁻², default `0`)"
     flux::NF = 0.0
 end
@@ -43,7 +43,7 @@ is G_s (T − T₁). No melt is diagnosed; use temperatures at or below T₀.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct PrescribedSurfaceTemperature{NF <: AbstractFloat} <: AbstractSurfaceBoundaryCondition
+@kwdef struct PrescribedSurfaceTemperature{NF <: Real} <: AbstractSurfaceBoundaryCondition
     "surface temperature (K, default `263.15`)"
     temperature::NF = 263.15
 end
@@ -70,7 +70,7 @@ cᵢ mₙ dTₙ/dt = … + q.
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct GeothermalFlux{NF <: AbstractFloat} <: AbstractBottomBoundaryCondition
+@kwdef struct GeothermalFlux{NF <: Real} <: AbstractBottomBoundaryCondition
     "upward heat flux into the column (W m⁻², default `0.05`)"
     flux::NF = 0.05
 end
@@ -84,14 +84,11 @@ Gₙ (T_b − Tₙ) with Gₙ = 2Kₙ/Δzₙ, e.g. with the near-surface ice tem
 # Fields
 $(TYPEDFIELDS)
 """
-@kwdef struct PrescribedBottomTemperature{NF <: AbstractFloat} <: AbstractBottomBoundaryCondition
+@kwdef struct PrescribedBottomTemperature{NF <: Real} <: AbstractBottomBoundaryCondition
     "temperature below the column (K, default `263.15`)"
     temperature::NF = 263.15
 end
 
-for T in (:PrescribedSurfaceFlux, :PrescribedSurfaceTemperature, :GeothermalFlux, :PrescribedBottomTemperature)
-    @eval $T(value::Real) = $T(float(value))
-end
 
 """
 $(TYPEDEF)

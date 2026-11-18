@@ -19,15 +19,33 @@ function _mapfields(f, x)
     return _rebuild(T, ntuple(i -> f(getfield(x, i)), fieldcount(T))...)
 end
 
-_to_nf(value::AbstractFloat, ::Type{NF}) where {NF} = NF(value)
+_to_nf(value::Real, ::Type{NF}) where {NF} = NF(value)
 _to_nf(value::Tuple, ::Type{NF}) where {NF} = map(v -> _to_nf(v, NF), value)
-_to_nf(value, ::Type) = value
 
-"""A scheme (or `Layering`) with every floating-point field, nested ones included, at type `NF`."""
-_promote_param(x, ::Type{NF}) where {NF} = _mapfields(v -> _promote_value(v, NF), x)
-_promote_value(v::Union{AbstractFloat, Tuple}, ::Type{NF}) where {NF} = _to_nf(v, NF)
-_promote_value(v::Number, ::Type) = v
-_promote_value(v, ::Type{NF}) where {NF} = isstructtype(typeof(v)) ? _promote_param(v, NF) : v
+# Fields declared with the number-type parameter `NF` (or as a tuple of it), read from the struct
+# definition; fields declared otherwise (e.g. `Ntot::Int`) keep their values.
+_is_number_type_parameter(declared) = declared isa TypeVar && declared.name === :NF
+_is_number_type_field(declared) = _is_number_type_parameter(declared) ||
+    (declared isa DataType && declared <: Tuple && !isempty(declared.parameters) &&
+     all(_is_number_type_parameter, declared.parameters))
+
+"""
+    _promote_param(x, NF)
+
+A scheme, boundary condition or `Layering` with every field declared with its number-type
+parameter `NF` (integers included) converted to `NF`, nested schemes recursively.
+"""
+function _promote_param(x, ::Type{NF}) where {NF}
+    T = typeof(x)
+    fieldcount(T) == 0 && return x
+    declared = Base.unwrap_unionall(Base.typename(T).wrapper).types
+    values = ntuple(fieldcount(T)) do i
+        value = getfield(x, i)
+        _is_number_type_field(declared[i]) ? _to_nf(value, NF) :
+            !(value isa Number) && isstructtype(typeof(value)) ? _promote_param(value, NF) : value
+    end
+    return _rebuild(T, values...)
+end
 
 # A field value of a parameter struct at type NF: a number converted, a scheme promoted.
 _param_value(v::Integer, ::Type{NF}, ::Type{Int}) where {NF} = Int(v)
@@ -76,7 +94,7 @@ that scheme. [`ParamsAISv1`](@ref) gives the Antarctic calibration.
 $(TYPEDFIELDS)
 """
 struct Params{
-        NF <: AbstractFloat,
+        NF <: Real,
         FS <: AbstractFreshSnowDensityScheme,
         A <: AbstractAlbedoScheme,
         D <: AbstractDensificationScheme,
@@ -184,7 +202,7 @@ Keyword constructor of [`Params`](@ref): every keyword is a field of the same na
 units and defaults), and every number and the floating-point fields of the schemes are converted to
 `NF`. `Params()` is the Greenland calibration.
 """
-function Params(; NF::Type{<:AbstractFloat} = Float64, kwargs...)
+function Params(; NF::Type{<:Real} = Float64, kwargs...)
     params = _build_params(Params, _param_defaults(Params), NF, values(kwargs))
     validate(params)
     return params
@@ -194,7 +212,9 @@ end
 Params(params::Params; kwargs...) =
     Params(; NF = number_type(params), _fields(params)..., kwargs...)
 
-_fields(x) = NamedTuple{fieldnames(typeof(x))}(ntuple(i -> getfield(x, i), fieldcount(typeof(x))))
+# The fields of `x` as a NamedTuple; the length is a compile-time `Val`, so the result is
+# type-stable for any number of fields (and differentiable by Enzyme).
+@inline _fields(x::T) where {T} = NamedTuple{fieldnames(T)}(ntuple(i -> getfield(x, i), Val(fieldcount(T))))
 
 function validate(params::Params)
     _require(isfinite(params.refreezing_correction) && params.refreezing_correction > 0,
@@ -259,7 +279,7 @@ turns into ice.
 # Fields
 $(TYPEDFIELDS)
 """
-struct PDDParams{NF <: AbstractFloat, M <: AbstractPDDMethod}
+struct PDDParams{NF <: Real, M <: AbstractPDDMethod}
     "degree-day factor of snow (mm w.e. K⁻¹ day⁻¹, default `3`)"
     ddf_snow::NF
     "degree-day factor of ice (mm w.e. K⁻¹ day⁻¹, default `8`)"
@@ -288,7 +308,7 @@ _param_defaults(::Type{<:PDDParams}) = (ddf_snow = 3.0, ddf_ice = 8.0, refreezin
 Keyword constructor of [`PDDParams`](@ref); `method = PISMPDD()` uses the Calov–Greve expectation
 integral at every step.
 """
-function PDDParams(; NF::Type{<:AbstractFloat} = Float64, kwargs...)
+function PDDParams(; NF::Type{<:Real} = Float64, kwargs...)
     params = _build_params(PDDParams, _param_defaults(PDDParams), NF, values(kwargs))
     _require(params.ddf_snow > 0, "`ddf_snow` must be positive.")
     _require(params.ddf_ice >= 0, "`ddf_ice` must be non-negative.")
@@ -315,7 +335,7 @@ transmissivity τ = a + b √z and a latitude-dependent offset c.
 # Fields
 $(TYPEDFIELDS)
 """
-struct ITMParams{NF <: AbstractFloat}
+struct ITMParams{NF <: Real}
     "transmissivity at sea level, a (–, default `0.46`)"
     trans_a::NF
     "transmissivity increase with √height, b (m^-½, default `6e-5`)"
@@ -373,7 +393,7 @@ _param_defaults(::Type{<:ITMParams}) = (trans_a = 0.46, trans_b = 6e-5, itm_c = 
 
 Keyword constructor of [`ITMParams`](@ref).
 """
-function ITMParams(; NF::Type{<:AbstractFloat} = Float64, kwargs...)
+function ITMParams(; NF::Type{<:Real} = Float64, kwargs...)
     params = _build_params(ITMParams, _param_defaults(ITMParams), NF, values(kwargs))
     _require(params.H_snow_max > 0, "`H_snow_max` must be positive.")
     _require(params.H_snow_crit_desert > 0, "`H_snow_crit_desert` must be positive.")
