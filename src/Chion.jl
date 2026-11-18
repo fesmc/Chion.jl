@@ -13,6 +13,7 @@ using SpecialFunctions: erfc
 # ---------------------------------------------------------------------------
 include("backends.jl")
 include("constants.jl")
+include("numerics.jl")
 include("domain.jl")
 include("forcing.jl")
 include("timing.jl")

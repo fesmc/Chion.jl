@@ -306,7 +306,7 @@ end
                              zero(liquid_water_content), one(liquid_water_content))
         # Preserve the one-day relaxation while composing consistently across
         # substeps at fixed wetness. Saturated wetness reaches alpha_wet directly.
-        retention = (one(wet_fraction) - wet_fraction)^oftype(wet_fraction, dt_days)
+        retention = _safe_pow(one(wet_fraction) - wet_fraction, oftype(wet_fraction, dt_days))
         wet_adjusted_albedo = c.alpha_wet + (updated_albedo - c.alpha_wet) * retention
         updated_albedo = max(c.alpha_wet, min(updated_albedo, wet_adjusted_albedo))
     end

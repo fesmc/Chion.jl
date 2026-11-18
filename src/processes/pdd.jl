@@ -166,10 +166,7 @@ function _pdd_step_arrays!(
     length(state.pdd_sum) == ncol || error("PDD diagnostic length must match the state column count.")
     1 <= time_index <= size(forcing.air_temperature, 2) ||
         error("PDD forcing time index is out of bounds.")
-    isempty(active_indices) && return nothing
-
-    kernel! = _pdd_step_kernel!(_ka_backend(state.snowpack_swe))
-    kernel!(
+    launch!(_pdd_step_kernel!, state.snowpack_swe, length(active_indices),
         get_fields(state),
         forcing.air_temperature,
         forcing.snowfall_rate,
@@ -184,8 +181,7 @@ function _pdd_step_arrays!(
         pdd_method(model),
         model.c.T0,
         model.c.seconds_per_day,
-        active_indices;
-        ndrange=length(active_indices),
+        active_indices,
     )
     return nothing
 end

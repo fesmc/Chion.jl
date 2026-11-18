@@ -54,7 +54,8 @@ n is the constant night cloud fraction.
     clear_transmissivity = clear_sky_transmissivity(c, forcing.surface_height, toa)
     deficit = clamp(one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity), zero(T), one(T))
     cloud_effect = c.lw_cloud_transmission_coefficient * exp(-c.lw_cloud_transmission_decay_per_km * height_km)
-    cloud_fraction = clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T))^(one(T) / c.lw_cloud_transmission_exponent)
+    cloud_fraction = _safe_pow(clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T)),
+        one(T) / c.lw_cloud_transmission_exponent)
     return ifelse(daily, cloud_fraction, c.lw_night_cloud_fraction)
 end
 
@@ -71,7 +72,7 @@ the cloud fraction n from `_cloud_proxy_cloud_fraction`.
 
 @inline function _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
     T = forcing.air_temperature
-    weight = _cloud_proxy_cloud_fraction(c, forcing, terms)^c.lw_cloud_emissivity_exponent
+    weight = _safe_pow(_cloud_proxy_cloud_fraction(c, forcing, terms), c.lw_cloud_emissivity_exponent)
     clear = c.lw_clear_sky_emissivity + c.lw_clear_sky_emissivity_temperature_slope * (T - c.T0)
     overcast = c.lw_overcast_emissivity + c.lw_overcast_emissivity_temperature_slope * (T - c.T0)
     return clamp(clear * (one(T) - weight) + overcast * weight, oftype(T, 0.4), c.lw_emissivity_max)

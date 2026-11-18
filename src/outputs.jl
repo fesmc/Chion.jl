@@ -294,9 +294,8 @@ function _update_derived!(rec::OutputRecorder, state)
     rec.derived === nothing && return nothing
     # Allocate on the device of `state` (the buffers are first made from the host state).
     typeof(rec.derived.swe) == typeof(similar(state.runoff)) || (rec.derived = _derived_buffers(state, ncols(state)))
-    k! = _derived_column_kernel!(_ka_backend(state.mass))
-    k!(rec.derived, get_fields(state), state.c.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold);
-        ndrange=ncols(state))
+    launch!(_derived_column_kernel!, state.mass, ncols(state),
+        rec.derived, get_fields(state), state.c.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold))
     return nothing
 end
 

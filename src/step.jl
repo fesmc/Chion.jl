@@ -891,32 +891,20 @@ end
 @inline function _launch_step_columns!(
     backend::KernelAbstractions.Backend, state, forcing, time_start::Int, time_stop::Int, workspace, active_indices, config,
 )
+    ncolumns = length(active_indices)
+    workgroupsize = _step_kernel_workgroupsize(backend, ncolumns)
+    fields = get_fields(state)
+    forcing_fields = _device_forcing_fields(forcing)
+    # One forcing step: the kernel without the time loop (fewer registers).
     if time_start == time_stop
-        kernel! = _step_columns_single_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
-        kernel!(
-            get_fields(state),
-            state.parameters,
-            workspace,
-            active_indices,
-            _device_forcing_fields(forcing),
-            config,
-            time_start,
-            ndrange=length(active_indices),
-        )
+        launch!(_step_columns_single_kernel!, state.mass, ncolumns,
+            fields, state.parameters, workspace, active_indices, forcing_fields, config, time_start;
+            workgroupsize)
         return nothing
     end
-    kernel! = _step_columns_kernel!(backend, _step_kernel_workgroupsize(backend, length(active_indices)))
-    kernel!(
-        get_fields(state),
-        state.parameters,
-        workspace,
-        active_indices,
-        _device_forcing_fields(forcing),
-        config,
-        time_start,
-        time_stop,
-        ndrange=length(active_indices),
-    )
+    launch!(_step_columns_kernel!, state.mass, ncolumns,
+        fields, state.parameters, workspace, active_indices, forcing_fields, config, time_start, time_stop;
+        workgroupsize)
     return nothing
 end
 

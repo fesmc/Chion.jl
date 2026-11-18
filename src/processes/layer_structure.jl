@@ -3,13 +3,6 @@ Layer-structure updates and basal depletion for array-backed snowpack states.
 """
 
 """
-    _safe_nonnegative(x)
-
-Clamp `x` to zero from below.
-"""
-@inline _safe_nonnegative(x) = x > zero(x) ? x : zero(x)
-
-"""
     _solid_enthalpy(mass, temperature, c)
 
 Enthalpy (J m⁻²) of solid mass at `temperature`, relative to liquid water at T₀.

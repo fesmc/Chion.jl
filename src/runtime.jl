@@ -157,17 +157,14 @@ end
 
 function _reset_model_columns!(model::BESSIModel, ::BESSIState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
-    backend_indices = _backend_active_indices(inactive_indices, runtime)
-    kernel! = _reset_bessi_columns_kernel!(_ka_backend(runtime.state.mass))
-    kernel!(
+    launch!(_reset_bessi_columns_kernel!, runtime.state.mass, length(inactive_indices),
         get_fields(runtime.state),
         runtime.state.Ntot,
-        backend_indices,
+        _backend_active_indices(inactive_indices, runtime),
         convert(eltype(runtime.state.mass), model.density_init),
         convert(eltype(runtime.state.mass), model.temperature_init),
         runtime.state.c.T0,
-        _initial_snow_albedo(runtime.state.c);
-        ndrange=length(inactive_indices),
+        _initial_snow_albedo(runtime.state.c),
     )
     return nothing
 end
@@ -188,12 +185,9 @@ end
 
 function _reset_model_columns!(::PDDModel, ::PDDState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
-    backend_indices = _backend_active_indices(inactive_indices, runtime)
-    kernel! = _reset_pdd_columns_kernel!(_ka_backend(runtime.state.snowpack_swe))
-    kernel!(
+    launch!(_reset_pdd_columns_kernel!, runtime.state.snowpack_swe, length(inactive_indices),
         get_fields(runtime.state),
-        backend_indices;
-        ndrange=length(inactive_indices),
+        _backend_active_indices(inactive_indices, runtime),
     )
     return nothing
 end
@@ -222,9 +216,9 @@ end
 
 function _reset_model_columns!(model::ITMModel, ::ITMState, runtime, inactive_indices::Vector{Int})
     isempty(inactive_indices) && return nothing
-    indices = _backend_active_indices(inactive_indices, runtime)
-    _reset_itm_columns_kernel!(_ka_backend(runtime.state.H_snow))(get_fields(runtime.state), indices,
-        model.H_snow_max, model.alb_snow_dry, model.c.T0; ndrange=length(inactive_indices))
+    launch!(_reset_itm_columns_kernel!, runtime.state.H_snow, length(inactive_indices),
+        get_fields(runtime.state), _backend_active_indices(inactive_indices, runtime),
+        model.H_snow_max, model.alb_snow_dry, model.c.T0)
     return nothing
 end
 

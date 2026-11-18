@@ -196,16 +196,14 @@ function _initialize_bessi_state_arrays!(
     density_init,
     temperature_init,
 )
-    backend = _ka_backend(state.mass)
-    kernel! = _initialize_bessi_state_kernel!(backend, _state_init_workgroupsize(backend))
-    kernel!(
+    launch!(_initialize_bessi_state_kernel!, state.mass, state.ncol,
         get_fields(state),
         state.Ntot,
         convert(eltype(state.mass), density_init),
         convert(eltype(state.mass), temperature_init),
         state.c.T0,
         _initial_snow_albedo(state.c);
-        ndrange=state.ncol,
+        workgroupsize=_state_init_workgroupsize(_ka_backend(state.mass)),
     )
     return state
 end

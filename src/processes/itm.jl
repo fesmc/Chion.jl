@@ -132,14 +132,12 @@ end
 end
 
 function _itm_step_arrays!(state::ITMState, forcing, time_index::Int, model::ITMModel, active_indices)
-    isempty(active_indices) && return nothing
-    kernel! = _itm_step_kernel!(_ka_backend(state.H_snow))
-    kernel!(state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
+    launch!(_itm_step_kernel!, state.H_snow, length(active_indices), state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
         state.runoff, state.refreezing, state.Tsrf, state.melt_net, state.smb_cum,
         state.smb_ice, state.melt_cum, state.runoff_cum, state.refreezing_cum,
         forcing.air_temperature, forcing.snowfall_rate, forcing.rainfall_rate, forcing.shortwave_down,
         forcing.q_sw_net, forcing.has_q_sw_net, forcing.latitude_deg, forcing.surface_height,
         forcing.ice_thickness, forcing.annual_pdd, time_index, _step_dt(forcing.dt_days, time_index),
-        _itm_parameters(model), active_indices; ndrange=length(active_indices))
+        _itm_parameters(model), active_indices)
     return nothing
 end

@@ -156,9 +156,7 @@ end
 end
 
 @inline function _launch_summary_kernel!(kernel, state, args...)
-    kernel! = kernel(_ka_backend(state.mass))
-    kernel!(args...; ndrange=ncols(state))
-    return nothing
+    return launch!(kernel, state.mass, ncols(state), args...)
 end
 
 """
