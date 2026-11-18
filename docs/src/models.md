@@ -88,6 +88,12 @@ state = cpu_state(model)                     # host copy of the state
 set_state!(model, state)                     # copy a host state (e.g. a restart) back
 ```
 
+`ReactantBackend()` (after `using Reactant, CUDA`, the `ChionReactantExt` extension) runs a
+`BESSIModel` through Reactant.jl and XLA: the column step is compiled once per `integrate!` call or
+forcing year and stepped from the host, and agrees with the CPU to roundoff
+(`test/reactant/runtests.jl`, its own environment). PDD and ITM models, resetting columns and
+device-side output accumulation are not available there.
+
 ## Coupling
 
 A `Simulation` can be advanced one forcing step or one year at a time, with
@@ -190,6 +196,7 @@ BESSIModel
 PDDModel
 ITMModel
 to_backend
+ReactantBackend
 cpu_state
 set_state!
 set_active_mask!

@@ -17,10 +17,12 @@ TOML = "fa267f1f-6049-4f14-aa54-33bafae1ed76"
 [weakdeps]
 CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
 ForwardDiff = "f6369f11-7733-5829-9624-2563aa707210"
+Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
 
 [extensions]
 ChionCUDAExt = "CUDA"
 ChionForwardDiffExt = "ForwardDiff"
+ChionReactantExt = ["Reactant", "CUDA"]
 
 [compat]
 Adapt = "3, 4"
@@ -30,6 +32,7 @@ ForwardDiff = "0.10, 1"
 DocStringExtensions = "0.9, 0.10"
 KernelAbstractions = "0.9"
 NCDatasets = "0.14"
+Reactant = "0.2"
 Printf = "1"
 Serialization = "1"
 SpecialFunctions = "2"

@@ -35,6 +35,22 @@ _ka_backend_from(::GPUBackend) = _cuda_ka_backend(nothing)
 _cuda_ka_backend(::Any) = error("`backend = :gpu` requires CUDA.jl: run `using CUDA` first.")
 
 """
+    ReactantBackend()
+
+Run a [`BESSIModel`](@ref) through Reactant.jl (XLA) on the device Reactant targets:
+`to_backend(model, ReactantBackend())` or `BESSIModel(grid; forcing, backend = ReactantBackend())`.
+Needs `using Reactant, CUDA` (the `ChionReactantExt` extension; CUDA.jl also on the CPU, since the
+kernels are compiled through it). The column step is compiled once per `integrate!` call or forcing
+year and stepped from the host; results agree with the other backends to roundoff. Not supported:
+PDD/ITM models, resetting columns with `set_active_mask!`, and outputs that accumulate on the device.
+"""
+struct ReactantBackend end
+
+# The Reactant extension adds the method for `::Nothing`.
+_reactant_ka_backend(::Any) = error("`ReactantBackend()` requires Reactant.jl and CUDA.jl: run `using Reactant, CUDA` first.")
+_ka_backend_from(::ReactantBackend) = _reactant_ka_backend(nothing)
+
+"""
     cuda_available() -> Bool
 
 Whether the GPU backend can be used: CUDA.jl is loaded (`using CUDA`, which activates the

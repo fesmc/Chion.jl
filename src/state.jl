@@ -32,6 +32,7 @@ Base.similar(matrix::TransposedLayerMatrix, ::Type{T}, n::Int) where {T} =
     similar(matrix.parent, T, n)
 Base.Array(matrix::TransposedLayerMatrix) = permutedims(Array(matrix.parent), (2, 1))
 Adapt.@adapt_structure TransposedLayerMatrix
+Adapt.parent_type(::Type{TransposedLayerMatrix{T, M}}) where {T, M} = M
 
 """
 $(TYPEDEF)

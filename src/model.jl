@@ -452,7 +452,13 @@ end
 
 number_type(model::AbstractSnowModel) = number_type(model.params)
 ncols(model::AbstractSnowModel) = ncols(model.grid)
-_backend(model::AbstractSnowModel) = KernelAbstractions.get_backend(model.state.runoff)
+"""How a model's kernels run, from the type of its state arrays: `NativeExecution()` launches
+KernelAbstractions kernels; the Reactant extension adds a compiled execution."""
+struct NativeExecution end
+_execution(array) = NativeExecution()
+
+_backend(model::AbstractSnowModel) = _backend(_execution(model.state.runoff), model)
+_backend(::NativeExecution, model) = KernelAbstractions.get_backend(model.state.runoff)
 
 # ---------------------------------------------------------------------------
 # Backends
@@ -470,6 +476,8 @@ using CUDA
 model = to_backend(BESSIModel(grid; forcing), CUDABackend())
 ```
 """
+to_backend(model::AbstractSnowModel, backend::Symbol) = to_backend(model, _ka_backend_from(backend))
+
 function to_backend(model::M, backend) where {M <: AbstractSnowModel}
     state = to_backend(model.state, backend)
     cache = _cache(state, model.grid)
@@ -553,7 +561,8 @@ function set_active_mask!(model::AbstractSnowModel, mask; reset_newly_inactive::
     return model
 end
 
-_reset_columns!(model::BESSIModel, indices) = _initialize_columns!(model.state, model.params, indices)
+_reset_columns!(model::BESSIModel, indices) = _reset_columns!(_execution(model.state.runoff), model, indices)
+_reset_columns!(::NativeExecution, model::BESSIModel, indices) = _initialize_columns!(model.state, model.params, indices)
 
 @kernel function _reset_pdd_columns_kernel!(fields, indices)
     item = @index(Global)
@@ -606,7 +615,10 @@ forcing_steps(model::AbstractSnowModel) = length(model.forcing.data.time_values)
 
 Advance the active columns over the steps `time_start:time_stop` of the loaded forcing year.
 """
-_step!(model::BESSIModel, time_start::Int, time_stop::Int) = _step_columns!(model, time_start, time_stop)
+_step!(model::BESSIModel, time_start::Int, time_stop::Int) =
+    _step!(_execution(model.state.runoff), model, time_start, time_stop)
+_step!(::NativeExecution, model::BESSIModel, time_start::Int, time_stop::Int) =
+    _step_columns!(model, time_start, time_stop)
 
 function _step!(model::PDDModel, time_start::Int, time_stop::Int)
     for time_index in time_start:time_stop
@@ -646,7 +658,9 @@ end
 Recompute the column diagnostics `thickness`, `wet_mass`, `bulk_density` and `liquid_water` of the
 cache from the layers. [`run!`](@ref) calls it at the end of every run.
 """
-function update_diagnostics!(model::BESSIModel)
+update_diagnostics!(model::BESSIModel) = _update_diagnostics!(_execution(model.state.runoff), model)
+
+function _update_diagnostics!(::NativeExecution, model::BESSIModel)
     cache = model.cache
     launch!(_summarize_column_kernel!, model.state.runoff, ncols(model),
         (thickness = cache.thickness, wet_mass = cache.wet_mass, bulk_density = cache.bulk_density,

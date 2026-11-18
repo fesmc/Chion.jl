@@ -79,9 +79,13 @@ differentiable.
 
 ### Reactant
 
-- Reactant-specific code lives in `ext/ChionReactantExt.jl` (not yet created; the current prototype is
-  the standalone port in `examples/research/differentiable_column/` on branch `fixed-grid-ad`, with
-  its own `Project.toml`). The extension will need both Reactant and CUDA loaded (also on CPU)
+- Reactant-specific code lives in `ext/ChionReactantExt.jl` (`ReactantBackend()`; needs `using Reactant,
+  CUDA`, also on the CPU), tested by `test/reactant/runtests.jl` in its own environment. It moves a
+  `BESSIModel` with `to_backend` (dense forcing, transposed layers) and compiles one column step with
+  the step index traced (the forcing is sliced with `Ops.dynamic_slice`, the kernel runs at index 1),
+  stepped from the host. Model-level differences go through the execution trait (`_execution`,
+  `NativeExecution`/`ReactantExecution`), never through `isa` tests. The reverse-mode prototype is
+  the standalone port in `examples/research/differentiable_column/` on branch `fixed-grid-ad`
 - **No reachable throw path in kernels**: no `@assert`, error, un-elided bounds check, `InexactError`
   from `convert`/`round(Int, …)` or integer division by zero. These lower to traps that fail
   compilation even if never hit. Validate arguments in host-side constructors instead (as
@@ -91,9 +95,11 @@ differentiable.
   `max`, `clamp` instead of `if`, `? :`, `&&`, `||`
 - Closures compiled into kernels capture only `isbits` values (no `Type`s such as `NF`)
 - Do not run Reactant tests with `--check-bounds=yes`
-- Known limits: the step kernel takes `time_index::Int`, so a `@trace` loop over time fails;
-  `to_rarray` cannot rebuild the compact forcing (needs dense forcing); Reactant lacks `exp10` and
-  `cbrt`; loop-carried `@trace for` values are written back into input buffers (copy the state first)
+- Known limits: a `@trace for` loop over steps around the step kernel fails in the
+  `raise_triton_custom_call` pass (so steps are driven from the host); `to_rarray` cannot rebuild the
+  compact forcing (the extension densifies it); kernels outside the column step (diagnostics, column
+  resets) do not run under Reactant (host copy or error); loop-carried `@trace for` values are
+  written back into input buffers (copy the state first)
 
 ### Differentiability
 

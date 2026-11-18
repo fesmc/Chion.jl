@@ -84,7 +84,7 @@ export Insulated, GeothermalFlux, PrescribedBottomTemperature
 # Models
 export BESSIModel, PDDModel, ITMModel
 export BESSIState, PDDState, ITMState, initial_state
-export CPU, to_backend, cpu_state, set_state!, set_active_mask!, set_input!, sync_forcing!, update_forcing!
+export CPU, ReactantBackend, to_backend, cpu_state, set_state!, set_active_mask!, set_input!, sync_forcing!, update_forcing!
 export integrate!, update_diagnostics!, column_enthalpy, column_profile
 
 # Forcing
