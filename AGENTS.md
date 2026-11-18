@@ -45,31 +45,33 @@ differentiable.
 - Minimize allocation; favor inline computation
 - **Never hardcode Float64**: no float literal such as `0.0` or `1.0` in kernels or in code that builds
   arrays. Use `zero(NF)`, `one(NF)`, `NF(0.5)`, `oftype(x, 0.5)`, `convert(NF, 1//2)`, or rational
-  literals. `NF` is the model's `number_type` (Float64 or Float32 today); write code so that it may
+  literals. `NF` is the model's number type (`Params(; NF)`, Float64 or Float32 today); write code so that it may
   also be a ForwardDiff `Dual` or a Reactant traced number. Literal defaults are fine in host-side
   constructors whose values are converted to `NF` afterwards (`BESSIModel` keywords,
-  `SnowpackPhysicalConstants(NF; …)`, example configs)
+  the `@kwdef` defaults of the schemes and `Layering`, `_param_defaults`, example configs)
 - Absolute thresholds such as `EPS_TINY = 1e-12` are below one Float32 ulp of typical layer masses.
   A `while` loop or convergence test needs a relative floor (`_roundoff_floor`), or it can hang in
   Float32
 
 ### Parameterizations
 
-- Each exchangeable scheme is a concrete (usually singleton) subtype of an abstract scheme type
-  (`AbstractAlbedoScheme`, `AbstractDensificationScheme`, `AbstractFreshSnowDensityScheme`,
-  `AbstractPDDMethod`), stored as a type parameter of `SnowpackPhysicalConstants` (or of the model).
-  Users select it by keyword (`albedo=:semix` or `albedo=SemixAlbedo()`); a `_normalize_*` function
-  maps the symbol to the type. SEB, turbulent-flux and longwave schemes are still runtime `UInt8`
-  flags: a new scheme there is added as a type, not as another flag value
-- Dispatch on the scheme **at the launch site** when it selects a whole process: e.g.
-  `_go_densification_scheme!` or `_column_step_diurnal!(::Val{true}, …)`; model-level switches are type
-  parameters of `BESSIModel` and reach the kernel as `Val` in `config`
-- Kernels receive arrays (`fields`, a NamedTuple from `get_fields(state)`), the forcing fields, the
-  workspace, `config`, and small isbits parameter structs (`BESSIParameters`,
-  `SnowpackPhysicalConstants`) for inline dispatch of a local operation. Never `Simulation`,
-  `SimulationIntegrator`, `Experiment`, `RunOptions` or another container
-- Selecting a whole process (which kernel or which column-step branch runs) happens at the launch
-  site, not inside a kernel
+- Each exchangeable scheme is a concrete subtype of an abstract scheme type
+  (`AbstractAlbedoScheme`, `AbstractDensificationScheme`, `AbstractTurbulentFluxScheme`,
+  `AbstractLongwaveScheme`, `AbstractDiurnalCycle`, `AbstractPDDMethod`, …; all in `src/schemes.jl`)
+  and owns its coefficients as documented `@kwdef` fields (`AgingAlbedo(; cold_timescale_days = 20)`),
+  as in Laddie. It is passed as an instance in a typed slot of `Params`
+  (`Params(albedo_scheme = SemixAlbedo())`); constants shared by several schemes are flat `Params`
+  fields. Names (`"semix"`) exist only in TOML and are converted once, by dispatch, in `config.jl`
+  (`_SCHEME_TABLE`)
+- A new scheme is a new type, its `validate` method if it has coefficients, its methods in
+  `src/processes/`, an entry in `_SCHEME_TABLE`, and an export. Never a flag, a symbol comparison or an
+  `isa` test in the model code (`test/code_quality.jl` checks this)
+- Selecting a whole process (which column-step branch runs) dispatches on the scheme where the
+  choice is made, e.g. `_column_step_diurnal!(::DiurnalSubsteps, …)`; a local operation dispatches
+  inline (`_net_longwave(params.surface_energy_balance_scheme, …)`)
+- Kernels receive arrays (`fields`, a NamedTuple from `get_fields(model.state)`), the forcing fields
+  (`model.forcing.fields`), the workspace, and the isbits `Params` and `Layering`. Never a model,
+  `Simulation`, `Forcing` or another container
 - When a scheme changes the kernel arithmetic, prefer scalar coefficients computed at the launch site,
   and keep the existing default bit-identical
 - Numbers read inside kernels, including those of scheme structs, go through `_val`, so that Reactant
@@ -157,37 +159,38 @@ differentiable.
 
 ## Module Structure
 
-`src/` holds the infrastructure (grid, forcing, state, step, simulation, experiment, I/O);
-`src/processes/` holds one file per process (`albedo.jl`, `densification.jl`, `energy_flux.jl`,
-`percolation.jl`, …) with its scheme types and kernel-side functions. The object structure of a run
-(fields of a `Simulation{BESSIModel}`, abbreviated):
+`src/` holds the infrastructure (schemes, params, grid, forcing, state, model, step, outputs,
+simulation, TOML config); `src/processes/` holds one file per process (`albedo.jl`,
+`densification.jl`, `energy_flux.jl`, `percolation.jl`, …) with the kernel-side methods of its
+schemes. The API follows Laddie.jl: `Grid` → model (`BESSIModel`, `PDDModel`, `ITMModel`) →
+`Simulation`. The object structure of a run (abbreviated):
 
 ```
 Simulation
-├── model :: BESSIModel{DiurnalShortwave, DiurnalTemperature}  # type flags reach kernels as Val
-│   ├── grid :: SnowpackGrid            # ncol, optional SpatialLayout (x, y, is, js, mask)
-│   └── parameters :: BESSIParameters   # Ntot, mass_max/split/min, near-surface thicknesses,
-│       │                               # ice substrate, diurnal-cycle settings, number type NF
-│       └── c :: SnowpackPhysicalConstants{NF, FreshSnowDensity, Albedo, Densification}
-│                                       # physical constants and calibrated coefficients; scheme
-│                                       # types as parameters, SEB/turbulence/longwave as UInt8 flags
-├── forcing :: SnowpackForcing          # calendar + fields (per column or invariant, compact)
-├── ref :: BESSIState                   # copy of the initial state
-├── now :: BESSIState                   # evolving state:
-│                                       #   layers (layer, column), TransposedLayerMatrix storage:
-│                                       #     mass, mass_w, density, temperature, ice_temperature
-│                                       #   per column: N (active layers), mass_base, smb_ice, runoff,
-│                                       #     melt, refreezing, vapor_mass, sublimation, Tsrf, albedo,
-│                                       #     snow_age_days, *_sum SEB accumulators, diagnostics
-└── options :: RunOptions               # years, backend (ThreadsBackend/GPUBackend), NetCDF output
+├── model :: BESSIModel                 # mutable; knows nothing about time beyond the loaded year
+│   ├── grid :: Grid{NF}                # ncol, optional SpatialLayout (x, y, is, js, mask),
+│   │   └── layering :: Layering{NF}    # Ntot, mass_max/split/min, near-surface thicknesses, substrate
+│   ├── state :: BESSIState             # prognostic arrays only:
+│   │                                   #   layers (layer, column), TransposedLayerMatrix on a GPU:
+│   │                                   #     mass, mass_w, density, temperature, ice_temperature
+│   │                                   #   per column: N, mass_base, smb_ice, runoff, melt, refreezing,
+│   │                                   #     vapor_mass, sublimation, *_sum SEB accumulators, Tsrf,
+│   │                                   #     albedo, snow_age_days, w_snow_max
+│   ├── cache :: BESSICache             # workspace (heat solve, boundary_enthalpy), diagnostics
+│   │                                   # (thickness, wet_mass, bulk_density, liquid_water), active columns
+│   ├── params :: Params{NF, schemes…}  # physical constants + typed scheme slots, each scheme
+│   │                                   # carrying its coefficients (isbits, passed to kernels)
+│   └── forcing :: AtmosphericForcing   # source::Forcing (files / in memory / function), loaded year:
+│                                       #   data (host SnowpackForcing), fields (kernel view on device)
+├── clock :: Clock                      # year_index, step, iteration, time
+├── years, spinup                       # NoSpinup / CycledSpinup / ClimatologySpinup
+├── outputs :: Vector{Output}           # one file each (NetCDF or CSV), calendar periods, area sums
+└── io :: IOState                       # open recorders, spun_up, wall time
 ```
 
-`Experiment` (`src/experiment.jl`) wraps a model, a file-backed `Forcing`, a spin-up
-(`NoSpinup`/`CycledSpinup`/`ClimatologySpinup`) and `Output`s, and runs `Simulation`s year by year.
-`SimulationIntegrator` (`init_integrator`) owns the runtime data (device state, step fields,
-`ColumnarStepWorkspace`, active columns) for explicit stepping and coupling.
-
-To print the current structure of any object (e.g. after adding a field or scheme slot):
+Flat forwarding: `model.mass` (state), `model.thickness` (cache), `model.alpha_dry` (params),
+`model.Ntot` (grid layering), `model.year`; names must be unique across them (checked at
+construction). Print any object's structure:
 
 ```julia
 using Chion, Dates
@@ -199,12 +202,11 @@ function fieldtree(x, depth = 0; maxdepth = 2)
             fieldtree(v, depth + 1; maxdepth)
     end
 end
-grid = SnowpackGrid(4)
 forcing = SnowpackForcing(dt_days = [1.0, 1.0], ncol = 4, air_temperature_c = [-15.0, -14.0],
     snowfall_mm_day = 1.0, rainfall_mm_day = 0.0, shortwave_down = [120.0, 140.0],
     wind_speed = 3.0, latitude_deg = 70.0,
     time_values = [DateTime(2001, 1, 1, 12), DateTime(2001, 1, 2, 12)])
-fieldtree(Simulation(BESSIModel(grid); forcing); maxdepth = 3)
+fieldtree(Simulation(BESSIModel(Grid(4); forcing)); maxdepth = 3)
 ```
 
 List the implementations of a scheme with `using InteractiveUtils; subtypes(Chion.AbstractAlbedoScheme)`.
@@ -214,29 +216,33 @@ List the implementations of a scheme with `using InteractiveUtils; subtypes(Chio
 ```julia
 using Chion
 forcing = Forcing("/path/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes = :parameterized)
-model = BESSIModel(forcing)                       # calibrated GrIS defaults on the forcing columns
-experiment = Experiment(model, forcing; years = 1980:1989,
-    spinup = CycledSpinup(1960:1979; cycles = 2),
+grid = Grid(forcing; layering = Layering(Ntot = 15))
+model = BESSIModel(grid; forcing, params = Params())   # ParamsAISv1() for Antarctica; backend = CUDABackend()
+sim = Simulation(model; years = 1980:1989, spinup = CycledSpinup(1960:1979; cycles = 2),
     outputs = [Output("output/x/monthly.nc"; variables = :monthly, frequency = :monthly)])
-result = run!(experiment)
+run!(sim)                  # run!(sim; years = 1) continues year by year; time_step!(sim) one step
 ```
 
-The same as a TOML file: `julia --project -m Chion examples/configs/greenland_parameterized.toml`.
-In-memory forcing and coupling: `SnowpackGrid` → `BESSIModel(grid)` → `SnowpackForcing` →
-`Simulation(model; forcing)` → `run!(sim)` or `init_integrator` + `step!`/`yearly_step!`. For a GPU,
-`using CUDA` and `backend = :gpu`; move states with `gpu_state`/`cpu_state`.
+The same as a TOML file: `julia --project -m Chion examples/configs/greenland_parameterized.toml`
+(`[grid]` = `Layering`, `[model]` = `Params` fields with schemes by name or as tables with `type`).
+In-memory forcing: `BESSIModel(Grid(n); forcing = SnowpackForcing(…))`. Coupling: `yearly_step!(sim)`,
+`set_active_mask!`, `set_input!`. Without a `Simulation` (AD): `integrate!(model, steps)`. For a GPU,
+`using CUDA` and `backend = CUDABackend()` (or `to_backend(model, CUDABackend())`); `cpu_state(model)`
+copies the state back.
 
 ## Time-Step Flow
 
-`run!` drives a `SimulationIntegrator` (`src/simulation.jl`, `src/integrators.jl`) and handles
-forcing years, output and timing between launches. `step!` (`src/step.jl`) splits a forcing range into
-blocks and calls `_launch_step_columns!`, which steps every active column over the block:
+`run!`/`time_step!` (`src/simulation.jl`) spin up once, then advance the clock year by year:
+`update_forcing!` loads the year, `_advance!` steps up to the next end of an output period and records
+the outputs. `_step!(model, …)` (`src/model.jl`) dispatches on the model type; for BESSI
+`_step_columns!` (`src/step.jl`) splits the range into blocks and calls `_launch_step_columns!`,
+which steps every active column over the block:
 
 ```
-column_step!(fields, parameters, idx, forcing, config, workspace)
+column_step!(fields, params, layering, idx, forcing, workspace)
 ├── solar geometry once per step; parameterized longwave (cloud proxy)
-└── _column_step_diurnal!               Val(false): one call; Val(true): up to 8 diurnal substeps,
-    └── column_step_core!               each with its own SW / air-temperature interval average
+└── _column_step_diurnal!               NoDiurnalCycle: one call; DiurnalSubsteps: up to
+    └── column_step_core!               max_substeps, each with its own SW / air-temperature average
         ├── accumulation                snowfall into the surface layer, trace layers removed,
         │                               near-surface remesh
         ├── bare ice?  → _step_bare_ice_substrate!  (SEB on ice, melt to runoff) and return
@@ -259,8 +265,8 @@ column_step!(fields, parameters, idx, forcing, config, workspace)
   removes branches (e.g. a flag test replaced by dispatch) must instead keep the GPU differences at
   roundoff level, below the difference between the unchanged code's own GPU and CPU results
   (compare baseline and change with the same CUDA environment on the same GPU model)
-- `ColumnarStepWorkspace` holds per-column scratch (`energy` heat-solve arrays,
-  `liquid_water_before_energy`), overwritten by every step: do not read it across steps. The
+- `ColumnarStepWorkspace` (`model.cache.workspace`) holds per-column scratch (`energy` heat-solve
+  arrays, `liquid_water_before_energy`), overwritten by every step: do not read it across steps. The
   exception is `boundary_enthalpy`, a cumulative diagnostic for the enthalpy budget
 - A new process usually enters as a function in `src/processes/` called from `column_step_core!` at
   the place its inputs are ready, and as a term in the energy or mass budget it changes
@@ -282,7 +288,7 @@ column_step!(fields, parameters, idx, forcing, config, workspace)
     unless the task requires it; touch `[compat]` only when asked
 11. **Scope creep**: keep a change to a single concern; unrelated cleanup goes in a separate commit or PR
 12. **Closures over mutable state**: they break AD — pass the values as explicit arguments
-13. **GPU scripts without `using CUDA`**: `backend = :gpu` needs the `ChionCUDAExt` extension loaded
+13. **GPU scripts without `using CUDA`**: `CUDABackend()` and `backend = :gpu` need CUDA loaded
 14. **Concurrent compilation on CPU threads**: the CPU path precompiles the column step before
     `Threads.@threads`; keep that when changing `_cpu_step_columns!` (otherwise every process call
     allocates)
@@ -291,9 +297,9 @@ column_step!(fields, parameters, idx, forcing, config, workspace)
 
 - **Dispatch over conditionals**: use Julia's type system and multiple dispatch instead of
   `if`/`else` branching. Backend-specific code goes in `ext/` extensions, not `if` branches in `src/`
-- **Use `gpu_state`/`cpu_state` and `storage_type(backend)` to move data to a device** — never manual
-  `CuArray()` calls. Copying device data back to the host for I/O, output or restarts with `Array(x)`
-  is fine
+- **Use `to_backend(model, backend)` (or `backend = …` at construction) and `cpu_state(model)` to move
+  data between devices** — never manual `CuArray()` calls. Copying device data back to the host for
+  I/O, output or restarts with `Array(x)` is fine
 - **Defaults serve the common case**: avoid `nothing` defaults when a concrete default (like
   `backend = :threads`) covers 80% of usage. Minimize boilerplate for the typical user.
 - **Keyword argument names must be consistent** across related types and constructors
@@ -343,9 +349,8 @@ column_step!(fields, parameters, idx, forcing, config, workspace)
 
 ## Calibrated defaults are a regression contract
 
-The defaults of `BESSIModel` and `SnowpackPhysicalConstants` are the Greenland calibration against MAR
-v3.14.3 (daily forcing); the Antarctic runs add the `DOMAIN_PARAMETERS` override in
-`examples/research/run_gris_fully_prescribed_transient.jl` and the Antarctic configs. The paper runs
+The defaults of `Params` (= `ParamsGrISv1()`) and `Layering` are the Greenland calibration against MAR
+v3.14.3 (daily forcing); the Antarctic runs use `ParamsAISv1()` (`setup = "AISv1"` in TOML). The paper runs
 (`run_paper_experiments.sh`) and the manuscript depend on them. `PDDModel` and `ITMModel` are pinned to
 the Fortran budgets by tests in `test/test_case_api.jl`.
 

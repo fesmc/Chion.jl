@@ -102,16 +102,17 @@ function go_percolation!(
 end
 
 """
-    go_percolation!(state, idx; ...)
+    go_percolation!(model, idx; max_lwc = 0.1)
 
-Run liquid-water percolation for column `idx` of `state`. Mutates
-`state.mass_w` and accumulates routed runoff into `state.runoff[idx]`.
+Run liquid-water percolation for column `idx` of a CPU `model`. Mutates `mass_w` and accumulates
+the routed runoff into `runoff[idx]` of its state.
 """
 function go_percolation!(
-    state,
+    model,
     idx::Int;
-    max_lwc=oftype(state.c.rho_w, 0.1),
+    max_lwc=oftype(model.params.rho_w, 0.1),
 )
+    state = model.state
     if _n_active(state.N, idx) <= 0 || _get_layer(state.mass, 1, idx) <= zero(eltype(state.mass))
         return zero(eltype(state.mass))
     end
@@ -122,8 +123,8 @@ function go_percolation!(
         state.mass_w,
         state.density,
         idx,
-        state.c.rho_i,
-        state.c.rho_w;
+        model.params.rho_i,
+        model.params.rho_w;
         max_lwc=max_lwc,
     )
     _set_scalar!(state.runoff, idx, _get_scalar(state.runoff, idx) + runoff)

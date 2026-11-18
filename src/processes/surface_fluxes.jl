@@ -27,11 +27,11 @@ the reference of the cloud proxy's cloud fraction. A height that is not finite
 (no surface height) or negative counts as sea level; `toa` is floored at
 $(LONGWAVE_CLOUD_PROXY_MIN_TOA) W m⁻², as in the proxy.
 """
-@inline function clear_sky_transmissivity(c::SnowpackPhysicalConstants, height, toa)
+@inline function clear_sky_transmissivity(c::Params, height, toa)
     height_km = ifelse(isfinite(height), max(height, zero(height)), zero(height)) / oftype(height, 1000)
     safe_toa = max(toa, oftype(toa, LONGWAVE_CLOUD_PROXY_MIN_TOA))
-    transmissivity = c.lw_clear_sky_transmissivity + c.lw_clear_sky_transmissivity_per_km * height_km +
-                     c.lw_clear_sky_transmissivity_insolation * log(safe_toa / oftype(safe_toa, 300))
+    transmissivity = c.longwave_scheme.clear_sky_transmissivity_sea_level + c.longwave_scheme.clear_sky_transmissivity_per_km * height_km +
+                     c.longwave_scheme.clear_sky_transmissivity_insolation * log(safe_toa / oftype(safe_toa, 300))
     return min(one(transmissivity), transmissivity)
 end
 
@@ -43,7 +43,7 @@ elevation and insolation, and clouds reduce it by the factor
 In the polar night, or for sub-daily forcing where SW↓ is not a daily mean,
 n is the constant night cloud fraction.
 """
-@inline function _cloud_proxy_cloud_fraction(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
+@inline function _cloud_proxy_cloud_fraction(c::Params, forcing::SnowpackStepForcing, terms)
     T = forcing.air_temperature
     toa = _daily_toa_shortwave(terms, forcing.day_of_year)
     # Forcing without surface height (NaN) uses the sea-level coefficients.
@@ -53,10 +53,10 @@ n is the constant night cloud fraction.
     safe_toa = max(toa, oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA))
     clear_transmissivity = clear_sky_transmissivity(c, forcing.surface_height, toa)
     deficit = clamp(one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity), zero(T), one(T))
-    cloud_effect = c.lw_cloud_transmission_coefficient * exp(-c.lw_cloud_transmission_decay_per_km * height_km)
+    cloud_effect = c.longwave_scheme.cloud_transmission_coefficient * exp(-c.longwave_scheme.cloud_transmission_decay_per_km * height_km)
     cloud_fraction = _safe_pow(clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T)),
-        one(T) / c.lw_cloud_transmission_exponent)
-    return ifelse(daily, cloud_fraction, c.lw_night_cloud_fraction)
+        one(T) / c.longwave_scheme.cloud_transmission_exponent)
+    return ifelse(daily, cloud_fraction, c.longwave_scheme.night_cloud_fraction)
 end
 
 """
@@ -67,15 +67,15 @@ weighted between clear-sky and overcast emissivities (Konzelmann et al., 1994),
 ε = ε_cs(T)(1 − n^q) + ε_oc(T) n^q, with both emissivities linear in T − T₀ and
 the cloud fraction n from `_cloud_proxy_cloud_fraction`.
 """
-@inline _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+@inline _cloud_proxy_emissivity(c::Params, forcing::SnowpackStepForcing) =
     _cloud_proxy_emissivity(c, forcing, _diurnal_shortwave_integral_terms(forcing.latitude_deg, forcing.solar_longitude_deg))
 
-@inline function _cloud_proxy_emissivity(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms)
+@inline function _cloud_proxy_emissivity(c::Params, forcing::SnowpackStepForcing, terms)
     T = forcing.air_temperature
-    weight = _safe_pow(_cloud_proxy_cloud_fraction(c, forcing, terms), c.lw_cloud_emissivity_exponent)
-    clear = c.lw_clear_sky_emissivity + c.lw_clear_sky_emissivity_temperature_slope * (T - c.T0)
-    overcast = c.lw_overcast_emissivity + c.lw_overcast_emissivity_temperature_slope * (T - c.T0)
-    return clamp(clear * (one(T) - weight) + overcast * weight, oftype(T, 0.4), c.lw_emissivity_max)
+    weight = _safe_pow(_cloud_proxy_cloud_fraction(c, forcing, terms), c.longwave_scheme.cloud_emissivity_exponent)
+    clear = c.longwave_scheme.clear_sky_emissivity + c.longwave_scheme.clear_sky_emissivity_temperature_slope * (T - c.T0)
+    overcast = c.longwave_scheme.overcast_emissivity + c.longwave_scheme.overcast_emissivity_temperature_slope * (T - c.T0)
+    return clamp(clear * (one(T) - weight) + overcast * weight, oftype(T, 0.4), c.longwave_scheme.emissivity_max)
 end
 
 """
@@ -85,8 +85,8 @@ For the `CloudProxyLongwave` scheme, resolve the daily longwave down once from
 the daily forcing and pass it on as a fixed flux, so the diurnal substeps reuse
 the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
 """
-@inline _with_parameterized_longwave(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing, terms) =
-    _with_parameterized_longwave(longwave_scheme(c), c, forcing, terms)
+@inline _with_parameterized_longwave(c::Params, forcing::SnowpackStepForcing, terms) =
+    _with_parameterized_longwave(c.longwave_scheme, c, forcing, terms)
 
 @inline _with_parameterized_longwave(::GraybodyLongwave, c, forcing::SnowpackStepForcing, terms) = forcing
 
@@ -97,7 +97,7 @@ the daily cloud proxy. Prescribed longwave and the graybody scheme pass through.
 end
 
 """Longwave down (W m⁻²): the forcing's, or the graybody sky's ϵ_air σ T_a⁴."""
-@inline _longwave_down(c::SnowpackPhysicalConstants, air_temperature, use_q_lw_down::Bool, q_lw_down_value) =
+@inline _longwave_down(c::Params, air_temperature, use_q_lw_down::Bool, q_lw_down_value) =
     use_q_lw_down ? q_lw_down_value : c.σ * c.ϵ_air * air_temperature^4
 
 """
@@ -110,6 +110,15 @@ SEMIX: ε (L↓ − σ T_s⁴); BESSI: L↓ − ε_snow σ T_s⁴.
     emissivity * (longwave_down - c.σ * surface_temperature^4)
 @inline _net_longwave(::BESSISurfaceEnergyBalance, c, emissivity, longwave_down, surface_temperature) =
     longwave_down - c.σ * c.ϵ_snow * surface_temperature^4
+
+"""
+    _roughness_length(scheme, surface_is_ice)
+
+Momentum roughness length z₀ₘ (m) of the snow or bare-ice surface for the turbulent fluxes. Only
+`SemixTurbulentFluxes` uses it; the BESSI fluxes have none (zero, unused).
+"""
+@inline _roughness_length(s::SemixTurbulentFluxes, surface_is_ice::Bool) = surface_is_ice ? s.z0m_ice : s.z0m_snow
+@inline _roughness_length(s::BESSITurbulentFluxes, surface_is_ice::Bool) = zero(s.D_sh)
 
 """
     _turbulent_heat_fluxes(scheme, c, surface_temperature, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
@@ -132,7 +141,7 @@ end
 @inline function _turbulent_heat_fluxes(::BESSITurbulentFluxes, c, surface_temperature, air_temperature,
         relative_humidity, air_pressure, wind_speed, z0m)
     return (
-        c.D_sh * (air_temperature - surface_temperature),
+        c.turbulent_flux_scheme.D_sh * (air_temperature - surface_temperature),
         _bessi_latent_vapor_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure),
     )
 end
@@ -185,7 +194,7 @@ surface temperature. Returned fluxes are instantaneous energy fluxes in model
 surface-flux units.
 """
 @inline function _resolved_nonshortwave_surface_flux_components(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     air_temperature,
     rainfall_rate,
     dt_seconds,
@@ -204,9 +213,9 @@ surface-flux units.
     emissivity,
 )
     longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
-    longwave_flux = _net_longwave(surface_energy_balance_scheme(c), c, emissivity, longwave_down, surface_temperature)
+    longwave_flux = _net_longwave(c.surface_energy_balance_scheme, c, emissivity, longwave_down, surface_temperature)
     parameterized_sensible, parameterized_latent = _turbulent_heat_fluxes(
-        turbulent_flux_scheme(c), c, surface_temperature, air_temperature, relative_humidity,
+        c.turbulent_flux_scheme, c, surface_temperature, air_temperature, relative_humidity,
         air_pressure, wind_speed, z0m,
     )
     sensible_heat_flux = use_q_sh ? q_sh_value : parameterized_sensible
@@ -222,7 +231,7 @@ Resolve all bare-ice surface-flux components, including absorbed shortwave
 energy.
 """
 @inline function _resolved_bare_ice_surface_flux_components(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     air_temperature,
     rainfall_rate,
     dt_seconds,
@@ -262,12 +271,12 @@ energy.
             relative_humidity,
             air_pressure,
             wind_speed,
-            c.semix_z0m_ice,
+            _roughness_length(c.turbulent_flux_scheme, true),
             c.eps_ice,
         )
     # (Snow with liquid water uses Lᵥ in the snow-surface routine.)
     latent_heat_flux = _bare_ice_latent_heat_flux(
-        turbulent_flux_scheme(c), c, latent_heat_flux, use_q_lh, use_relative_humidity,
+        c.turbulent_flux_scheme, c, latent_heat_flux, use_q_lh, use_relative_humidity,
         air_temperature, relative_humidity, air_pressure,
     )
     return (
@@ -287,7 +296,7 @@ The vapor term follows the BESSI sign convention: positive values add mass by
 deposition, negative values remove mass by sublimation.
 """
 function _bare_ice_surface_mass_fluxes_resolved(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     air_temperature,
     rainfall_rate,
     dt_seconds,
@@ -348,7 +357,7 @@ Dispatch bare-ice ablation. Diurnal shortwave corrections are snow-column-only,
 so bare ice remains on the daily-mean surface-energy path.
 """
 function _bare_ice_ablation_mass(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     forcing::SnowpackStepForcing,
     dt_seconds,
 )
@@ -375,20 +384,20 @@ function _bare_ice_ablation_mass(
 end
 
 """Albedo of an exposed bare-ice surface."""
-@inline _bare_ice_albedo(c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
-    _bare_ice_albedo(albedo_scheme(c), c, forcing)
+@inline _bare_ice_albedo(c::Params, forcing::SnowpackStepForcing) =
+    _bare_ice_albedo(c.albedo_scheme, c, forcing)
 
-@inline _bare_ice_albedo(::SemixAlbedo, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+@inline _bare_ice_albedo(::SemixAlbedo, c::Params, forcing::SnowpackStepForcing) =
     forcing.has_prescribed_ice_albedo ?
         clamp(forcing.prescribed_ice_albedo, zero(forcing.prescribed_ice_albedo), one(forcing.prescribed_ice_albedo)) :
         c.alpha_ice
-@inline _bare_ice_albedo(::PrescribedAlbedo, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+@inline _bare_ice_albedo(::PrescribedAlbedo, c::Params, forcing::SnowpackStepForcing) =
     forcing.has_prescribed_albedo ? _prescribed_surface_albedo(forcing) : c.alpha_ice
-@inline _bare_ice_albedo(::AbstractAlbedoScheme, c::SnowpackPhysicalConstants, forcing::SnowpackStepForcing) =
+@inline _bare_ice_albedo(::AbstractAlbedoScheme, c::Params, forcing::SnowpackStepForcing) =
     c.alpha_ice
 
 @inline function _resolved_turbulent_latent_heat_flux(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     surface_temperature,
     air_temperature,
     use_q_lh::Bool,
@@ -404,8 +413,8 @@ end
         return zero(surface_temperature)
     end
     _, latent_heat_flux = _turbulent_heat_fluxes(
-        turbulent_flux_scheme(c), c, surface_temperature, air_temperature, relative_humidity,
-        air_pressure, wind_speed, c.semix_z0m_snow,
+        c.turbulent_flux_scheme, c, surface_temperature, air_temperature, relative_humidity,
+        air_pressure, wind_speed, _roughness_length(c.turbulent_flux_scheme, false),
     )
     return latent_heat_flux
 end
@@ -428,7 +437,7 @@ function _apply_snow_surface_vapor_mass_flux!(
     Tsrf,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     forcing::SnowpackStepForcing,
     dt_seconds,
     mass_split,
@@ -462,7 +471,7 @@ function _apply_snow_surface_vapor_mass_flux!(
     vapor_mass = forcing.has_q_lh ?
                  latent_heat_flux * dt_seconds / _surface_vapor_latent_heat(surface_temperature, c) :
                  _parameterized_vapor_mass(
-                     turbulent_flux_scheme(c), c, latent_heat_flux, dt_seconds, surface_temperature,
+                     c.turbulent_flux_scheme, c, latent_heat_flux, dt_seconds, surface_temperature,
                      forcing.air_temperature, forcing.relative_humidity, forcing.air_pressure,
                  )
 

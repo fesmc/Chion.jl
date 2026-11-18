@@ -1,124 +1,6 @@
-"""
-State accessors and formatted state output.
-"""
-
-@inline function _active_column_profile(values, n::Int, idx::Int)
-    n == 0 && return Float64[]
-    return [@inbounds _get_layer(values, layer_index, idx) for layer_index in 1:n]
-end
-
-"""
-    _state_dict(N_storage, mass, mass_w, density, temperature, smb_ice, albedo_dynamic, idx, c)
-
-Build a dictionary snapshot for column `idx`. The result includes active-layer
-profiles, bulk totals, and surface diagnostics, and allocates new Julia arrays
-for the returned profile data.
-"""
-function _state_dict(
-    N_storage,
-    mass,
-    mass_w,
-    density,
-    temperature,
-    smb_ice,
-    albedo,
-    idx::Int,
-    c::SnowpackPhysicalConstants,
-)
-    n = _n_active(N_storage, idx)
-    active_solid_mass = _active_column_profile(mass, n, idx)
-    active_liquid_water_mass = _active_column_profile(mass_w, n, idx)
-    active_density = _active_column_profile(density, n, idx)
-    thickness = active_solid_mass ./ active_density
-    total_mass = sum(active_solid_mass)
-    total_liquid_water = sum(active_liquid_water_mass)
-
-    return Dict(
-        "N" => n,
-        "mass" => active_solid_mass,
-        "mass_w" => active_liquid_water_mass,
-        "density" => active_density,
-        "total_mass" => total_mass,
-        "total_liquid_water" => total_liquid_water,
-        "total_wet_mass" => total_mass + total_liquid_water,
-        "thickness" => thickness,
-        "total_thickness" => sum(thickness),
-        "surface_temperature" => n == 0 ? c.T0 : _get_layer(temperature, 1, idx),
-        "albedo" => _get_scalar(albedo, idx),
-        "smb_ice" => _get_scalar(smb_ice, idx),
-    )
-end
-
-"""
-    get_state(state, idx=1)
-
-Return a dictionary snapshot for column `idx` of `state`. Values are copied
-into plain Julia containers so callers can inspect state without mutating the
-state.
-"""
-function get_state(state, idx::Int=1)
-    return _state_dict(
-        state.N,
-        state.mass,
-        state.mass_w,
-        state.density,
-        state.temperature,
-        state.smb_ice,
-        state.albedo,
-        idx,
-        state.c,
-    )
-end
-
-"""
-    print_state(state, idx=1)
-
-Print a short formatted summary of column `idx` to standard output. This is a
-diagnostic convenience wrapper around `get_state`.
-"""
-function print_state(state, idx::Int=1)
-    snapshot = get_state(state, idx)
-    println("=" ^ 60)
-    println("Snowpack Column State")
-    println("=" ^ 60)
-    println("Column index: ", idx)
-    println("Active layers: ", snapshot["N"])
-    println("Total mass: ", round(snapshot["total_mass"], digits=2), " kg/m^2")
-    println("Total thickness: ", round(snapshot["total_thickness"], digits=3), " m")
-    println("Surface albedo: ", round(snapshot["albedo"], digits=3))
-    println()
-end
-
-"""
-    compute_auxiliary!(state, idx)
-
-Recompute derived diagnostics for column `idx` in-place. Currently this
-updates surface albedo.
-"""
-function compute_auxiliary!(state, idx::Int)
-    update_surface_albedo!(state, idx)
-    return nothing
-end
-
-"""
-    compute_auxiliary!(state)
-
-Recompute derived diagnostics for every column in `state`. Mutates the
-state’s auxiliary fields in-place and returns `nothing`.
-"""
-function compute_auxiliary!(state)
-    for idx in 1:ncols(state)
-        compute_auxiliary!(state, idx)
-    end
-    return nothing
-end
-
-"""
-Domain-wide summary helpers.
-"""
-
-const _DOMAIN_SUMMARY_FIELDS =
-    (:thickness, :wet_mass, :bulk_density, :base_mass, :smb_ice, :liquid_water, :runoff, :melt, :refreezing, :vapor_mass, :sublimation, :latent_heat_flux_sum, :albedo)
+#=
+Column diagnostics of a BESSI state and a per-column snapshot for inspection.
+=#
 
 Base.@propagate_inbounds function _column_summary(N, mass, mass_w, density, idx, sample)
     n = @inbounds N[idx]
@@ -149,132 +31,31 @@ Base.@propagate_inbounds function _column_summary(N, mass, mass_w, density, idx,
     return thickness_local, wet_mass_local, bulk_density_local, liquid_water_local
 end
 
-@inline function _summary_buffers(state, names::NTuple{N,Symbol}) where {N}
-    NF = number_type(state.c)
-    ncol = ncols(state)
-    return NamedTuple{names}(ntuple(_ -> similar(state.mass, NF, ncol), N))
-end
-
-@inline function _launch_summary_kernel!(kernel, state, args...)
-    return launch!(kernel, state.mass, ncols(state), args...)
-end
-
-"""
-    _summarize_domain_state_kernel!(...)
-
-KernelAbstractions kernel that summarizes each column into thickness, wet
-mass, bulk density, basal mass, ice SMB, liquid water, and runoff arrays. All
-output arrays are mutated in-place.
-"""
-@kernel function _summarize_domain_state_kernel!(
-    output,
-    fields,
-)
+"""Thickness, wet mass, bulk density and liquid water of every column (see `update_diagnostics!`)."""
+@kernel function _summarize_column_kernel!(output, fields)
     idx = @index(Global)
     @inbounds begin
-        thickness_local, wet_mass_local, bulk_density_local, liquid_water_local =
+        thickness, wet_mass, bulk_density, liquid_water =
             _column_summary(fields.N, fields.mass, fields.mass_w, fields.density, idx, output.thickness)
-        output.thickness[idx] = thickness_local
-        output.wet_mass[idx] = wet_mass_local
-        output.bulk_density[idx] = bulk_density_local
-        output.base_mass[idx] = fields.mass_base[idx]
-        output.smb_ice[idx] = fields.smb_ice[idx]
-        output.liquid_water[idx] = liquid_water_local
-        output.runoff[idx] = fields.runoff[idx]
-        output.melt[idx] = fields.melt[idx]
-        output.refreezing[idx] = fields.refreezing[idx]
-        output.vapor_mass[idx] = fields.vapor_mass[idx]
-        output.sublimation[idx] = fields.sublimation[idx]
-        output.latent_heat_flux_sum[idx] = fields.latent_heat_flux_sum[idx]
-        output.albedo[idx] = fields.albedo[idx]
+        output.thickness[idx] = thickness
+        output.wet_mass[idx] = wet_mass
+        output.bulk_density[idx] = bulk_density
+        output.liquid_water[idx] = liquid_water
     end
 end
 
 """
-    _summarize_year_state_kernel!(...)
+    column_profile(model::BESSIModel, idx = 1) -> NamedTuple
 
-KernelAbstractions kernel that summarizes the subset of column diagnostics
-needed for equilibrium-year tracking. Mutates the supplied output arrays
-in-place.
+The active layers of column `idx` (host copies): `N`, `mass`, `mass_w`, `density`, `temperature`,
+`thickness` (m), and the column's `albedo`, `Tsrf` and `smb_ice`.
 """
-@kernel function _summarize_year_state_kernel!(
-    output,
-    fields,
-)
-    idx = @index(Global)
-    @inbounds begin
-        thickness_local, wet_mass_local, bulk_density_local, _ =
-            _column_summary(fields.N, fields.mass, fields.mass_w, fields.density, idx, output.thickness)
-        output.thickness[idx] = thickness_local
-        output.wet_mass[idx] = wet_mass_local
-        output.bulk_density[idx] = bulk_density_local
-        output.base_mass[idx] = fields.mass_base[idx]
-    end
-end
-
-"""
-    summarize_domain_state!(thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water, runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum, albedo, state)
-
-Fill preallocated summary arrays with one-column diagnostics from `state`.
-Outputs are column-wise totals or aggregates in SI-like model units.
-"""
-function summarize_domain_state!(
-    thickness::AbstractVector,
-    wet_mass::AbstractVector,
-    bulk_density::AbstractVector,
-    base_mass::AbstractVector,
-    smb_ice::AbstractVector,
-    liquid_water::AbstractVector,
-    runoff::AbstractVector,
-    melt::AbstractVector,
-    refreezing::AbstractVector,
-    vapor_mass::AbstractVector,
-    sublimation::AbstractVector,
-    latent_heat_flux_sum::AbstractVector,
-    albedo::AbstractVector,
-    state,
-)
-    output = (; thickness, wet_mass, bulk_density, base_mass, smb_ice, liquid_water,
-              runoff, melt, refreezing, vapor_mass, sublimation, latent_heat_flux_sum,
-              albedo)
-    return _launch_summary_kernel!(
-        _summarize_domain_state_kernel!,
-        state,
-        output,
-        get_fields(state),
-    )
-end
-
-"""
-    summarize_domain_state(state)
-
-Allocate and return a named tuple of per-column summary arrays for `state`.
-This is a convenience wrapper around `summarize_domain_state!`.
-"""
-function summarize_domain_state(state)
-    summary = _summary_buffers(state, _DOMAIN_SUMMARY_FIELDS)
-    summarize_domain_state!(summary..., state)
-    return summary
-end
-
-"""
-    summarize_year_state!(thickness, wet_mass, bulk_density, base_mass, state)
-
-Fill preallocated arrays with the smaller summary set used to compare
-equilibrium years. Mutates the output arrays and returns `nothing`.
-"""
-function summarize_year_state!(
-    thickness::AbstractVector,
-    wet_mass::AbstractVector,
-    bulk_density::AbstractVector,
-        base_mass::AbstractVector,
-        state,
-)
-    output = (; thickness, wet_mass, bulk_density, base_mass)
-    return _launch_summary_kernel!(
-        _summarize_year_state_kernel!,
-        state,
-        output,
-        get_fields(state),
-    )
+function column_profile(model::BESSIModel, idx::Int = 1)
+    state = cpu_state(model)
+    n = state.N[idx]
+    mass = state.mass[1:n, idx]
+    density = state.density[1:n, idx]
+    return (N = n, mass = mass, mass_w = state.mass_w[1:n, idx], density = density,
+        temperature = state.temperature[1:n, idx], thickness = mass ./ density,
+        albedo = state.albedo[idx], Tsrf = state.Tsrf[idx], smb_ice = state.smb_ice[idx])
 end

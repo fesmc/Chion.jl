@@ -31,7 +31,7 @@ function _melt_surface_layers!(
     mass_split,
     mass_min,
     melt_mass,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     charge_sensible_heat::Bool,
 )
     remaining_melt = _safe_nonnegative(melt_mass)
@@ -87,6 +87,6 @@ Convert up to `melt_mass` of surface snow into liquid water in column `idx`
 mass. See `_melt_surface_layers!`.
 """
 _apply_melt!(N_storage, mass, mass_w, density, temperature, runoff, Tsrf, albedo_dynamic, idx::Int,
-    mass_split, mass_min, melt_mass, c::SnowpackPhysicalConstants) =
+    mass_split, mass_min, melt_mass, c::Params) =
     first(_melt_surface_layers!(N_storage, mass, mass_w, density, temperature, runoff, Tsrf, albedo_dynamic,
         idx, mass_split, mass_min, melt_mass, c, false))

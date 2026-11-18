@@ -24,12 +24,12 @@ Energy-flux temperature solver for array-backed snowpack states.
 end
 
 """Bulk turbulent vapour-mass transfer coefficient (kg m⁻² s⁻¹ Pa⁻¹)."""
-@inline _bessi_vapor_exchange_coefficient(c::SnowpackPhysicalConstants) =
-    c.latent_heat_flux_ratio * c.D_sh / c.cp_air * oftype(c.D_sh, 0.622)
+@inline _bessi_vapor_exchange_coefficient(c::Params) =
+    c.turbulent_flux_scheme.latent_heat_flux_ratio * c.turbulent_flux_scheme.D_sh / c.cp_air * oftype(c.turbulent_flux_scheme.D_sh, 0.622)
 
 
 """Latent heat for vapour exchange at a snow surface of the given temperature."""
-@inline _surface_vapor_latent_heat(surface_temperature, c::SnowpackPhysicalConstants) =
+@inline _surface_vapor_latent_heat(surface_temperature, c::Params) =
     surface_temperature < c.T0 ? c.Lv + c.Lm : c.Lv
 
 @inline function _relative_humidity_fraction(relative_humidity)
@@ -59,19 +59,19 @@ end
     return es * oftype(surface_temperature, 22.46) * oftype(surface_temperature, 272.62) / _safe_positive(denominator * denominator)
 end
 
-@inline function _bessi_vapor_mass_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
+@inline function _bessi_vapor_mass_flux(surface_temperature, c::Params, air_temperature, relative_humidity, air_pressure)
     exchange = _bessi_vapor_exchange_coefficient(c) / _safe_positive(air_pressure)
     ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
     es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
     return exchange * (ea - es)
 end
 
-@inline function _bessi_latent_vapor_flux(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure, latent_heat=_surface_vapor_latent_heat(surface_temperature, c))
+@inline function _bessi_latent_vapor_flux(surface_temperature, c::Params, air_temperature, relative_humidity, air_pressure, latent_heat=_surface_vapor_latent_heat(surface_temperature, c))
     vapor_mass_flux = _bessi_vapor_mass_flux(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
     return latent_heat * vapor_mass_flux
 end
 
-@inline function _bessi_latent_vapor_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure)
+@inline function _bessi_latent_vapor_flux_linearized(surface_temperature, c::Params, air_temperature, relative_humidity, air_pressure)
     exchange = _bessi_vapor_exchange_coefficient(c) / _safe_positive(air_pressure)
     ea = _bessi_air_vapor_pressure(air_temperature, relative_humidity, c.T0)
     es = _bessi_ice_saturation_vapor_pressure(surface_temperature, c.T0)
@@ -86,19 +86,19 @@ end
 # bulk Richardson number. Positive Ri denotes warm air over a colder surface
 # (stable stratification) and suppresses turbulent exchange; negative Ri
 # denotes an unstable surface layer and enhances it.
-@inline function _semix_aerodynamic_resistance(c::SnowpackPhysicalConstants, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
-    z0h = z0m / c.semix_zm_to_zh
-    neutral_ch = c.semix_karman^2 /
-                 _safe_positive(log(c.semix_surface_height / z0m) * log(c.semix_surface_height / z0h))
+@inline function _semix_aerodynamic_resistance(c::Params, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
+    z0h = z0m / c.turbulent_flux_scheme.zm_to_zh
+    neutral_ch = c.turbulent_flux_scheme.karman^2 /
+                 _safe_positive(log(c.turbulent_flux_scheme.reference_height / z0m) * log(c.turbulent_flux_scheme.reference_height / z0h))
     wind = max(wind_speed, oftype(wind_speed, 0.1))
-    bulk_richardson = oftype(surface_temperature, 9.80665) * c.semix_surface_height *
+    bulk_richardson = oftype(surface_temperature, 9.80665) * c.turbulent_flux_scheme.reference_height *
                       (air_temperature - surface_temperature) /
                       _safe_positive(air_temperature * wind^2)
     stability_factor = ifelse(
         bulk_richardson < zero(bulk_richardson),
         sqrt(max(one(bulk_richardson) - oftype(bulk_richardson, 16) * bulk_richardson, one(bulk_richardson))),
         one(bulk_richardson) /
-        (one(bulk_richardson) + c.semix_stable_coefficient * bulk_richardson),
+        (one(bulk_richardson) + c.turbulent_flux_scheme.stable_coefficient * bulk_richardson),
     )
     return one(wind) / _safe_positive(neutral_ch * stability_factor * wind)
 end
@@ -106,10 +106,10 @@ end
 @inline _semix_air_density(air_temperature, air_pressure) =
     air_pressure / _safe_positive(oftype(air_temperature, 287.05) * air_temperature)
 
-@inline function _semix_turbulent_flux_linearized(surface_temperature, c::SnowpackPhysicalConstants, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
+@inline function _semix_turbulent_flux_linearized(surface_temperature, c::Params, air_temperature, relative_humidity, air_pressure, wind_speed, z0m)
     air_density = _semix_air_density(air_temperature, air_pressure)
     resistance = _semix_aerodynamic_resistance(c, surface_temperature, air_temperature, air_pressure, wind_speed, z0m)
-    sensible_coefficient = c.semix_sensible_exchange_factor * air_density * c.cp_air / resistance
+    sensible_coefficient = c.turbulent_flux_scheme.sensible_exchange_factor * air_density * c.cp_air / resistance
     sensible_constant = sensible_coefficient * air_temperature
     q_air = oftype(surface_temperature, 0.622) * _relative_humidity_fraction(relative_humidity) *
             _bessi_ice_saturation_vapor_pressure(air_temperature, c.T0) / _safe_positive(air_pressure)
@@ -120,7 +120,7 @@ end
                  _safe_positive(air_pressure)
     # Permit both sublimation and deposition. At a melting/wet surface this
     # carries L_v; otherwise exchange with the solid surface carries L_s.
-    latent_exchange = c.semix_latent_exchange_factor *
+    latent_exchange = c.turbulent_flux_scheme.latent_exchange_factor *
                       _surface_vapor_latent_heat(surface_temperature, c) * air_density / resistance
     latent_constant = latent_exchange * (q_air - q_surface + dq_surface * surface_temperature)
     latent_linear = latent_exchange * dq_surface
@@ -165,7 +165,7 @@ Sensible and latent heat fluxes linearised about the previous surface temperatur
         relative_humidity, air_pressure, wind_speed, z0m)
     latent_constant, latent_linear =
         _bessi_latent_vapor_flux_linearized(surface_temperature, c, air_temperature, relative_humidity, air_pressure)
-    return air_temperature * c.D_sh, c.D_sh, latent_constant, latent_linear
+    return air_temperature * c.turbulent_flux_scheme.D_sh, c.turbulent_flux_scheme.D_sh, latent_constant, latent_linear
 end
 
 """
@@ -293,7 +293,7 @@ rainfall forcing.
 """
 @inline function _diagnose_latent_heat_flux_coefficients(
     has_surface_snow::Bool,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     air_temperature,
     snowfall_rate,
     rainfall_rate,
@@ -359,7 +359,7 @@ function _go_energy_flux_resolved!(
     Tsrf,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     scratch,
     air_temperature,
     shortwave_down,
@@ -397,7 +397,7 @@ function _go_energy_flux_resolved!(
     end
     surface_is_ice = n_snow == 0
     emissivity = surface_is_ice ? c.eps_ice : c.ϵ_snow
-    z0m = surface_is_ice ? c.semix_z0m_ice : c.semix_z0m_snow
+    z0m = _roughness_length(c.turbulent_flux_scheme, surface_is_ice)
 
     interface_terms = scratch.interface_conductance
     first_mass, first_density, first_temperature =
@@ -415,12 +415,12 @@ function _go_energy_flux_resolved!(
         shortwave_absorbed(shortwave_down, _get_scalar(albedo_dynamic, idx))
     longwave_down = _longwave_down(c, air_temperature, use_q_lw_down, q_lw_down_value)
     longwave_flux_constant, longwave_flux_linear = _linearized_net_longwave(
-        surface_energy_balance_scheme(c), c, emissivity, longwave_down,
+        c.surface_energy_balance_scheme, c, emissivity, longwave_down,
         surface_temperature_cube, surface_temperature_fourth,
     )
     parameterized_sensible_constant, parameterized_sensible_linear,
     parameterized_latent_constant, parameterized_latent_linear = _linearized_turbulent_heat_fluxes(
-        turbulent_flux_scheme(c), c, previous_surface_temperature, air_temperature, relative_humidity,
+        c.turbulent_flux_scheme, c, previous_surface_temperature, air_temperature, relative_humidity,
         air_pressure, wind_speed, z0m,
     )
     sensible_heat_flux_constant = use_q_sh ? q_sh_value : parameterized_sensible_constant
@@ -532,29 +532,32 @@ function _go_energy_flux_resolved!(
 end
 
 """
-    go_energy_flux!(state, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient, latent_heat_constant_term, dt_seconds; scratch, q_sw_net=nothing, q_lw_down=nothing, q_sh=nothing, q_lh=nothing)
+    go_energy_flux!(model, idx, air_temperature, shortwave_down, latent_heat_linear_coefficient,
+                    latent_heat_constant_term, dt_seconds; scratch = model.cache.workspace.energy,
+                    q_sw_net = nothing, q_lw_down = nothing, q_sh = nothing, q_lh = nothing)
 
-Public wrapper for the column energy-flux solve on `state`. Reuses `scratch`
-for temporary arrays and returns the same diagnostic named tuple as
-`_go_energy_flux_resolved!`.
+The column energy-flux solve of column `idx` of a CPU `model` (for tests and analysis): mutates the
+model's state and returns the diagnostic named tuple of `_go_energy_flux_resolved!`. A given flux
+(`q_*`) replaces its parameterization.
 """
 function go_energy_flux!(
-    state,
+    model,
     idx::Int,
     air_temperature,
     shortwave_down,
     latent_heat_linear_coefficient,
     latent_heat_constant_term,
     dt_seconds;
-    scratch,
+    scratch=model.cache.workspace.energy,
     q_sw_net=nothing,
     q_lw_down=nothing,
     q_sh=nothing,
     q_lh=nothing,
 )
+    state = model.state
     rows = _n_active(state.N, idx) + size(state.ice_temperature, 1)
     size(scratch.rhs, 1) >= rows ||
-        error("`scratch` has $(size(scratch.rhs, 1)) rows but the column needs $rows (snow + ice substrate); use `EnergyWorkspace(state)`.")
+        error("`scratch` has $(size(scratch.rhs, 1)) rows but the column needs $rows (snow + ice substrate).")
     return _go_energy_flux_resolved!(
         state.N,
         state.mass,
@@ -564,7 +567,7 @@ function go_energy_flux!(
         state.Tsrf,
         state.albedo,
         idx,
-        state.c,
+        model.params,
         scratch,
         air_temperature,
         shortwave_down,
@@ -585,6 +588,6 @@ function go_energy_flux!(
         oftype(dt_seconds, 5),
         state.ice_temperature,
         size(state.ice_temperature, 1),
-        state.parameters.ice_substrate_top_thickness_m,
+        model.grid.layering.ice_substrate_top_thickness_m,
     )
 end

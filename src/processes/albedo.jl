@@ -3,24 +3,24 @@ Surface albedo state and update rules for array-backed snow states.
 """
 
 @inline function _semix_grain_size(temperature, snowfall_rate, c)
-    cold = min(zero(temperature), temperature - (c.T0 - c.semix_dT_age))
-    f_age_temperature = exp(c.semix_f_age_t * cold) + exp(cold)
+    cold = min(zero(temperature), temperature - (c.T0 - c.albedo_scheme.dT_age))
+    f_age_temperature = exp(c.albedo_scheme.f_age_t * cold) + exp(cold)
     snow_per_day = max(snowfall_rate, zero(snowfall_rate)) * c.seconds_per_day
-    f_p = f_age_temperature * (c.semix_snow_0 / max(oftype(snow_per_day, 1e-20), snow_per_day))^c.semix_snow_1
+    f_p = f_age_temperature * (c.albedo_scheme.snow_0 / max(oftype(snow_per_day, 1e-20), snow_per_day))^c.albedo_scheme.snow_1
     f_age = one(f_p) - log(one(f_p) + f_p) / f_p
-    return c.semix_snow_grain_fresh + (c.semix_snow_grain_old - c.semix_snow_grain_fresh) * f_age
+    return c.albedo_scheme.snow_grain_fresh + (c.albedo_scheme.snow_grain_old - c.albedo_scheme.snow_grain_fresh) * f_age
 end
 
 @inline function _semix_dust_concentration(dust_deposition, snowfall_rate, snow_swe, snow_swe_max, c)
     dust = dust_deposition / max(oftype(snowfall_rate, 1e-7), snowfall_rate)
     melt_factor = ifelse(snow_swe > oftype(snow_swe, 1),
-        clamp(one(snow_swe) + (snow_swe_max - snow_swe) / c.semix_w_snow_dust, one(snow_swe), oftype(snow_swe, 5)), one(snow_swe))
-    dust = min(melt_factor * c.semix_dust_con_scale * dust, oftype(dust, 1000e-6))
+        clamp(one(snow_swe) + (snow_swe_max - snow_swe) / c.albedo_scheme.w_snow_dust, one(snow_swe), oftype(snow_swe, 5)), one(snow_swe))
+    dust = min(melt_factor * c.albedo_scheme.dust_con_scale * dust, oftype(dust, 1000e-6))
     return ifelse(dust < oftype(dust, 1e-15), zero(dust), dust)
 end
 
 @inline function _semix_broadband_albedo(avd, and, avf, anf, cloud, c)
-    cl = clamp(cloud, zero(cloud), one(cloud)); fv = clamp(c.semix_frac_vu, zero(c.semix_frac_vu), one(c.semix_frac_vu))
+    cl = clamp(cloud, zero(cloud), one(cloud)); fv = clamp(c.albedo_scheme.frac_vu, zero(c.albedo_scheme.frac_vu), one(c.albedo_scheme.frac_vu))
     return (one(cl) - cl) * (fv * avd + (one(fv) - fv) * and) + cl * (fv * avf + (one(fv) - fv) * anf)
 end
 
@@ -31,16 +31,16 @@ end
         ifelse(d < oftype(d, 10), (oftype(d, 0.02) * log(d)/log(oftype(d, 10)), oftype(d, 0.05) * log(d)/log(oftype(d, 10))),
         ifelse(d < oftype(d, 100), (oftype(d, 0.02) + oftype(d, 0.08)*(log(d)-log(oftype(d,10)))/(log(oftype(d,100))-log(oftype(d,10))), oftype(d,0.05)+oftype(d,0.10)*(log(d)-log(oftype(d,10)))/(log(oftype(d,100))-log(oftype(d,10)))),
         (oftype(d,0.10)+oftype(d,0.20)*(log(d)-log(oftype(d,100)))/(log(oftype(d,1000))-log(oftype(d,100))), oftype(d,0.15)+oftype(d,0.15)*(log(d)-log(oftype(d,100)))/(log(oftype(d,1000))-log(oftype(d,100)))))))
-    fage = log10(one(grain) + (grain - c.semix_snow_grain_fresh) / oftype(grain, 200)) / log10(one(grain) + (c.semix_snow_grain_old-c.semix_snow_grain_fresh)/oftype(grain,200))
-    avf = c.semix_alb_snow_vis_new - fage * (c.semix_d_alb_age_vis + aged_vis) - new_vis
-    anf = c.semix_alb_snow_nir_new - fage * (c.semix_d_alb_age_nir + aged_vis / oftype(aged_vis, 2)) - new_vis / oftype(new_vis, 2)
+    fage = log10(one(grain) + (grain - c.albedo_scheme.snow_grain_fresh) / oftype(grain, 200)) / log10(one(grain) + (c.albedo_scheme.snow_grain_old-c.albedo_scheme.snow_grain_fresh)/oftype(grain,200))
+    avf = c.albedo_scheme.alb_snow_vis_new - fage * (c.albedo_scheme.d_alb_age_vis + aged_vis) - new_vis
+    anf = c.albedo_scheme.alb_snow_nir_new - fage * (c.albedo_scheme.d_alb_age_nir + aged_vis / oftype(aged_vis, 2)) - new_vis / oftype(new_vis, 2)
     return avf + oftype(avf, .4)*fcos*(one(avf)-avf), anf + oftype(anf,.4)*fcos*(one(anf)-anf), avf, anf
 end
 
 @inline function _semix_dang_bands(grain, dust, coszm, z_sur_std, c)
     r0 = oftype(grain, 100); rn = log10(grain / r0)
     x = ifelse(dust > oftype(dust, 1e-8), log10(dust * oftype(dust, 1e6)), zero(dust))
-    roughness = c.semix_k_sigma_orog * tanh(z_sur_std / c.semix_sigma_orog_crit)
+    roughness = c.albedo_scheme.k_sigma_orog * tanh(z_sur_std / c.albedo_scheme.sigma_orog_crit)
     function visible(r, direct)
         rn_local = log10(r / r0)
         base = ifelse(direct, oftype(r, .9849) - oftype(r, .0215)*rn_local - oftype(r, .0132)*rn_local^2,
@@ -92,7 +92,7 @@ end
     z_sur_std = ifelse(forcing.has_z_sur_std, max(forcing.z_sur_std, zero(snow_swe)), zero(snow_swe))
     dust_deposition = ifelse(forcing.has_dust_deposition, max(forcing.dust_deposition, zero(snow_swe)), zero(snow_swe))
     dust = _semix_dust_concentration(dust_deposition, snowfall_rate, snow_swe, seasonal_max, c)
-    bands = _semix_snow_bands(semix_snow_albedo(c), grain, dust, coszm, z_sur_std, c)
+    bands = _semix_snow_bands(c.albedo_scheme.snow_bands, grain, dust, coszm, z_sur_std, c)
     updated = clamp(_semix_broadband_albedo(bands..., cloud, c), zero(snow_swe), one(snow_swe))
     _set_scalar!(albedo, idx, updated)
     return updated
@@ -109,7 +109,7 @@ ice, dry snow, and wet snow according to surface state.
     mass,
     temperature,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
         return c.alpha_ice
@@ -129,7 +129,7 @@ Returns zero when the layer is empty, ice-dense, or has no pore volume.
     mass_w,
     density,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_TINY
         return zero(eltype(mass))
@@ -157,11 +157,11 @@ Refresh the dynamic surface albedo after snowfall on column `idx`. Mutates
 function _refresh_dynamic_albedo_from_snowfall!(
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     snowfall_mass,
 )
     snowfall_mass <= EPS_TINY && return _get_scalar(albedo_dynamic, idx)
-    return _refresh_albedo_from_snowfall!(albedo_scheme(c), albedo_dynamic, idx, c, snowfall_mass)
+    return _refresh_albedo_from_snowfall!(c.albedo_scheme, albedo_dynamic, idx, c, snowfall_mass)
 end
 
 # Constant and aging albedo reset to fresh snow; the other schemes brighten gradually.
@@ -169,7 +169,7 @@ end
     ::Union{ConstantAlbedo, AgingAlbedo},
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     snowfall_mass,
 )
     _set_scalar!(albedo_dynamic, idx, c.alpha_dry)
@@ -180,7 +180,7 @@ end
     ::AbstractAlbedoScheme,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     snowfall_mass,
 )
     updated = min(
@@ -209,7 +209,7 @@ function _update_aging_surface_albedo_arrays!(
     albedo_dynamic,
     snow_age_days,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     snowfall_rate,
     dt_days,
 )
@@ -229,8 +229,8 @@ function _update_aging_surface_albedo_arrays!(
 
     surface_temperature = _get_layer(temperature, 1, idx)
     timescale_days = surface_temperature >= c.T0 ?
-        c.aging_melting_timescale_days :
-        c.aging_cold_timescale_days
+        c.albedo_scheme.melting_timescale_days :
+        c.albedo_scheme.cold_timescale_days
     previous_albedo = clamp(
         _get_scalar(albedo_dynamic, idx),
         c.alpha_wet,
@@ -259,7 +259,7 @@ function _update_surface_albedo_arrays!(
     temperature,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     dt_days,
 )
     if _n_active(N_storage, idx) <= 0 || _get_layer(mass, 1, idx) <= EPS_EMPTY_LAYER
@@ -268,7 +268,7 @@ function _update_surface_albedo_arrays!(
     end
 
     updated = _snow_surface_albedo(
-        albedo_scheme(c), N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c, dt_days,
+        c.albedo_scheme, N_storage, mass, mass_w, density, temperature, albedo_dynamic, idx, c, dt_days,
     )
     _set_scalar!(albedo_dynamic, idx, updated)
     return updated
@@ -276,7 +276,7 @@ end
 
 @inline _snow_surface_albedo(
     ::ConstantAlbedo, N_storage, mass, mass_w, density, temperature, albedo_dynamic,
-    idx::Int, c::SnowpackPhysicalConstants, dt_days,
+    idx::Int, c::Params, dt_days,
 ) = _constant_surface_albedo(N_storage, mass, temperature, idx, c)
 
 """BESSI dynamic snow albedo: temperature-dependent aging plus wetness relaxation."""
@@ -289,7 +289,7 @@ end
     temperature,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     dt_days,
 )
     previous_albedo = clamp(_get_scalar(albedo_dynamic, idx), c.alpha_wet, c.alpha_dry)
@@ -319,16 +319,15 @@ end
 end
 
 """
-    update_surface_albedo!(state, idx, dt_days=1)
+    update_surface_albedo!(model, idx, dt_days=1)
 
-Update the surface albedo of column `idx` in `state` and return the new
-albedo. `dt_days` controls the elapsed time applied to dynamic snow aging and
-wetness relaxation.
+Update the surface albedo of column `idx` of a CPU `model` with its albedo scheme and return the
+new albedo. `dt_days` is the elapsed time of the snow aging and wetness relaxation.
 """
-update_surface_albedo!(state, idx::Int, dt_days=one(eltype(state.mass))) =
-    _update_surface_albedo!(albedo_scheme(state.c), state, idx, dt_days)
+update_surface_albedo!(model, idx::Int, dt_days=one(eltype(model.state.mass))) =
+    _update_surface_albedo!(model.params.albedo_scheme, model.state, model.params, idx, dt_days)
 
-_update_surface_albedo!(::AgingAlbedo, state, idx::Int, dt_days) =
+_update_surface_albedo!(::AgingAlbedo, state, c, idx::Int, dt_days) =
     _update_aging_surface_albedo_arrays!(
         state.N,
         state.mass,
@@ -336,12 +335,12 @@ _update_surface_albedo!(::AgingAlbedo, state, idx::Int, dt_days) =
         state.albedo,
         state.snow_age_days,
         idx,
-        state.c,
+        c,
         zero(dt_days),
         dt_days,
     )
 
-function _update_surface_albedo!(::AbstractAlbedoScheme, state, idx::Int, dt_days)
+function _update_surface_albedo!(::AbstractAlbedoScheme, state, c, idx::Int, dt_days)
     return _update_surface_albedo_arrays!(
         state.N,
         state.mass,
@@ -350,7 +349,7 @@ function _update_surface_albedo!(::AbstractAlbedoScheme, state, idx::Int, dt_day
         state.temperature,
         state.albedo,
         idx,
-        state.c,
+        c,
         dt_days,
     )
 end

@@ -33,35 +33,47 @@ end
     @test x == [4.0, 4.0, 4.0, 2.0, 2.0]
 end
 
-@testset "Scheme selection by dispatch" begin
-    S = Chion
-    @test S._scheme(S.AbstractAlbedoScheme, :semix) === S.SemixAlbedo()
-    @test S._scheme(S.AbstractAlbedoScheme, "aging") === S.AgingAlbedo()
-    @test S._scheme(S.AbstractAlbedoScheme, S.ConstantAlbedo()) === S.ConstantAlbedo()
-    @test S._scheme(S.AbstractLongwaveScheme, :graybody) === S.GraybodyLongwave()
-    @test S._scheme(S.AbstractSurfaceEnergyBalanceScheme, :bessi) === S.BESSISurfaceEnergyBalance()
-    @test S._scheme(S.AbstractTurbulentFluxScheme, :semix) === S.SemixTurbulentFluxes()
-    @test S._scheme(S.AbstractSemixSnowAlbedo, :warren_wiscombe) === S.WarrenWiscombeSnowAlbedo()
-    @test S._scheme(S.AbstractPDDMethod, :pism) === S.PISMPDD()
-    err = try S._scheme(S.AbstractAlbedoScheme, :nonsense); catch e; e; end
-    @test err isa ArgumentError
-    @test occursin("Unsupported albedo scheme 'nonsense'", err.msg)
-    @test occursin(":constant, :dynamic, :prescribed, :aging, :semix", err.msg)
-    @test_throws ArgumentError S._scheme(S.AbstractAlbedoScheme, S.GraybodyLongwave())   # wrong kind
-    @test_throws ArgumentError S._scheme(S.AbstractPDDMethod, :calov_greve)
-    # names round-trip through the table
-    for (kind, _, schemes) in S._SCHEME_TABLE, (name, scheme) in pairs(schemes)
-        @test S._scheme(kind, name) === scheme
-        @test S._scheme_name(scheme) === name
-    end
-    # every choice is a type parameter: no scheme flags left in the constants
-    c = S.SnowpackPhysicalConstants(; seb_scheme = :bessi, longwave_scheme = :graybody,
-        turbulent_flux_scheme = S.BESSITurbulentFluxes(), semix_snow_albedo = :warren_wiscombe)
-    @test !any(T -> T <: Integer, fieldtypes(typeof(c)))
-    @test S.surface_energy_balance_scheme(c) === S.BESSISurfaceEnergyBalance()
-    @test S.longwave_scheme(c) === S.GraybodyLongwave()
-    @test S.turbulent_flux_scheme(c) === S.BESSITurbulentFluxes()
-    @test S.semix_snow_albedo(c) === S.WarrenWiscombeSnowAlbedo()
-    @test isbitstype(typeof(c))
-    @test_throws ArgumentError S.SnowpackPhysicalConstants(; albedo_scheme = :aging, alpha_wet = 0.9, alpha_dry = 0.8)
+@testset "Params" begin
+    p = Params()
+    @test isbitstype(typeof(p))
+    @test !any(T -> T <: Integer, fieldtypes(typeof(p)))
+    @test p.albedo_scheme === DynamicAlbedo() && p.diurnal_cycle == DiurnalSubsteps()
+    # Every number and every float of a scheme in the number type.
+    p32 = Params(NF = Float32, turbulent_flux_scheme = BESSITurbulentFluxes(D_sh = 8),
+        albedo_scheme = SemixAlbedo(snow_bands = WarrenWiscombeSnowAlbedo(), frac_vu = 0.5))
+    @test p32.alpha_dry === 0.81f0
+    @test p32.turbulent_flux_scheme === BESSITurbulentFluxes{Float32}(8f0, 1f0)
+    @test p32.albedo_scheme.frac_vu === 0.5f0 && p32.albedo_scheme.snow_bands === WarrenWiscombeSnowAlbedo()
+    @test p32.diurnal_cycle.max_substeps === 8 && p32.diurnal_cycle.min_air_temperature === Float32(273.15 - 8.0)
+    @test p32.diurnal_cycle.temperature_cycle.amplitude === 1f0
+    # Integer literals become floats; unknown fields and bad values throw.
+    @test AgingAlbedo(cold_timescale_days = 15) === AgingAlbedo(15.0, 2.0)
+    @test DiurnalSubsteps(max_substeps = 4, threshold = 1) isa DiurnalSubsteps{Float64}
+    @test Layering(mass_max = 600).mass_max === 600.0
+    @test_throws ArgumentError Params(rho_s = 300.0)
+    @test_throws ArgumentError Params(diurnal_cycle = DiurnalSubsteps(max_substeps = 30))
+    @test_throws ArgumentError Params(turbulent_flux_scheme = SemixTurbulentFluxes(karman = 0))
+    @test_throws ArgumentError Params(longwave_scheme = CloudProxyLongwave(night_cloud_fraction = 2))
+    @test_throws ArgumentError Params(albedo_scheme = AgingAlbedo(cold_timescale_days = 0))
+    @test_throws ArgumentError Grid(2; layering = Layering(mass_split = 600.0))
+    # Copy with changes; named setups.
+    @test Params(p; alpha_dry = 0.85).alpha_dry == 0.85
+    @test ParamsGrISv1() == Params()
+    ais = ParamsAISv1()
+    @test ais.alpha_dry == 0.87 && ais.turbulent_flux_scheme.stable_coefficient == 20.0
+    @test ais.longwave_scheme.night_cloud_fraction == 0.9 && ais.longwave_scheme.clear_sky_emissivity == 0.7314
+    @test PDDParams(method = PISMPDD()).method === PISMPDD()
+    @test_throws ArgumentError PDDParams(ddf_snow = -1)
+    @test_throws ArgumentError ITMParams(alb_ice = 2)
+end
+
+@testset "Grid" begin
+    grid = Grid(3; NF = Float32, layering = Layering(Ntot = 20, ice_substrate_layers = 0))
+    @test grid.Ntot == 20 && grid.ice_substrate_layers == 0 && grid.mass_max === 500f0
+    @test grid.x === nothing && !Chion.has_spatial_coords(grid)
+    @test Grid(grid; layering = Layering()).Ntot == 15
+    spatial = Grid(2; x = [0.0, 1.0], y = [0.0], js = [1, 1], is = [1, 2])
+    @test spatial.mask == ones(1, 2) && Chion.has_spatial_coords(spatial)
+    @test_throws ArgumentError Grid(2; x = [0.0, 1.0])
+    @test_throws ArgumentError Grid(0)
 end

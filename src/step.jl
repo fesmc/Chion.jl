@@ -18,10 +18,7 @@ function EnergyWorkspace(storage, ::Type{NF}, dims::Vararg{Int,N}) where {NF <: 
 end
 
 # Thermal rows cover the snow/firn layers followed by the ice substrate.
-@inline _thermal_row_capacity(state) = state.Ntot + size(state.ice_temperature, 1)
-
-EnergyWorkspace(state) =
-    EnergyWorkspace(state.mass, number_type(state.c), _thermal_row_capacity(state))
+@inline _thermal_row_capacity(layering::Layering) = layering.Ntot + layering.ice_substrate_layers
 
 struct ColumnarStepWorkspace{LWT,ET,BHE}
     liquid_water_before_energy::LWT
@@ -44,56 +41,27 @@ function ColumnarStepWorkspace(storage, ::Type{NF}, Ntot::Int, ncol::Int) where 
     )
 end
 
-function ColumnarStepWorkspace(state)
-    NF = number_type(state.c)
-    return ColumnarStepWorkspace(state.mass, NF, _thermal_row_capacity(state), ncols(state))
-end
+ColumnarStepWorkspace(state, layering::Layering) =
+    ColumnarStepWorkspace(state.mass, eltype(state.mass), _thermal_row_capacity(layering), ncols(state))
 
 Adapt.@adapt_structure EnergyWorkspace
 Adapt.@adapt_structure ColumnarStepWorkspace
 
-const DEFAULT_BESSI_STEP_OPTIONS = (
-    diurnal_shortwave_substeps=Val(false),
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps=3,
-    diurnal_shortwave_min_air_temperature=265.15,
-    diurnal_temperature_cycle=Val(false),
-    diurnal_temperature_amplitude=0.0,
-    diurnal_temperature_amplitude_gradient=0.0,
-    diurnal_temperature_amplitude_reference_height=0.0,
-    diurnal_temperature_amplitude_max=Inf,
-)
-
-@inline function _step_config_from_keywords(; kwargs...)
-    config = merge(DEFAULT_BESSI_STEP_OPTIONS, (; kwargs...))
-    return merge(
-        config,
-        (
-            diurnal_shortwave_substeps=Val(_config_enabled(config.diurnal_shortwave_substeps)),
-            diurnal_temperature_cycle=Val(_config_enabled(config.diurnal_temperature_cycle)),
-        ),
-    )
-end
-
-@inline _step_config_from_keywords(kwargs::NamedTuple) = _step_config_from_keywords(; kwargs...)
-
-@inline _config_enabled(::Val{Enabled}) where {Enabled} = Enabled
-@inline _config_enabled(enabled::Bool) = enabled
-@inline _diurnal_air_temperature(::Val{false}, forcing, config, hour_angle_start, hour_angle_end) =
+@inline _diurnal_air_temperature(::NoDiurnalTemperatureCycle, forcing, hour_angle_start, hour_angle_end) =
     forcing.air_temperature
-@inline function _diurnal_air_temperature(::Val{true}, forcing, config, hour_angle_start, hour_angle_end)
+@inline function _diurnal_air_temperature(cycle::DiurnalTemperatureCycle, forcing, hour_angle_start, hour_angle_end)
     # Forcing without surface height (NaN) gets no elevation adjustment.
     height_excess = ifelse(
         isfinite(forcing.surface_height),
-        max(forcing.surface_height - config.diurnal_temperature_amplitude_reference_height, zero(forcing.surface_height)),
+        max(forcing.surface_height - cycle.reference_height, zero(forcing.surface_height)),
         zero(forcing.surface_height),
     )
     return _diurnal_temperature_interval_average(
         forcing.air_temperature,
         clamp(
-            config.diurnal_temperature_amplitude + config.diurnal_temperature_amplitude_gradient * height_excess,
+            cycle.amplitude + cycle.amplitude_gradient * height_excess,
             zero(forcing.air_temperature),
-            config.diurnal_temperature_amplitude_max,
+            cycle.amplitude_max,
         ),
         hour_angle_start,
         hour_angle_end,
@@ -143,7 +111,7 @@ end
 end
 
 """
-    column_enthalpy(state, idx)
+    column_enthalpy(model, idx)
 
 Enthalpy (J m⁻²) of the snow/firn column and the ice substrate of column `idx`,
 relative to liquid water at T₀: solid mass contributes cᵢ m (T − T₀) − Lₘ m, liquid
@@ -151,13 +119,14 @@ water (held at T₀) contributes nothing, and the fixed-mass substrate contribut
 sensible heat only. Its change over a step equals the change of the workspace
 diagnostic `boundary_enthalpy`.
 """
-function column_enthalpy(state, idx::Int)
-    c = state.c
+function column_enthalpy(model, idx::Int)
+    state = model.state
+    c = model.params
     H = zero(eltype(state.mass))
     @inbounds for k in 1:_n_active(state.N, idx)
         H += _solid_enthalpy(_get_layer(state.mass, k, idx), _get_layer(state.temperature, k, idx), c)
     end
-    dz = state.parameters.ice_substrate_top_thickness_m
+    dz = model.grid.layering.ice_substrate_top_thickness_m
     @inbounds for k in axes(state.ice_temperature, 1)
         H += c.rho_i * ldexp(dz, k - 1) * c.ci * (_get_layer(state.ice_temperature, k, idx) - c.T0)
     end
@@ -211,10 +180,11 @@ end
 
 @inline function _step_diurnal_shortwave_interval!(
     fields,
-    parameters::BESSIParameters,
+    params::Params,
+    layering::Layering,
     idx::Int,
     forcing::SnowpackStepForcing,
-    config,
+    diurnal_cycle::DiurnalSubsteps,
     workspace,
     solar_terms,
     hour_angle_start,
@@ -224,9 +194,8 @@ end
     shortwave_down = _diurnal_shortwave_interval_average(
         forcing.shortwave_down, solar_terms, hour_angle_start, hour_angle_end)
     air_temperature = _diurnal_air_temperature(
-        config.diurnal_temperature_cycle,
+        diurnal_cycle.temperature_cycle,
         forcing,
-        config,
         hour_angle_start,
         hour_angle_end,
     )
@@ -248,77 +217,68 @@ end
         forcing.prescribed_melt,
     )
     subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net, prescribed_melt)
-    return column_step_core!(fields, parameters, idx, subforcing, workspace)
+    return column_step_core!(fields, params, layering, idx, subforcing, workspace)
 end
 
 """
-    column_step!(state, idx, forcing, config, workspace)
+    column_step!(fields, params, layering, idx, forcing, workspace)
 
-Advance one snowpack column by one forcing step using already-resolved arrays,
-constants, and scratch storage. This mutates the supplied state arrays
-in-place and may update runoff and SMB diagnostics.
+Advance column `idx` of the state arrays `fields` (`get_fields(model.state)`) by one forcing step
+with the step forcing `forcing`, the [`Params`](@ref) `params`, the [`Layering`](@ref) `layering`
+and the scratch arrays `workspace`. Mutates `fields` and `workspace` in place. The diurnal cycle of
+`params` selects one call of `column_step_core!` or up to `max_substeps` of them.
 """
-@inline function column_step!(
-    state::BESSIState,
-    idx::Int,
-    forcing::SnowpackStepForcing,
-    config,
-    workspace,
-)
-    return column_step!(get_fields(state), state.parameters, idx, forcing, config, workspace)
-end
-
 @inline function column_step!(
     fields,
-    parameters::BESSIParameters,
+    params::Params,
+    layering::Layering,
     idx::Int,
     forcing::SnowpackStepForcing,
-    config,
     workspace,
 )
     # The solar geometry depends only on latitude and season: evaluate it once
     # for the cloud-proxy longwave and all diurnal substeps.
     solar_terms = _diurnal_shortwave_integral_terms(forcing.latitude_deg, forcing.solar_longitude_deg)
     return _column_step_diurnal!(
-        config.diurnal_shortwave_substeps,
+        params.diurnal_cycle,
         fields,
-        parameters,
+        params,
+        layering,
         idx,
-        _with_parameterized_longwave(parameters.c, forcing, solar_terms),
-        config,
+        _with_parameterized_longwave(params, forcing, solar_terms),
         workspace,
         solar_terms,
     )
 end
 
 @inline function _column_step_diurnal!(
-    ::Val{false},
+    ::NoDiurnalCycle,
     fields,
-    parameters,
+    params,
+    layering,
     idx,
     forcing,
-    config,
     workspace,
     solar_terms,
 )
-    return column_step_core!(fields, parameters, idx, forcing, workspace)
+    return column_step_core!(fields, params, layering, idx, forcing, workspace)
 end
 
 @inline function _column_step_diurnal!(
-    ::Val{true},
+    diurnal_cycle::DiurnalSubsteps,
     fields,
-    parameters,
+    params,
+    layering,
     idx,
     forcing,
-    config,
     workspace,
     solar_terms,
 )
     shortwave_for_criterion = ifelse(forcing.has_q_sw_net, forcing.q_sw_net, forcing.shortwave_down)
     n_substeps = _diurnal_shortwave_substep_count(
         forcing.dt_days, shortwave_for_criterion, forcing.air_temperature,
-        config.diurnal_shortwave_min_air_temperature, solar_terms, config.diurnal_shortwave_threshold,
-        config.diurnal_shortwave_max_substeps,
+        diurnal_cycle.min_air_temperature, solar_terms, diurnal_cycle.threshold,
+        diurnal_cycle.max_substeps,
     )
     day_start = -oftype(forcing.dt_days, π)
     day_end = oftype(forcing.dt_days, π)
@@ -332,10 +292,11 @@ end
         )
         _step_diurnal_shortwave_interval!(
             fields,
-            parameters,
+            params,
+            layering,
             idx,
             forcing,
-            config,
+            diurnal_cycle,
             workspace,
             solar_terms,
             hour_angle_start,
@@ -368,7 +329,7 @@ surface) times its length (days) to the column's `*_sum` diagnostics.
 end
 
 """
-    _step_bare_ice_substrate!(fields, parameters, idx, forcing, workspace, dt_seconds)
+    _step_bare_ice_substrate!(fields, params, layering, idx, forcing, workspace, dt_seconds)
 
 Bare-ice step with a thermal ice substrate. The top substrate layer is the
 surface: it cools when the surface energy balance is negative and must be
@@ -376,8 +337,9 @@ re-warmed before melting, instead of being held at the melting point with the
 negative energy discarded. Melt and rain leave as runoff from the impermeable
 surface.
 """
-@inline function _step_bare_ice_substrate!(fields, parameters::BESSIParameters, idx::Int, forcing::SnowpackStepForcing, workspace, dt_seconds)
-    c = parameters.c
+@inline function _step_bare_ice_substrate!(fields, params::Params, layering::Layering, idx::Int,
+        forcing::SnowpackStepForcing, workspace, dt_seconds)
+    c = params
     Tsrf = fields.Tsrf
     _set_scalar!(fields.albedo, idx, _bare_ice_albedo(c, forcing))
     # Rain enthalpy enters the surface balance as on a snow surface.
@@ -395,8 +357,8 @@ surface.
         forcing.has_q_lh, forcing.q_lh,
         forcing.has_relative_humidity, forcing.relative_humidity,
         forcing.air_pressure, forcing.wind_speed,
-        fields.ice_temperature, parameters.ice_substrate_layers,
-        parameters.ice_substrate_top_thickness_m,
+        fields.ice_temperature, layering.ice_substrate_layers,
+        layering.ice_substrate_top_thickness_m,
     )
     surface_temperature = _get_scalar(Tsrf, idx)
     longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
@@ -405,7 +367,7 @@ surface.
             forcing.has_q_lw_down, forcing.q_lw_down, forcing.has_q_sh, forcing.q_sh,
             forcing.has_q_lh, forcing.q_lh, forcing.has_relative_humidity,
             forcing.relative_humidity, forcing.air_pressure, forcing.wind_speed,
-            c.semix_z0m_ice, c.eps_ice,
+            _roughness_length(c.turbulent_flux_scheme, true), c.eps_ice,
         )
     _accumulate_surface_energy_balance!(
         fields, idx, forcing.dt_days, forcing.shortwave_down, energy.absorbed_shortwave,
@@ -439,7 +401,8 @@ end
 
 Base.@propagate_inbounds function column_step_core!(
     fields,
-    parameters::BESSIParameters,
+    params::Params,
+    layering::Layering,
     idx::Int,
     forcing::SnowpackStepForcing,
     workspace,
@@ -459,7 +422,7 @@ Base.@propagate_inbounds function column_step_core!(
     latent_heat_flux_sum = fields.latent_heat_flux_sum
     Tsrf = fields.Tsrf
     albedo_dynamic = fields.albedo
-    c = parameters.c
+    c = params
     snow_age_days = fields.snow_age_days
     w_snow_max = fields.w_snow_max
 
@@ -467,12 +430,12 @@ Base.@propagate_inbounds function column_step_core!(
     # The geometric grid owns surface rebalancing. Applying the legacy
     # 100 kg m⁻² minimum during accumulation would merge away its gradient.
     surface_mass_min = ifelse(
-        isfinite(parameters.near_surface_layer_max_thicknesses_m[1]),
-        zero(parameters.mass_min),
-        parameters.mass_min,
+        isfinite(layering.near_surface_layer_max_thicknesses_m[1]),
+        zero(layering.mass_min),
+        layering.mass_min,
     )
     started_without_surface_snow = !_surface_has_snow(N_storage, mass, idx)
-    use_prescribed_albedo = _prescribes_albedo(albedo_scheme(c), forcing)
+    use_prescribed_albedo = _prescribes_albedo(c.albedo_scheme, forcing)
 
     # Enthalpy crossing the column boundary in this step (see `boundary_enthalpy`).
     # Snowfall joins the surface layer at its temperature, or takes the air temperature
@@ -497,9 +460,9 @@ Base.@propagate_inbounds function column_step_core!(
         albedo_dynamic,
         idx,
         c,
-        parameters.Ntot,
-        parameters.mass_max,
-        parameters.mass_split,
+        layering.Ntot,
+        layering.mass_max,
+        layering.mass_split,
         surface_mass_min,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
@@ -522,18 +485,18 @@ Base.@propagate_inbounds function column_step_core!(
     end
     boundary_enthalpy -= _remesh_near_surface_layers!(
         N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
-        parameters.mass_max, parameters.mass_split, c,
+        idx, layering.Ntot, layering.near_surface_layer_max_thicknesses_m,
+        layering.mass_max, layering.mass_split, c,
     )
     _set_scalar!(workspace.boundary_enthalpy, idx, _get_scalar(workspace.boundary_enthalpy, idx) + boundary_enthalpy)
     boundary_enthalpy = zero(dt_seconds)
 
     has_surface_snow = _surface_has_snow(N_storage, mass, idx)
     if !has_surface_snow
-        _reset_snow_age!(albedo_scheme(c), snow_age_days, idx, zero(dt_seconds))
+        _reset_snow_age!(c.albedo_scheme, snow_age_days, idx, zero(dt_seconds))
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        if parameters.ice_substrate_layers > 0
-            return _step_bare_ice_substrate!(fields, parameters, idx, forcing, workspace, dt_seconds)
+        if layering.ice_substrate_layers > 0
+            return _step_bare_ice_substrate!(fields, params, layering, idx, forcing, workspace, dt_seconds)
         end
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         _accumulate_surface_energy_balance!(
@@ -557,12 +520,12 @@ Base.@propagate_inbounds function column_step_core!(
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     else
         _update_snow_albedo!(
-            albedo_scheme(c), N_storage, mass, mass_w, density, temperature, albedo_dynamic,
+            c.albedo_scheme, N_storage, mass, mass_w, density, temperature, albedo_dynamic,
             snow_age_days, w_snow_max, idx, c, forcing,
         )
     end
 
-    densification_tag = densification_scheme(c)
+    densification_tag = c.densification_scheme
     n_liquid_water_before_energy = _copy_liquid_water_for_compaction!(
         densification_tag,
         N_storage,
@@ -619,8 +582,8 @@ Base.@propagate_inbounds function column_step_core!(
         forcing.air_pressure,
         forcing.wind_speed,
         fields.ice_temperature,
-        parameters.ice_substrate_layers,
-        parameters.ice_substrate_top_thickness_m,
+        layering.ice_substrate_layers,
+        layering.ice_substrate_top_thickness_m,
     )
     boundary_enthalpy += energy.heating
     # The implicit solve linearises Stefan--Boltzmann emission about the
@@ -629,7 +592,7 @@ Base.@propagate_inbounds function column_step_core!(
     # not an energy diagnostic when Ts changes appreciably within a substep.
     resolved_surface_temperature = _get_scalar(Tsrf, idx)
     longwave_down = _longwave_down(c, forcing.air_temperature, forcing.has_q_lw_down, forcing.q_lw_down)
-    exact_net_longwave = _net_longwave(surface_energy_balance_scheme(c), c, c.ϵ_snow, longwave_down,
+    exact_net_longwave = _net_longwave(c.surface_energy_balance_scheme, c, c.ϵ_snow, longwave_down,
         resolved_surface_temperature)
     # The snow energy solver carries precipitation enthalpy in its effective
     # latent-heat coefficients. Record its rain component separately for the
@@ -668,7 +631,7 @@ Base.@propagate_inbounds function column_step_core!(
         c,
         forcing,
         dt_seconds,
-        parameters.mass_split,
+        layering.mass_split,
         surface_mass_min,
     )
     _set_scalar!(vapor_mass, idx, _get_scalar(vapor_mass, idx) + snow_vapor_fluxes.vapor_mass)
@@ -695,7 +658,7 @@ Base.@propagate_inbounds function column_step_core!(
         Tsrf,
         albedo_dynamic,
         idx,
-        parameters.mass_split,
+        layering.mass_split,
         surface_mass_min,
         melt_mass,
         c,
@@ -741,7 +704,7 @@ Base.@propagate_inbounds function column_step_core!(
         c.ci,
         c.Lm,
         c.rho_i,
-        parameters.refreezing_correction,
+        c.refreezing_correction,
     )
 
     _set_scalar!(refreezing, idx, _get_scalar(refreezing, idx) + refrozen_mass)
@@ -751,8 +714,8 @@ Base.@propagate_inbounds function column_step_core!(
     # the next energy solve without changing any column-integrated reservoir.
     boundary_enthalpy -= _remesh_near_surface_layers!(
         N_storage, mass, mass_w, density, temperature, fields.mass_base, fields.smb_ice,
-        idx, parameters.Ntot, parameters.near_surface_layer_max_thicknesses_m,
-        parameters.mass_max, parameters.mass_split, c,
+        idx, layering.Ntot, layering.near_surface_layer_max_thicknesses_m,
+        layering.mass_max, layering.mass_split, c,
     )
     _set_scalar!(workspace.boundary_enthalpy, idx, _get_scalar(workspace.boundary_enthalpy, idx) + boundary_enthalpy)
 
@@ -761,7 +724,7 @@ Base.@propagate_inbounds function column_step_core!(
         _set_prescribed_surface_albedo!(albedo_dynamic, idx, forcing)
     elseif !final_has_snow
         _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
-        _reset_snow_age!(albedo_scheme(c), snow_age_days, idx, zero(dt_seconds))
+        _reset_snow_age!(c.albedo_scheme, snow_age_days, idx, zero(dt_seconds))
     end
 
     return nothing
@@ -770,19 +733,18 @@ end
 """Batch stepping over forcing fields with one KernelAbstractions path for CPU and GPU."""
 
 """
-    _step_columns_single_kernel!(...)
+    _step_columns_single_kernel!(fields, params, layering, workspace, active_indices, forcing_fields, time_index)
 
-KernelAbstractions kernel that advances each column for one forcing time
-index. The absence of a dynamic time loop isolates Reactant compatibility
-failures to the BESSI column-process call graph.
+One forcing step of every active column (one work item per column), without the time loop of
+`_step_columns_kernel!` (fewer registers).
 """
 @kernel function _step_columns_single_kernel!(
     fields,
-    parameters::BESSIParameters,
+    params::Params,
+    layering::Layering,
     workspace::ColumnarStepWorkspace,
     active_indices,
     forcing_fields,
-    config,
     time_index::Int,
 )
     active_idx = @index(Global)
@@ -790,24 +752,23 @@ failures to the BESSI column-process call graph.
         @inbounds begin
             idx = active_indices[active_idx]
             step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-            column_step!(fields, parameters, idx, step_forcing, config, workspace)
+            column_step!(fields, params, layering, idx, step_forcing, workspace)
         end
     end
 end
 
 """
-    _step_columns_kernel!(...)
+    _step_columns_kernel!(fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop)
 
-KernelAbstractions kernel that extracts one time slice of the full forcing
-and advances each column independently in-place.
+The forcing steps `time_start:time_stop` of every active column, one work item per column.
 """
 @kernel function _step_columns_kernel!(
     fields,
-    parameters::BESSIParameters,
+    params::Params,
+    layering::Layering,
     workspace::ColumnarStepWorkspace,
     active_indices,
     forcing_fields,
-    config,
     time_start::Int,
     time_stop::Int,
 )
@@ -817,18 +778,12 @@ and advances each column independently in-place.
             idx = active_indices[active_idx]
             for time_index in time_start:time_stop
                 step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-                column_step!(fields, parameters, idx, step_forcing, config, workspace)
+                column_step!(fields, params, layering, idx, step_forcing, workspace)
             end
         end
     end
 end
 
-"""
-    _launch_step_columns_kernel!(state, forcing, time_start, time_stop, workspace, active_indices, config)
-
-Launch the backend-specific batch stepping kernel for one contiguous forcing
-range.
-"""
 @inline _step_kernel_workgroupsize(::KernelAbstractions.CPU) = 16
 @inline _step_kernel_workgroupsize(::KernelAbstractions.Backend) = 256
 
@@ -858,166 +813,87 @@ results. On the CPU a thread then keeps its column in cache over the whole block
     return isnothing(parsed) || parsed < 1 ? 1 : parsed
 end
 
-@inline function _launch_step_columns_kernel!(
-    state,
-    forcing,
-    time_start::Int,
-    time_stop::Int,
-    workspace::ColumnarStepWorkspace,
-    active_indices,
-    config,
-)
-    time_stop >= time_start || return nothing
-    return _launch_step_columns!(
-        _ka_backend(state.mass), state, forcing, time_start, time_stop, workspace, active_indices, config,
-    )
-end
-
 # Plain threaded loop on the CPU, compiled before the threads start (see
 # `_cpu_step_columns!`); concurrent compilation inside KernelAbstractions'
 # task closures made the column step allocate at every process call
 # (up to ~80 GB per Greenland year, 4-25x slower with several threads).
-@inline function _launch_step_columns!(
-    ::KernelAbstractions.CPU, state, forcing, time_start::Int, time_stop::Int, workspace, active_indices, config,
-)
-    _cpu_step_columns!(get_fields(state), state.parameters, workspace, active_indices,
-        _device_forcing_fields(forcing), config, time_start, time_stop)
+@inline function _launch_step_columns!(::KernelAbstractions.CPU, fields, params, layering, workspace,
+        active_indices, forcing_fields, time_start::Int, time_stop::Int)
+    _cpu_step_columns!(fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop)
     return nothing
 end
 
-@inline function _launch_step_columns!(
-    backend::KernelAbstractions.Backend, state, forcing, time_start::Int, time_stop::Int, workspace, active_indices, config,
-)
+@inline function _launch_step_columns!(backend::KernelAbstractions.Backend, fields, params, layering, workspace,
+        active_indices, forcing_fields, time_start::Int, time_stop::Int)
     ncolumns = length(active_indices)
     workgroupsize = _step_kernel_workgroupsize(backend, ncolumns)
-    fields = get_fields(state)
-    forcing_fields = _device_forcing_fields(forcing)
     # One forcing step: the kernel without the time loop (fewer registers).
     if time_start == time_stop
-        launch!(_step_columns_single_kernel!, state.mass, ncolumns,
-            fields, state.parameters, workspace, active_indices, forcing_fields, config, time_start;
+        launch!(_step_columns_single_kernel!, fields.mass, ncolumns,
+            fields, params, layering, workspace, active_indices, forcing_fields, time_start;
             workgroupsize)
         return nothing
     end
-    launch!(_step_columns_kernel!, state.mass, ncolumns,
-        fields, state.parameters, workspace, active_indices, forcing_fields, config, time_start, time_stop;
+    launch!(_step_columns_kernel!, fields.mass, ncolumns,
+        fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop;
         workgroupsize)
     return nothing
 end
 
 """Advance the columns of `active_indices` over `time_start:time_stop` on CPU threads."""
-function _cpu_step_columns!(fields, parameters, workspace, active_indices, forcing_fields, config,
+function _cpu_step_columns!(fields, params, layering, workspace, active_indices, forcing_fields,
         time_start::Int, time_stop::Int)
     # Compile the whole column step on this thread before the threads start: when
     # several threads compile the call tree concurrently, callers can be compiled
     # against callees that are not finished yet and then call them through the
     # boxed generic ABI for good (heap allocation at every process call).
-    precompile(_cpu_step_column!, map(typeof, (fields, parameters, workspace, first(active_indices),
-        forcing_fields, config, time_start, time_stop)))
+    precompile(_cpu_step_column!, map(typeof, (fields, params, layering, workspace, first(active_indices),
+        forcing_fields, time_start, time_stop)))
     if Threads.nthreads() == 1 || length(active_indices) < 2 * Threads.nthreads()
         for idx in active_indices
-            _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config, time_start, time_stop)
+            _cpu_step_column!(fields, params, layering, workspace, idx, forcing_fields, time_start, time_stop)
         end
     else
         # :dynamic (not :static) so that the step can run inside other threaded code.
         Threads.@threads :dynamic for active_idx in eachindex(active_indices)
-            _cpu_step_column!(fields, parameters, workspace, active_indices[active_idx], forcing_fields,
-                config, time_start, time_stop)
+            _cpu_step_column!(fields, params, layering, workspace, active_indices[active_idx], forcing_fields,
+                time_start, time_stop)
         end
     end
     return nothing
 end
 
-@inline function _cpu_step_column!(fields, parameters, workspace, idx, forcing_fields, config,
+@inline function _cpu_step_column!(fields, params, layering, workspace, idx, forcing_fields,
         time_start::Int, time_stop::Int)
     @inbounds for time_index in time_start:time_stop
         step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-        column_step!(fields, parameters, idx, step_forcing, config, workspace)
+        column_step!(fields, params, layering, idx, step_forcing, workspace)
     end
     return nothing
 end
 
-@inline function _time_range_bounds(time_range)
-    time_range isa AbstractUnitRange ||
-        error("BESSI KA stepping requires a contiguous unit-step time range.")
-    first_time = Int(first(time_range))
-    last_time = Int(last(time_range))
-    return first_time, last_time
-end
+"""
+    _step_columns!(model::BESSIModel, time_start, time_stop)
 
-function _step_range!(
-    state,
-    forcing,
-    time_range,
-    workspace::ColumnarStepWorkspace,
-    active_indices,
-    config,
-)
-    first_time, last_time = _time_range_bounds(time_range)
-    first_time <= last_time || return nothing
-    backend = _ka_backend(state.mass)
+Advance the active columns of `model` over the forcing steps `time_start:time_stop` of the loaded
+forcing year, in launches of `_step_time_block_steps` steps.
+"""
+function _step_columns!(model, time_start::Int, time_stop::Int)
+    time_stop >= time_start || return nothing
+    fields = get_fields(model.state)
+    backend = _ka_backend(fields.mass)
     block_steps = _step_time_block_steps(backend)
-    time_index = first_time
-    while time_index <= last_time
-        time_stop = min(last_time, time_index + block_steps - 1)
-        _launch_step_columns_kernel!(state, forcing, time_index, time_stop, workspace, active_indices, config)
-        time_index = time_stop + 1
+    params = model.params
+    layering = model.grid.layering
+    workspace = model.cache.workspace
+    active_indices = model.cache.active_indices
+    forcing_fields = model.forcing.fields
+    time_index = time_start
+    while time_index <= time_stop
+        block_stop = min(time_stop, time_index + block_steps - 1)
+        _launch_step_columns!(backend, fields, params, layering, workspace, active_indices, forcing_fields,
+            time_index, block_stop)
+        time_index = block_stop + 1
     end
     return nothing
-end
-
-"""
-    step!(state, forcing, time_index, workspace::ColumnarStepWorkspace)
-
-Advance all columns for one time step using the KernelAbstractions backend
-associated with `state.mass`. The same kernel runs on CPU or GPU depending on
-the storage backend of the state and workspace arrays.
-"""
-function step!(
-    state,
-    forcing::SnowpackForcing,
-    time_index::Int,
-    workspace::ColumnarStepWorkspace;
-    kwargs...,
-)
-    return step!(state, forcing, time_index, workspace, 1:ncols(state); kwargs...)
-end
-
-function step!(
-    state,
-    forcing::SnowpackForcing,
-    time_index::Int,
-    workspace::ColumnarStepWorkspace,
-    active_indices;
-    kwargs...,
-)
-    config = _step_config_from_keywords(; kwargs...)
-    return _step_range!(state, forcing, time_index:time_index, workspace, active_indices, config)
-end
-
-"""
-    step!(state, forcing, workspace::ColumnarStepWorkspace)
-
-Advance all columns through the full forcing sequence in `forcing`. The outer
-time loop runs in Julia, while each time step is advanced by the same
-KernelAbstractions batch kernel on the storage backend of `workspace`.
-"""
-function step!(
-    state,
-    forcing::SnowpackForcing,
-    workspace::ColumnarStepWorkspace;
-    kwargs...,
-)
-    return step!(state, forcing, workspace, 1:ncols(state); kwargs...)
-end
-
-function step!(
-    state,
-    forcing::SnowpackForcing,
-    workspace::ColumnarStepWorkspace,
-    active_indices;
-    kwargs...,
-)
-    config = _step_config_from_keywords(; kwargs...)
-    return _step_range!(state, forcing, 1:_step_time_count(forcing), workspace, active_indices, config)
 end

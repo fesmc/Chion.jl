@@ -1,5 +1,5 @@
 # Shared setup of the test suite. Each test file can also run on its own, from the package root:
-#   julia --project=test -e 'include("test/setup.jl"); include("test/test_experiment.jl")'
+#   julia --project=test -e 'include("test/setup.jl"); include("test/test_simulation.jl")'
 using Test
 using Dates
 using NCDatasets

@@ -1,5 +1,5 @@
 """
-Output specifications for `Experiment` runs: which variables are written, at which frequency,
+Output specifications of a `Simulation`: which variables are written, at which frequency,
 how they are aggregated in space, and where.
 
     Output("smb_monthly.nc"; variables=[:surface_smb, :melt], frequency=:monthly)
@@ -135,7 +135,7 @@ struct Output
     depths::Vector{Float64}
     snow_cover_threshold::Float64
     columns::Union{Nothing, UnitRange{Int}}   # nothing (all) or the recorded columns
-    grid::Union{Nothing, SnowpackGrid}        # grid of `columns`
+    grid::Union{Nothing, Grid}                # grid of `columns`
 end
 
 """
@@ -158,7 +158,7 @@ end
 - `area`: column areas in km² (default: from the forcing, e.g. MAR `AREA`).
 - `depths`: bin edges (m) of `:density_profile` and depths of `:temperature_profile`.
 - `columns`: record only these columns of the domain (a unit range), e.g. one member of an
-  ensemble run side by side; `grid` is their `SnowpackGrid` (default: no spatial coordinates),
+  ensemble run side by side; `grid` is their `Grid` (default: no spatial coordinates),
   and `regions` and `area` refer to them.
 """
 function Output(
@@ -295,7 +295,7 @@ function _update_derived!(rec::OutputRecorder, state)
     # Allocate on the device of `state` (the buffers are first made from the host state).
     typeof(rec.derived.swe) == typeof(similar(state.runoff)) || (rec.derived = _derived_buffers(state, ncols(state)))
     launch!(_derived_column_kernel!, state.mass, ncols(state),
-        rec.derived, get_fields(state), state.c.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold))
+        rec.derived, get_fields(state), rec.model.params.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold))
     return nothing
 end
 
@@ -306,7 +306,7 @@ function OutputRecorder(spec::Output, model, state, domain_grid, forcing_area, n
     columns = something(spec.columns, 1:ncols(domain_grid))
     (first(columns) >= 1 && last(columns) <= ncols(domain_grid)) ||
         error("Output columns $columns lie outside the $(ncols(domain_grid)) columns of the domain.")
-    grid = spec.columns === nothing ? domain_grid : something(spec.grid, SnowpackGrid(length(columns)))
+    grid = spec.columns === nothing ? domain_grid : something(spec.grid, Grid(length(columns)))
     forcing_area = forcing_area === nothing || spec.columns === nothing ? forcing_area : forcing_area[columns]
     vars = [output_variable(model, v) for v in spec.variables]
     model isa BESSIModel || any(v -> v.shape != :column, vars) && error("Only column variables for $(nameof(typeof(model))).")
@@ -448,7 +448,7 @@ function _period_values(rec::OutputRecorder, state, host_state)
         elseif v.shape in (:layer, :substrate)
             out[name] = Float64.(Array(getproperty(host_state, name)))           # (layer, column)
         elseif v.shape == :depth
-            out[name] = _depth_profile(host_state, name, rec.spec.depths)          # (depth, column)
+            out[name] = _depth_profile(host_state, name, rec.spec.depths, rec.model)   # (depth, column)
         end
         out[name] = _recorded(rec, out[name])
     end
@@ -456,12 +456,11 @@ function _period_values(rec::OutputRecorder, state, host_state)
 end
 
 """Density in the depth bins (edges `depths`) or temperature at the depths `depths`, per column."""
-function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64})
+function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64}, model)
     N, m, ρ, T, Ti = Array(state.N), Array(state.mass), Array(state.density), Array(state.temperature), Array(state.ice_temperature)
-    p = state.parameters
-    rho_ice = Float64(p.c.rho_i)
+    rho_ice = Float64(model.params.rho_i)
     nsub = size(Ti, 1)
-    sub_dz = [p.ice_substrate_top_thickness_m * 2.0^(k - 1) for k in 1:nsub]
+    sub_dz = [model.grid.layering.ice_substrate_top_thickness_m * 2.0^(k - 1) for k in 1:nsub]
     ncol = length(N)
     nout = name == :density_profile ? length(depths) - 1 : length(depths)
     out = fill(NaN, nout, ncol)
@@ -597,7 +596,7 @@ function _open_writer(spec::Output, vars, grid, nc_meta, model, state, nregions)
     handles = Dict{Symbol, Any}()
     for v in vars
         dims = v.shape == :column ? (cdims..., "time") :
-            v.shape == :layer ? (_ensure_dim!(ds, "layer", state.Ntot); (cdims..., "layer", "time")) :
+            v.shape == :layer ? (_ensure_dim!(ds, "layer", size(state.mass, 1)); (cdims..., "layer", "time")) :
             v.shape == :substrate ? (_ensure_dim!(ds, "substrate_layer", size(state.ice_temperature, 1)); (cdims..., "substrate_layer", "time")) :
             _depth_dims!(ds, v, spec.depths, cdims)
         units = spec.aggregate == :area_sum && v.quantity != :intensive ?

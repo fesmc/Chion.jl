@@ -1,5 +1,5 @@
 """
-`Forcing`: where an `Experiment` takes its forcing from, one calendar year at a time.
+`Forcing`: where a model takes its forcing from, one calendar year at a time.
 
     Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; format=:mar, surface_fluxes=:parameterized)
     Forcing("/data/site.nc"; variables=(air_temperature="Tair", ...))     # one file, any length
@@ -108,13 +108,13 @@ function Forcing(
 end
 
 """
-    Forcing(forcing::SnowpackForcing; grid=SnowpackGrid(ncol), area=nothing, transform=nothing)
+    Forcing(forcing::SnowpackForcing; grid=Grid(ncol), area=nothing, transform=nothing)
 
 Wrap forcing that is already in memory. Years are sliced from its time axis.
 """
 function Forcing(forcing::SnowpackForcing; grid=nothing, area=nothing, transform=nothing, description="in-memory forcing")
     ncol = size(forcing.air_temperature, 1)
-    g = grid === nothing ? SnowpackGrid(ncol) : grid
+    g = grid === nothing ? Grid(ncol) : grid
     a = area === nothing ? nothing : Float64.(collect(area))
     return Forcing(WholeSource(() -> (grid=g, forcing=forcing), nothing), :as_loaded, transform, description,
         Ref{Any}(g), Ref{Any}(a), nothing)
@@ -124,7 +124,7 @@ end
     Forcing(f, years; grid, area=nothing, transform=nothing)
 
 Forcing from a user function `f(year) -> SnowpackForcing` (for preprocessing that the file
-loaders do not cover). `grid` is the `SnowpackGrid` of the columns.
+loaders do not cover). `grid` is the `Grid` of the columns.
 """
 function Forcing(f::Function, years; grid, area=nothing, transform=nothing, description="user forcing function")
     a = area === nothing ? nothing : Float64.(collect(area))
@@ -184,7 +184,7 @@ function _load_alma(path)
         has_q_lw_down=isfinite.(met.lw), wind_speed=_forward_fill(met.wind, 5.0; nonnegative=true),
         relative_humidity=relative_humidity, has_relative_humidity=trues(n), air_pressure=air_pressure,
         time_values=met.dates)
-    return (grid=SnowpackGrid(1), forcing=forcing)
+    return (grid=Grid(1), forcing=forcing)
 end
 
 function _median(v)
@@ -372,10 +372,10 @@ function load_forcing_year(f::Forcing, y::Integer)
     return forcing
 end
 
-_same_columns(a::SnowpackGrid, b::SnowpackGrid) = ncols(a) == ncols(b) &&
+_same_columns(a::Grid, b::Grid) = ncols(a) == ncols(b) &&
     (!has_spatial_coords(a) || !has_spatial_coords(b) || (a.x == b.x && a.y == b.y && a.js == b.js && a.is == b.is))
 
-"""The `SnowpackGrid` of the forcing columns."""
+"""The `Grid` of the forcing columns (default layering, Float64)."""
 function forcing_grid(f::Forcing; loaded=nothing)
     if f.grid_ref[] === nothing
         l = loaded === nothing ? _load_year(f, first(forcing_years(f))) : loaded

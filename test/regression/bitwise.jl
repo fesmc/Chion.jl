@@ -21,7 +21,7 @@ const BACKEND = Symbol(get(ARGS, 3, "cpu"))
 const PARTS = split(get(ARGS, 4, "synthetic,gris"), ",")
 const MAR = "/p/projects/ou/labs/ai/Nils/MAR_daily/mar_daily/MARv3.14.3-10km-daily-ERA5-{year}.nc"
 BACKEND === :gpu && @eval using CUDA
-const BACKEND_KW = BACKEND === :gpu ? :gpu : :threads
+backend() = Chion._ka_backend_from(BACKEND === :gpu ? :gpu : :threads)
 
 # ---------------------------------------------------------------------------
 # Synthetic forcing: 48 columns from cold accumulation to warm ablation, seasonal cycle
@@ -70,82 +70,87 @@ function semix_forcing()
     return synthetic_forcing(; extra)
 end
 
-grid() = SnowpackGrid(NCOL)
-
+# Each case: (params keywords, layering keywords, number type, forcing).
 const BESSI_CASES = [
-    "default" => (() -> (;), synthetic_forcing),
-    "float32" => (() -> (; number_type = Float32), synthetic_forcing),
-    "albedo_constant" => (() -> (; albedo = :constant), synthetic_forcing),
-    "albedo_aging" => (() -> (; albedo = :aging), synthetic_forcing),
-    "albedo_semix_dang" => (() -> (; albedo = :semix), semix_forcing),
-    "albedo_semix_ww" => (() -> (; albedo = :semix, semix_snow_albedo = :warren_wiscombe), semix_forcing),
-    "albedo_prescribed" => (() -> (; albedo = :prescribed), prescribed_albedo_forcing),
-    "seb_bessi" => (() -> (; seb_scheme = :bessi), synthetic_forcing),
-    "turbulence_bessi" => (() -> (; turbulent_flux_scheme = :bessi), synthetic_forcing),
-    "seb_turbulence_bessi" => (() -> (; seb_scheme = :bessi, turbulent_flux_scheme = :bessi), synthetic_forcing),
-    "longwave_graybody" => (() -> (; longwave_scheme = :graybody), synthetic_forcing),
-    "densification_htessel" => (() -> (; densification = :htessel), synthetic_forcing),
-    "fresh_snow_parameterized" => (() -> (; fresh_snow_density = :parameterized), synthetic_forcing),
-    "no_diurnal" => (() -> (; diurnal_shortwave_substeps = false, diurnal_temperature_cycle = false), synthetic_forcing),
-    "diurnal_sw_only" => (() -> (; diurnal_temperature_cycle = false), synthetic_forcing),
-    "no_substrate_coarse" => (() -> (; ice_substrate_layers = 0, near_surface_layer_max_thicknesses_m = (Inf, Inf, Inf, Inf)), synthetic_forcing),
-    "prescribed_fluxes" => (() -> (;), () -> synthetic_forcing(; prescribed = true)),
-    "prescribed_fluxes_bessi" => (() -> (; seb_scheme = :bessi, turbulent_flux_scheme = :bessi), () -> synthetic_forcing(; prescribed = true)),
-    "three_hourly" => (() -> (;), () -> synthetic_forcing(; years = 1, dt_days = 0.125)),
-    "float32_semix_htessel" => (() -> (; number_type = Float32, albedo = :semix, densification = :htessel), semix_forcing),
+    "default" => (() -> (;), (;), Float64, synthetic_forcing),
+    "float32" => (() -> (;), (;), Float32, synthetic_forcing),
+    "albedo_constant" => (() -> (; albedo_scheme = ConstantAlbedo()), (;), Float64, synthetic_forcing),
+    "albedo_aging" => (() -> (; albedo_scheme = AgingAlbedo()), (;), Float64, synthetic_forcing),
+    "albedo_semix_dang" => (() -> (; albedo_scheme = SemixAlbedo()), (;), Float64, semix_forcing),
+    "albedo_semix_ww" => (() -> (; albedo_scheme = SemixAlbedo(snow_bands = WarrenWiscombeSnowAlbedo())), (;), Float64, semix_forcing),
+    "albedo_prescribed" => (() -> (; albedo_scheme = PrescribedAlbedo()), (;), Float64, prescribed_albedo_forcing),
+    "seb_bessi" => (() -> (; surface_energy_balance_scheme = BESSISurfaceEnergyBalance()), (;), Float64, synthetic_forcing),
+    "turbulence_bessi" => (() -> (; turbulent_flux_scheme = BESSITurbulentFluxes()), (;), Float64, synthetic_forcing),
+    "seb_turbulence_bessi" => (() -> (; surface_energy_balance_scheme = BESSISurfaceEnergyBalance(),
+        turbulent_flux_scheme = BESSITurbulentFluxes()), (;), Float64, synthetic_forcing),
+    "longwave_graybody" => (() -> (; longwave_scheme = GraybodyLongwave()), (;), Float64, synthetic_forcing),
+    "densification_htessel" => (() -> (; densification_scheme = HTESSELDensification()), (;), Float64, synthetic_forcing),
+    "fresh_snow_parameterized" => (() -> (; fresh_snow_density_scheme = ParameterizedFreshSnowDensity()), (;), Float64, synthetic_forcing),
+    "no_diurnal" => (() -> (; diurnal_cycle = NoDiurnalCycle()), (;), Float64, synthetic_forcing),
+    "diurnal_sw_only" => (() -> (; diurnal_cycle = DiurnalSubsteps(temperature_cycle = NoDiurnalTemperatureCycle())),
+        (;), Float64, synthetic_forcing),
+    "no_substrate_coarse" => (() -> (;), (; ice_substrate_layers = 0, near_surface_layer_max_thicknesses_m = (Inf, Inf, Inf, Inf)),
+        Float64, synthetic_forcing),
+    "prescribed_fluxes" => (() -> (;), (;), Float64, () -> synthetic_forcing(; prescribed = true)),
+    "prescribed_fluxes_bessi" => (() -> (; surface_energy_balance_scheme = BESSISurfaceEnergyBalance(),
+        turbulent_flux_scheme = BESSITurbulentFluxes()), (;), Float64, () -> synthetic_forcing(; prescribed = true)),
+    "three_hourly" => (() -> (;), (;), Float64, () -> synthetic_forcing(; years = 1, dt_days = 0.125)),
+    "float32_semix_htessel" => (() -> (; albedo_scheme = SemixAlbedo(), densification_scheme = HTESSELDensification()),
+        (;), Float32, semix_forcing),
 ]
 
 const BULK_CASES = [
-    "pdd_simple" => () -> PDDModel(grid()),
-    "pdd_pism" => () -> PDDModel(grid(); pdd_method = :pism),
-    "pdd_float32" => () -> PDDModel(grid(); number_type = Float32),
-    "itm" => () -> ITMModel(grid()),
+    "pdd_simple" => (PDDModel, () -> PDDParams(), Float64),
+    "pdd_pism" => (PDDModel, () -> PDDParams(method = PISMPDD()), Float64),
+    "pdd_float32" => (PDDModel, () -> PDDParams(NF = Float32), Float32),
+    "itm" => (ITMModel, () -> ITMParams(), Float64),
 ]
 
-# Every array of a state, on the host, by name.
-function state_arrays(state)
-    out = Dict{Symbol, Any}()
-    for name in propertynames(state)
-        v = try
-            getproperty(state, name)
-        catch
-            continue
+# Every array of the host state and of the cache diagnostics, by name.
+function state_arrays(model)
+    update_diagnostics!(model)
+    state = cpu_state(model)
+    out = Dict{Symbol, Any}(name => Array(getfield(state, name)) for name in fieldnames(typeof(state)))
+    if model isa BESSIModel
+        for name in (:thickness, :wet_mass, :bulk_density, :liquid_water)
+            out[name] = Array(getproperty(model.cache, name))
         end
-        v isa AbstractArray && (out[name] = Array(v))
     end
     return out
 end
 
-function run_bessi(kwargs, forcing)
-    model = BESSIModel(grid(); kwargs...)
-    sim = Simulation(model; forcing, years = 2, backend = BACKEND_KW)
-    run!(sim; io = devnull)
-    return state_arrays(sim.now)
+# The whole synthetic forcing twice, year by year (the forcing of the baseline ran twice in one piece).
+twice(model) = repeat(forcing_years(model.forcing.source), 2)
+
+function run_bessi(params_kwargs, layering_kwargs, NF, forcing)
+    grid = Grid(NCOL; NF, layering = Layering(; layering_kwargs...))
+    model = BESSIModel(grid; forcing, params = Params(; NF, params_kwargs...), backend = backend())
+    run!(Simulation(model; years = twice(model), verbose = false))
+    return state_arrays(model)
 end
 
-function run_bulk(model)
+function run_bulk(M, params, NF)
     forcing = synthetic_forcing(; extra = (; ice_thickness = [c <= NCOL ÷ 2 ? 0.0 : 1500.0 for c in 1:NCOL],
         annual_pdd = [max(0.0, 40.0 * (c - 20)) for c in 1:NCOL]))
-    sim = Simulation(model; forcing, years = 2, backend = BACKEND_KW)
-    run!(sim; io = devnull)
-    return state_arrays(sim.now)
+    model = M(Grid(NCOL; NF); forcing, params, backend = backend())
+    run!(Simulation(model; years = twice(model), verbose = false))
+    return state_arrays(model)
 end
 
 # ---------------------------------------------------------------------------
 # Greenland on MAR: two years with outputs, parameterized and prescribed surface fluxes
 # ---------------------------------------------------------------------------
-function run_gris(label, surface_fluxes, number_type, outdir)
+function run_gris(label, surface_fluxes, NF, outdir)
     forcing = Forcing(MAR; surface_fluxes, years = 1980:1981)
-    model = BESSIModel(forcing; number_type)
+    model = BESSIModel(forcing; NF, backend = backend())
     mkpath(outdir)
     outputs = [
         Output(joinpath(outdir, "$(label)_monthly.nc"); variables = :monthly, frequency = :monthly),
         Output(joinpath(outdir, "$(label)_budget.csv"); variables = :budget, frequency = :yearly, aggregate = :area_sum),
         Output(joinpath(outdir, "$(label)_firn.nc"); variables = :firn, frequency = Month(12), kind = :snapshot),
     ]
-    exp = Experiment(model, forcing; years = 1980:1981, outputs, backend = BACKEND_KW, name = label, verbose = false)
-    result = run!(exp)
-    return state_arrays(result.state)
+    run!(Simulation(model; years = 1980:1981, outputs, name = label, verbose = false))
+    return state_arrays(model)
 end
 
 # ---------------------------------------------------------------------------
@@ -210,12 +215,12 @@ function main()
     results = Dict{String, Any}()
     t0 = time()
     if "synthetic" in PARTS
-        for (name, (kw, f)) in BESSI_CASES
-            results[name] = run_bessi(kw(), f())
+        for (name, (kw, layering, NF, f)) in BESSI_CASES
+            results[name] = run_bessi(kw(), layering, NF, f())
             @printf("ran %-26s %6.1f s\n", name, time() - t0); flush(stdout)
         end
-        for (name, m) in BULK_CASES
-            results[name] = run_bulk(m())
+        for (name, (M, params, NF)) in BULK_CASES
+            results[name] = run_bulk(M, params(), NF)
             @printf("ran %-26s %6.1f s\n", name, time() - t0); flush(stdout)
         end
     end
