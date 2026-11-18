@@ -17,6 +17,7 @@ include("backends.jl")
 include("constants.jl")
 include("numerics.jl")
 include("schemes.jl")
+include("boundary_conditions.jl")
 include("params.jl")
 include("grid.jl")
 
@@ -75,6 +76,10 @@ export SemixTurbulentFluxes, BESSITurbulentFluxes
 export CloudProxyLongwave, GraybodyLongwave
 export NoDiurnalCycle, DiurnalSubsteps, DiurnalTemperatureCycle, NoDiurnalTemperatureCycle
 export SimplePDD, PISMPDD
+
+# Boundary conditions
+export BoundaryConditions, SurfaceEnergyBalance, PrescribedSurfaceFlux, PrescribedSurfaceTemperature
+export Insulated, GeothermalFlux, PrescribedBottomTemperature
 
 # Models
 export BESSIModel, PDDModel, ITMModel

@@ -182,6 +182,7 @@ end
     fields,
     params::Params,
     layering::Layering,
+    boundary::BoundaryConditions,
     idx::Int,
     forcing::SnowpackStepForcing,
     diurnal_cycle::DiurnalSubsteps,
@@ -217,11 +218,11 @@ end
         forcing.prescribed_melt,
     )
     subforcing = _diurnal_substep_forcing(forcing, fraction, air_temperature, shortwave_down, q_sw_net, prescribed_melt)
-    return column_step_core!(fields, params, layering, idx, subforcing, workspace)
+    return column_step_core!(fields, params, layering, boundary, idx, subforcing, workspace)
 end
 
 """
-    column_step!(fields, params, layering, idx, forcing, workspace)
+    column_step!(fields, params, layering, boundary, idx, forcing, workspace)
 
 Advance column `idx` of the state arrays `fields` (`get_fields(model.state)`) by one forcing step
 with the step forcing `forcing`, the [`Params`](@ref) `params`, the [`Layering`](@ref) `layering`
@@ -232,6 +233,7 @@ and the scratch arrays `workspace`. Mutates `fields` and `workspace` in place. T
     fields,
     params::Params,
     layering::Layering,
+    boundary::BoundaryConditions,
     idx::Int,
     forcing::SnowpackStepForcing,
     workspace,
@@ -244,6 +246,7 @@ and the scratch arrays `workspace`. Mutates `fields` and `workspace` in place. T
         fields,
         params,
         layering,
+        boundary,
         idx,
         _with_parameterized_longwave(params, forcing, solar_terms),
         workspace,
@@ -256,12 +259,13 @@ end
     fields,
     params,
     layering,
+    boundary,
     idx,
     forcing,
     workspace,
     solar_terms,
 )
-    return column_step_core!(fields, params, layering, idx, forcing, workspace)
+    return column_step_core!(fields, params, layering, boundary, idx, forcing, workspace)
 end
 
 @inline function _column_step_diurnal!(
@@ -269,6 +273,7 @@ end
     fields,
     params,
     layering,
+    boundary,
     idx,
     forcing,
     workspace,
@@ -294,6 +299,7 @@ end
             fields,
             params,
             layering,
+            boundary,
             idx,
             forcing,
             diurnal_cycle,
@@ -329,7 +335,7 @@ surface) times its length (days) to the column's `*_sum` diagnostics.
 end
 
 """
-    _step_bare_ice_substrate!(fields, params, layering, idx, forcing, workspace, dt_seconds)
+    _step_bare_ice_substrate!(fields, params, layering, boundary, idx, forcing, workspace, dt_seconds)
 
 Bare-ice step with a thermal ice substrate. The top substrate layer is the
 surface: it cools when the surface energy balance is negative and must be
@@ -337,7 +343,7 @@ re-warmed before melting, instead of being held at the melting point with the
 negative energy discarded. Melt and rain leave as runoff from the impermeable
 surface.
 """
-@inline function _step_bare_ice_substrate!(fields, params::Params, layering::Layering, idx::Int,
+@inline function _step_bare_ice_substrate!(fields, params::Params, layering::Layering, boundary::BoundaryConditions, idx::Int,
         forcing::SnowpackStepForcing, workspace, dt_seconds)
     c = params
     Tsrf = fields.Tsrf
@@ -358,7 +364,7 @@ surface.
         forcing.has_relative_humidity, forcing.relative_humidity,
         forcing.air_pressure, forcing.wind_speed,
         fields.ice_temperature, layering.ice_substrate_layers,
-        layering.ice_substrate_top_thickness_m,
+        layering.ice_substrate_top_thickness_m, boundary,
     )
     surface_temperature = _get_scalar(Tsrf, idx)
     longwave_flux, sensible_heat_flux, latent_heat_flux, rain_heat_flux =
@@ -403,6 +409,7 @@ Base.@propagate_inbounds function column_step_core!(
     fields,
     params::Params,
     layering::Layering,
+    boundary::BoundaryConditions,
     idx::Int,
     forcing::SnowpackStepForcing,
     workspace,
@@ -496,7 +503,7 @@ Base.@propagate_inbounds function column_step_core!(
         _reset_snow_age!(c.albedo_scheme, snow_age_days, idx, zero(dt_seconds))
         use_prescribed_albedo || _set_scalar!(albedo_dynamic, idx, c.alpha_ice)
         if layering.ice_substrate_layers > 0
-            return _step_bare_ice_substrate!(fields, params, layering, idx, forcing, workspace, dt_seconds)
+            return _step_bare_ice_substrate!(fields, params, layering, boundary, idx, forcing, workspace, dt_seconds)
         end
         bare_ice_fluxes = _bare_ice_ablation_mass(c, forcing, dt_seconds)
         _accumulate_surface_energy_balance!(
@@ -584,6 +591,7 @@ Base.@propagate_inbounds function column_step_core!(
         fields.ice_temperature,
         layering.ice_substrate_layers,
         layering.ice_substrate_top_thickness_m,
+        boundary,
     )
     boundary_enthalpy += energy.heating
     # The implicit solve linearises Stefan--Boltzmann emission about the
@@ -733,7 +741,7 @@ end
 """Batch stepping over forcing fields with one KernelAbstractions path for CPU and GPU."""
 
 """
-    _step_columns_single_kernel!(fields, params, layering, workspace, active_indices, forcing_fields, time_index)
+    _step_columns_single_kernel!(fields, params, layering, boundary, workspace, active_indices, forcing_fields, time_index)
 
 One forcing step of every active column (one work item per column), without the time loop of
 `_step_columns_kernel!` (fewer registers).
@@ -742,6 +750,7 @@ One forcing step of every active column (one work item per column), without the 
     fields,
     params::Params,
     layering::Layering,
+    boundary::BoundaryConditions,
     workspace::ColumnarStepWorkspace,
     active_indices,
     forcing_fields,
@@ -752,13 +761,13 @@ One forcing step of every active column (one work item per column), without the 
         @inbounds begin
             idx = active_indices[active_idx]
             step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-            column_step!(fields, params, layering, idx, step_forcing, workspace)
+            column_step!(fields, params, layering, boundary, idx, step_forcing, workspace)
         end
     end
 end
 
 """
-    _step_columns_kernel!(fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop)
+    _step_columns_kernel!(fields, params, layering, boundary, workspace, active_indices, forcing_fields, time_start, time_stop)
 
 The forcing steps `time_start:time_stop` of every active column, one work item per column.
 """
@@ -766,6 +775,7 @@ The forcing steps `time_start:time_stop` of every active column, one work item p
     fields,
     params::Params,
     layering::Layering,
+    boundary::BoundaryConditions,
     workspace::ColumnarStepWorkspace,
     active_indices,
     forcing_fields,
@@ -778,7 +788,7 @@ The forcing steps `time_start:time_stop` of every active column, one work item p
             idx = active_indices[active_idx]
             for time_index in time_start:time_stop
                 step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-                column_step!(fields, params, layering, idx, step_forcing, workspace)
+                column_step!(fields, params, layering, boundary, idx, step_forcing, workspace)
             end
         end
     end
@@ -817,57 +827,57 @@ end
 # `_cpu_step_columns!`); concurrent compilation inside KernelAbstractions'
 # task closures made the column step allocate at every process call
 # (up to ~80 GB per Greenland year, 4-25x slower with several threads).
-@inline function _launch_step_columns!(::KernelAbstractions.CPU, fields, params, layering, workspace,
+@inline function _launch_step_columns!(::KernelAbstractions.CPU, fields, params, layering, boundary, workspace,
         active_indices, forcing_fields, time_start::Int, time_stop::Int)
-    _cpu_step_columns!(fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop)
+    _cpu_step_columns!(fields, params, layering, boundary, workspace, active_indices, forcing_fields, time_start, time_stop)
     return nothing
 end
 
-@inline function _launch_step_columns!(backend::KernelAbstractions.Backend, fields, params, layering, workspace,
+@inline function _launch_step_columns!(backend::KernelAbstractions.Backend, fields, params, layering, boundary, workspace,
         active_indices, forcing_fields, time_start::Int, time_stop::Int)
     ncolumns = length(active_indices)
     workgroupsize = _step_kernel_workgroupsize(backend, ncolumns)
     # One forcing step: the kernel without the time loop (fewer registers).
     if time_start == time_stop
         launch!(_step_columns_single_kernel!, fields.mass, ncolumns,
-            fields, params, layering, workspace, active_indices, forcing_fields, time_start;
+            fields, params, layering, boundary, workspace, active_indices, forcing_fields, time_start;
             workgroupsize)
         return nothing
     end
     launch!(_step_columns_kernel!, fields.mass, ncolumns,
-        fields, params, layering, workspace, active_indices, forcing_fields, time_start, time_stop;
+        fields, params, layering, boundary, workspace, active_indices, forcing_fields, time_start, time_stop;
         workgroupsize)
     return nothing
 end
 
 """Advance the columns of `active_indices` over `time_start:time_stop` on CPU threads."""
-function _cpu_step_columns!(fields, params, layering, workspace, active_indices, forcing_fields,
+function _cpu_step_columns!(fields, params, layering, boundary, workspace, active_indices, forcing_fields,
         time_start::Int, time_stop::Int)
     # Compile the whole column step on this thread before the threads start: when
     # several threads compile the call tree concurrently, callers can be compiled
     # against callees that are not finished yet and then call them through the
     # boxed generic ABI for good (heap allocation at every process call).
-    precompile(_cpu_step_column!, map(typeof, (fields, params, layering, workspace, first(active_indices),
+    precompile(_cpu_step_column!, map(typeof, (fields, params, layering, boundary, workspace, first(active_indices),
         forcing_fields, time_start, time_stop)))
     if Threads.nthreads() == 1 || length(active_indices) < 2 * Threads.nthreads()
         for idx in active_indices
-            _cpu_step_column!(fields, params, layering, workspace, idx, forcing_fields, time_start, time_stop)
+            _cpu_step_column!(fields, params, layering, boundary, workspace, idx, forcing_fields, time_start, time_stop)
         end
     else
         # :dynamic (not :static) so that the step can run inside other threaded code.
         Threads.@threads :dynamic for active_idx in eachindex(active_indices)
-            _cpu_step_column!(fields, params, layering, workspace, active_indices[active_idx], forcing_fields,
+            _cpu_step_column!(fields, params, layering, boundary, workspace, active_indices[active_idx], forcing_fields,
                 time_start, time_stop)
         end
     end
     return nothing
 end
 
-@inline function _cpu_step_column!(fields, params, layering, workspace, idx, forcing_fields,
+@inline function _cpu_step_column!(fields, params, layering, boundary, workspace, idx, forcing_fields,
         time_start::Int, time_stop::Int)
     @inbounds for time_index in time_start:time_stop
         step_forcing = _step_forcing_at(forcing_fields, idx, time_index)
-        column_step!(fields, params, layering, idx, step_forcing, workspace)
+        column_step!(fields, params, layering, boundary, idx, step_forcing, workspace)
     end
     return nothing
 end
@@ -885,13 +895,14 @@ function _step_columns!(model, time_start::Int, time_stop::Int)
     block_steps = _step_time_block_steps(backend)
     params = model.params
     layering = model.grid.layering
+    boundary = model.boundary
     workspace = model.cache.workspace
     active_indices = model.cache.active_indices
     forcing_fields = model.forcing.fields
     time_index = time_start
     while time_index <= time_stop
         block_stop = min(time_stop, time_index + block_steps - 1)
-        _launch_step_columns!(backend, fields, params, layering, workspace, active_indices, forcing_fields,
+        _launch_step_columns!(backend, fields, params, layering, boundary, workspace, active_indices, forcing_fields,
             time_index, block_stop)
         time_index = block_stop + 1
     end

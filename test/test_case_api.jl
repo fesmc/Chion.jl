@@ -291,7 +291,7 @@ end
         forcing = Chion.SnowpackStepForcing(250.0, 1.0, 30.0 / 86_400, 0.0, 0.0, 5.0;
             q_sw_net=0.0, has_q_sw_net=true, q_lw_down=0.0, has_q_lw_down=true,
             q_sh=0.0, has_q_sh=true, q_lh=0.0, has_q_lh=true)
-        Chion.column_step!(Chion.get_fields(state), model.params, model.grid.layering, 1, forcing,
+        Chion.column_step!(Chion.get_fields(state), model.params, model.grid.layering, model.boundary, 1, forcing,
             model.cache.workspace)
         @test state.N[1] >= 2
         # Only radiative cooling acts, so no layer may end up warmer than the air.
@@ -310,7 +310,7 @@ end
         for (snow, rain) in ((1e-24, 0.0), (0.0, 20.0 / 86_400))
             before = (S=storage(), smb=state.smb_ice[1], R=state.runoff[1], V=state.vapor_mass[1])
             forcing = Chion.SnowpackStepForcing(277.15, 1.0, snow, rain, 0.0, 5.0; fluxes(snow, rain)...)
-            Chion.column_step!(fields, model.params, model.grid.layering, 1, forcing, workspace)
+            Chion.column_step!(fields, model.params, model.grid.layering, model.boundary, 1, forcing, workspace)
             precipitation = (snow + rain) * 86_400
             budget = (storage() - before.S) + (state.smb_ice[1] - before.smb) -
                      (precipitation - (state.runoff[1] - before.R) + (state.vapor_mass[1] - before.V))
@@ -746,6 +746,7 @@ end
                     serial_fields,
                     serial.params,
                     serial.grid.layering,
+                    serial.boundary,
                     idx,
                     Chion._step_forcing_at(serial.forcing.fields, idx, Int(time_index)),
                     serial.cache.workspace,

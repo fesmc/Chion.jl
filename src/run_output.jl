@@ -127,9 +127,14 @@ function _run_metadata(sim)
         "spinup_description" => describe(sim.spinup),
         "columns" => ncols(model),
         "grid" => grid_table,
+        "boundary" => _boundary_metadata(model),
         "model" => model_table,
     )
 end
+
+_boundary_metadata(model::BESSIModel) =
+    Dict{String, Any}("surface" => _toml_value(model.boundary.surface), "bottom" => _toml_value(model.boundary.bottom))
+_boundary_metadata(model) = Dict{String, Any}()
 
 function _write_metadata(sim)
     (_has_dir(sim.output) && sim.output.metadata) || return nothing

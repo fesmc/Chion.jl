@@ -233,7 +233,7 @@ function _spin_up!(model::M, spinup::ClimatologySpinup, sim) where {M}
     forcing = AtmosphericForcing(spinup.forcing, first(years), model.params, _backend(model))
     _validate_forcing(model.params, forcing.data)
     # The same state and cache, driven by the spin-up forcing.
-    spinup_model = Base.typename(M).wrapper(model.grid, model.state, model.cache, model.params, forcing)
+    spinup_model = _replace(model; forcing)
     for _ in 1:spinup.years, year in years
         update_forcing!(spinup_model, year)
         _step!(spinup_model, 1, forcing_steps(spinup_model))

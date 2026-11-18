@@ -25,6 +25,8 @@ const _SCHEME_SLOTS = (
     snow_bands = AbstractSemixSnowAlbedo,
     temperature_cycle = AbstractDiurnalTemperatureCycle,
     method = AbstractPDDMethod,
+    surface = AbstractSurfaceBoundaryCondition,
+    bottom = AbstractBottomBoundaryCondition,
 )
 
 # One table of the scheme names: it defines the `_scheme_type(kind, ::Val{name})` methods and the
@@ -45,6 +47,11 @@ const _SCHEME_TABLE = (
     (AbstractDiurnalTemperatureCycle, "diurnal temperature cycle",
         (sinusoidal = DiurnalTemperatureCycle, none = NoDiurnalTemperatureCycle)),
     (AbstractPDDMethod, "PDD method", (simple = SimplePDD, pism = PISMPDD)),
+    (AbstractSurfaceBoundaryCondition, "surface boundary condition",
+        (energy_balance = SurfaceEnergyBalance, prescribed_flux = PrescribedSurfaceFlux,
+         prescribed_temperature = PrescribedSurfaceTemperature)),
+    (AbstractBottomBoundaryCondition, "bottom boundary condition",
+        (insulated = Insulated, geothermal_flux = GeothermalFlux, prescribed_temperature = PrescribedBottomTemperature)),
 )
 
 for (kind, description, schemes) in _SCHEME_TABLE
@@ -142,6 +149,9 @@ function _config_params(d)
     return M, P(; NF, kwargs...)
 end
 
+"""The boundary conditions from the `[boundary]` table (`surface`, `bottom`)."""
+_config_boundary(d) = BoundaryConditions(; (Symbol(k) => _config_value(Symbol(k), v) for (k, v) in d)...)
+
 """The layering from the `[grid]` table."""
 _config_layering(d) = Layering(; (Symbol(k) => _config_value(Symbol(k), v) for (k, v) in d)...)
 
@@ -224,7 +234,7 @@ returns the simulation without running it.
 
 The file has the run settings (`name`, `backend`, `years`, `repeat`, `output_dir`, the run directory,
 and `restart_every`) and the tables
-`[forcing]`, `[grid]` (the [`Layering`](@ref)), `[model]` (`type`, `setup`, `number_type` and any
+`[forcing]`, `[grid]` (the [`Layering`](@ref)), `[boundary]` (`surface`, `bottom`), `[model]` (`type`, `setup`, `number_type` and any
 field of the parameters; a scheme as a name or a table with `type`), `[spinup]` and `[[output]]`;
 see `examples/configs/`.
 """
@@ -242,7 +252,9 @@ function _run_config(path, cfg, set, base, outdir, backend_name, dry_run)
     forcing = _config_forcing(cfg["forcing"], base)
     M, params = _config_params(get(cfg, "model", Dict{String, Any}()))
     grid = Grid(forcing; NF = number_type(params), layering = _config_layering(get(cfg, "grid", Dict{String, Any}())))
-    model = M(grid; forcing, params, backend = _ka_backend_from(backend_name))
+    boundary_kwargs = M === BESSIModel ? (; boundary = _config_boundary(get(cfg, "boundary", Dict{String, Any}()))) :
+        (haskey(cfg, "boundary") ? throw(ArgumentError("`[boundary]` applies to BESSI models only.")) : (;))
+    model = M(grid; forcing, params, backend = _ka_backend_from(backend_name), boundary_kwargs...)
     outputs = [_config_output(o, outdir) for o in get(cfg, "output", Any[])]
     sim = Simulation(model;
         # `repeat = n` runs the years n times (e.g. to record every cycle of an equilibrium run)

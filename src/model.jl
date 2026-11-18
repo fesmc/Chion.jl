@@ -204,7 +204,7 @@ _active_indices(reference, indices) = _to_device(KernelAbstractions.get_backend(
 # Models
 # ---------------------------------------------------------------------------
 
-const _MODEL_FIELDS = (:grid, :state, :cache, :params, :forcing)
+const _MODEL_FIELDS = (:grid, :state, :cache, :params, :boundary, :forcing)
 const _RESERVED_MODEL_PROPERTIES = (_MODEL_FIELDS..., :NF, :layering, :year)
 
 # Flat forwarding resolves `model.x` through state, cache, params, grid and forcing data, so a name
@@ -230,7 +230,7 @@ The layered BESSI snowpack and firn model: a [`Grid`](@ref), the [`BESSIState`](
 [`BESSICache`](@ref), the [`Params`](@ref) and the [`AtmosphericForcing`](@ref). Wrap it in a
 [`Simulation`](@ref) to run it.
 
-    BESSIModel(grid; forcing, params = Params(), backend = CPU(), state = nothing)
+    BESSIModel(grid; forcing, params = Params(), boundary = BoundaryConditions(), backend = CPU(), state = nothing)
 
 `forcing` is a [`Forcing`](@ref) or an in-memory [`SnowpackForcing`](@ref); its first year is
 loaded. `backend` is a KernelAbstractions backend (`CPU()`, `CUDABackend()`) or its name
@@ -253,8 +253,8 @@ julia> model.albedo_scheme, size(model.mass)
 # Fields
 $(TYPEDFIELDS)
 """
-mutable struct BESSIModel{G <: Grid, S <: BESSIState, C <: BESSICache, P <: Params, F <: AtmosphericForcing} <:
-               AbstractSnowModel
+mutable struct BESSIModel{G <: Grid, S <: BESSIState, C <: BESSICache, P <: Params, B <: BoundaryConditions,
+        F <: AtmosphericForcing} <: AbstractSnowModel
     "columns, layout and layering"
     grid::G
     "prognostic arrays"
@@ -263,14 +263,19 @@ mutable struct BESSIModel{G <: Grid, S <: BESSIState, C <: BESSICache, P <: Para
     cache::C
     "physical constants and schemes"
     params::P
+    "surface and bottom boundary conditions of the heat solve"
+    boundary::B
     "the forcing source and the loaded year"
     forcing::F
 
-    function BESSIModel{G, S, C, P, F}(grid, state, cache, params, forcing) where {G, S, C, P, F}
+    function BESSIModel{G, S, C, P, B, F}(grid, state, cache, params, boundary, forcing) where {G, S, C, P, B, F}
         _check_property_collisions(grid, state, cache, params, forcing)
-        return new{G, S, C, P, F}(grid, state, cache, params, forcing)
+        return new{G, S, C, P, B, F}(grid, state, cache, params, boundary, forcing)
     end
 end
+
+BESSIModel(grid::G, state::S, cache::C, params::P, boundary::B, forcing::F) where {G, S, C, P, B, F} =
+    BESSIModel{G, S, C, P, B, F}(grid, state, cache, params, boundary, forcing)
 
 """
 $(TYPEDEF)
@@ -333,7 +338,7 @@ mutable struct ITMModel{G <: Grid, S <: ITMState, C <: BulkCache, P <: ITMParams
     end
 end
 
-for M in (:BESSIModel, :PDDModel, :ITMModel)
+for M in (:PDDModel, :ITMModel)
     @eval $M(grid::G, state::S, cache::C, params::P, forcing::F) where {G, S, C, P, F} =
         $M{G, S, C, P, F}(grid, state, cache, params, forcing)
 end
@@ -342,12 +347,13 @@ const _DEFAULT_PARAMS = (BESSIModel = Params, PDDModel = PDDParams, ITMModel = I
 
 for M in (:BESSIModel, :PDDModel, :ITMModel)
     @eval function $M(grid::Grid; forcing, params = $(_DEFAULT_PARAMS[M])(; NF = number_type(grid)),
-            backend = KernelAbstractions.CPU(), state = nothing, year::Union{Nothing, Integer} = nothing)
-        return _build_model($M, grid, _as_forcing(forcing), params, backend, state, year)
+            backend = KernelAbstractions.CPU(), state = nothing, year::Union{Nothing, Integer} = nothing,
+            kwargs...)
+        return _build_model($M, grid, _as_forcing(forcing), params, backend, state, year; kwargs...)
     end
 end
 
-function _build_model(M, grid::Grid, source::Forcing, params, backend_choice, state, year)
+function _build_model(M, grid::Grid, source::Forcing, params, backend_choice, state, year; kwargs...)
     backend = _ka_backend_from(backend_choice)
     number_type(grid) === number_type(params) || throw(ArgumentError(
         "The grid is in $(number_type(grid)) and the parameters in $(number_type(params)); " *
@@ -360,7 +366,21 @@ function _build_model(M, grid::Grid, source::Forcing, params, backend_choice, st
     device_state = to_backend(host_state, backend)
     forcing = AtmosphericForcing(source, first_year, params, backend)
     _validate_forcing(params, forcing.data)
-    return M(grid, device_state, _cache(device_state, grid), params, forcing)
+    return _assemble(M, grid, device_state, _cache(device_state, grid), params, forcing; kwargs...)
+end
+
+# The model from its parts; only BESSI has boundary conditions (in the model's number type).
+function _assemble(::Type{BESSIModel}, grid, state, cache, params, forcing;
+        boundary::BoundaryConditions = BoundaryConditions())
+    validate(boundary)
+    return BESSIModel(grid, state, cache, params, _promote_param(boundary, number_type(params)), forcing)
+end
+_assemble(M, grid, state, cache, params, forcing) = M(grid, state, cache, params, forcing)
+
+"""`model` with some fields replaced (the others shared), e.g. another forcing or state."""
+function _replace(model::M; kwargs...) where {M <: AbstractSnowModel}
+    values = map(name -> get(kwargs, name, getfield(model, name)), fieldnames(M))
+    return Base.typename(M).wrapper(values...)
 end
 
 function _check_state(state::BESSIState, grid::Grid, params::Params)
@@ -410,7 +430,7 @@ end
 # ---------------------------------------------------------------------------
 
 @inline function Base.getproperty(model::AbstractSnowModel, name::Symbol)
-    name in _MODEL_FIELDS && return getfield(model, name)
+    hasfield(typeof(model), name) && return getfield(model, name)
     name === :NF && return number_type(getfield(model, :params))
     name === :year && return getfield(model, :forcing).year
     state = getfield(model, :state)
@@ -426,7 +446,7 @@ end
 
 function Base.propertynames(model::AbstractSnowModel, private::Bool = false)
     names(x) = fieldnames(typeof(x))
-    return (_MODEL_FIELDS..., :NF, :year, names(model.state)..., names(model.cache)..., names(model.params)...,
+    return (fieldnames(typeof(model))..., :NF, :year, names(model.state)..., names(model.cache)..., names(model.params)...,
         propertynames(model.grid)...)
 end
 
@@ -458,7 +478,7 @@ function to_backend(model::M, backend) where {M <: AbstractSnowModel}
     cache.active_indices = _active_indices(state.runoff, findall(cache.active))
     source = model.forcing
     forcing = AtmosphericForcing(source.source, source.year, source.data, _kernel_fields(model.params, source.data, backend))
-    return Base.typename(M).wrapper(model.grid, state, cache, model.params, forcing)
+    return _replace(model; state, cache, forcing)
 end
 
 _copy_cache!(dest::BulkCache, src::BulkCache) = dest

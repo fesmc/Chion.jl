@@ -488,6 +488,35 @@ The energy that warms the snow below a melting surface is thus conducted into
 the column instead of being melted, and no conductive flux leaves an
 above-melting-point surface.
 
+## Boundary Conditions
+
+The surface and bottom closures of the implicit heat solve are the `boundary` slot of a
+`BESSIModel`, `BESSIModel(grid; forcing, boundary = BoundaryConditions(surface = …, bottom = …))`
+(`[boundary]` in TOML):
+
+| Boundary | Condition | Closure |
+|---|---|---|
+| surface | `SurfaceEnergyBalance()` (default) | Robin, Q(T_s) = G_s (T_s − T₁) with G_s = 2K₁/Δz₁; Dirichlet T_s = T₀ when the free surface would exceed the melting point, the excess energy melts |
+| surface | `PrescribedSurfaceFlux(F)` | Neumann, F = G_s (T_s − T₁); melting as above |
+| surface | `PrescribedSurfaceTemperature(T)` | Dirichlet, T_s = T, flux G_s (T − T₁) into the column, no melt |
+| bottom | `Insulated()` (default) | no flux through the bottom row |
+| bottom | `GeothermalFlux(q)` | Neumann, cᵢ mₙ dTₙ/dt = … + q |
+| bottom | `PrescribedBottomTemperature(T)` | Dirichlet half a layer below the bottom row, flux Gₙ (T − Tₙ) with Gₙ = 2Kₙ/Δzₙ |
+
+The bottom row is that of the ice substrate when the column has one. The energy that crosses
+either boundary enters `boundary_enthalpy`, so the enthalpy budget closes for every combination
+(`test/test_boundary_conditions.jl`). The values are scalars for all columns.
+
+```@docs
+BoundaryConditions
+SurfaceEnergyBalance
+PrescribedSurfaceFlux
+PrescribedSurfaceTemperature
+Insulated
+GeothermalFlux
+PrescribedBottomTemperature
+```
+
 ## API
 
 ```@docs
