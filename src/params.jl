@@ -21,6 +21,7 @@ end
 
 _to_nf(value::Real, ::Type{NF}) where {NF} = NF(value)
 _to_nf(value::Tuple, ::Type{NF}) where {NF} = map(v -> _to_nf(v, NF), value)
+_to_nf(value::AbstractVector, ::Type{NF}) where {NF} = convert(Vector{NF}, Array(value))
 
 # Fields declared with the number-type parameter `NF` (or as a tuple of it), read from the struct
 # definition; fields declared otherwise (e.g. `Ntot::Int`) keep their values.

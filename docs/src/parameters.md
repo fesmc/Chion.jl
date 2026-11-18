@@ -36,6 +36,19 @@ The defaults are the Greenland calibration against MAR v3.14.3 with daily
 forcing (1980–1989 for the surface energy balance). They are a regression
 contract: the paper runs depend on them.
 
+## Kinks
+
+`Params(kinks = SmoothKinks(flux, wind, fraction))` smooths the kinks that the state crosses (the
+bare-ice melt flux max(Q, 0), the wind-speed floor of the SEMIX fluxes, the clamp of the cloud
+proxy's shortwave deficit) over a band of half-width ε per quantity, for smoother gradients in
+calibration; the default `ExactKinks()` keeps them exact (bit-identical).
+
+```@docs
+Chion.AbstractKinks
+ExactKinks
+SmoothKinks
+```
+
 ## Named Setups
 
 | Setup | Domain | Differences from `Params()` |

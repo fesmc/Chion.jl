@@ -211,7 +211,7 @@ row-1 closure (`_close_surface_row`) differs. Returns `(p₂, q₂)`, or zeros f
     p = scratch.rhs
     # The bottom boundary acts as a virtual row n+1 with Tₙ₊₁ = p (q = 0), coupled through
     # `bottom_conductance`, plus a Neumann source in row n (see boundary_conditions.jl).
-    below_p = _bottom_temperature(bottom, β_scale)
+    below_p = _bottom_temperature(bottom, idx, β_scale)
     below_q = zero(β_scale)
     @inbounds for row in n:-1:2
         row_mass, _, row_temperature =
@@ -219,7 +219,7 @@ row-1 closure (`_close_surface_row`) differs. Returns `(p₂, q₂)`, or zeros f
         β = β_scale / _safe_positive(row_mass)
         lower = β * _get_layer(G, row - 1, idx)
         row_upper = row < n ? β * _get_layer(G, row, idx) : _bottom_coupling(bottom, β, bottom_conductance)
-        row_rhs = row < n ? row_temperature : _bottom_rhs(bottom, row_temperature, β)
+        row_rhs = row < n ? row_temperature : _bottom_rhs(bottom, idx, row_temperature, β)
         reduced_diag = one(β) - lower - row_upper + row_upper * below_q
         below_p = (row_rhs - row_upper * below_p) / reduced_diag
         below_q = -lower / reduced_diag
@@ -242,7 +242,7 @@ right-hand side `rhs1`; row 2 has been reduced to `T₂ = p₂ + q₂ T₁`.
 end
 
 """
-    _close_surface(bc, surface_upper, boundary_diag, boundary_term, surface_constant, surface_coefficient,
+    _close_surface(bc, idx, surface_upper, boundary_diag, boundary_term, surface_constant, surface_coefficient,
                    surface_conductance, flux_constant, flux_linear, rhs1, p2, q2, T0, dt_seconds)
 
 Close row 1 under the surface condition `bc`; returns `(T₁, T_s, needs_melt, heating)` with the
@@ -254,7 +254,7 @@ the Dirichlet closure at T₀, keeping the first-to-second-layer conductance, an
 A prescribed temperature uses the Dirichlet closure at that temperature, with the heat flux
 G_s (T_s − T₁) into the column.
 """
-@inline function _close_surface(::Union{SurfaceEnergyBalance, PrescribedSurfaceFlux}, surface_upper, boundary_diag,
+@inline function _close_surface(::Union{SurfaceEnergyBalance, PrescribedSurfaceFlux}, idx, surface_upper, boundary_diag,
         boundary_term, surface_constant, surface_coefficient, surface_conductance, flux_constant, flux_linear,
         rhs1, p2, q2, T0, dt_seconds)
     T1 = _close_surface_row(surface_upper, boundary_diag, zero(dt_seconds),
@@ -269,10 +269,10 @@ G_s (T_s − T₁) into the column.
         dt_seconds * (flux_constant - flux_linear * resolved_surface_temperature)
 end
 
-@inline function _close_surface(bc::PrescribedSurfaceTemperature, surface_upper, boundary_diag, boundary_term,
+@inline function _close_surface(bc::PrescribedSurfaceTemperature, idx, surface_upper, boundary_diag, boundary_term,
         surface_constant, surface_coefficient, surface_conductance, flux_constant, flux_linear, rhs1, p2, q2,
         T0, dt_seconds)
-    surface_temperature = oftype(rhs1, bc.temperature)
+    surface_temperature = oftype(rhs1, _bc_value(bc.temperature, idx))
     T1 = _close_surface_row(surface_upper, boundary_diag, boundary_term * surface_coefficient,
         rhs1 - boundary_term * surface_temperature, p2, q2)
     return T1, surface_temperature, false, dt_seconds * surface_conductance * (surface_temperature - T1)
@@ -480,7 +480,7 @@ function _go_energy_flux_resolved!(
     surface_flux_constant = sensible_heat_flux_constant + longwave_flux_constant + absorbed_shortwave + latent_heat_flux_constant
     surface_flux_linear = sensible_heat_flux_linear + longwave_flux_linear + latent_heat_flux_linear
     surface_flux_constant, surface_flux_linear =
-        _surface_flux_terms(boundary.surface, surface_flux_constant, surface_flux_linear)
+        _surface_flux_terms(boundary.surface, idx, surface_flux_constant, surface_flux_linear)
 
     previous_layer_thickness = surface_mass / _safe_positive(first_density)
     previous_layer_conductivity = _snow_thermal_conductivity(first_density, first_temperature, c.rho_i)
@@ -541,16 +541,16 @@ function _go_energy_flux_resolved!(
     # (the virtual row p₂ = T_b, q₂ = 0) and takes its Neumann source.
     surface_upper = n_layers > 1 ? β1 * _get_layer(interface_terms, 1, idx) :
         _bottom_coupling(boundary.bottom, β1, bottom_conductance)
-    first_rhs = n_layers > 1 ? first_temperature : _bottom_rhs(boundary.bottom, first_temperature, β1)
+    first_rhs = n_layers > 1 ? first_temperature : _bottom_rhs(boundary.bottom, idx, first_temperature, β1)
     T1, resolved_surface_temperature, needs_melt, heating = _close_surface(
-        boundary.surface, surface_upper, boundary_diag, boundary_term, surface_constant, surface_coefficient,
+        boundary.surface, idx, surface_upper, boundary_diag, boundary_term, surface_constant, surface_coefficient,
         surface_conductance, surface_flux_constant, surface_flux_linear, first_rhs, p2, q2, c.T0, dt_seconds,
     )
     resolved_temperature = _substitute_heat_diffusion_downward!(
         scratch, temperature, ice_temperature, n_snow, idx, n_layers, T1, c.T0,
     )
     _set_scalar!(Tsrf, idx, resolved_surface_temperature)
-    heating = _with_bottom_heating(boundary.bottom, heating, bottom_conductance,
+    heating = _with_bottom_heating(boundary.bottom, idx, heating, bottom_conductance,
         _get_layer(resolved_temperature, n_layers, idx), dt_seconds)
 
     melt_energy_available = needs_melt ? max(

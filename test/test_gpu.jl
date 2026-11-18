@@ -52,6 +52,22 @@ if Chion.cuda_available()
             end
         end
 
+        @testset "Per-column boundary conditions on the GPU" begin
+            forcing = SnowpackForcing(dt_days = ones(20), ncol = 3, air_temperature_c = -20.0, snowfall_mm_day = 1.0,
+                rainfall_mm_day = 0.0, shortwave_down = 50.0, latitude_deg = 70.0)
+            params = Params(temperature_init = 250.0)
+            boundary = BoundaryConditions(bottom = GeothermalFlux([0.2, 0.5, 1.0]))
+            cpu = BESSIModel(Grid(3); forcing, params, boundary)
+            device = BESSIModel(Grid(3); forcing, params, boundary, backend = gpu)
+            @test device.boundary.bottom.flux isa CuArray
+            integrate!(cpu, 1:20); integrate!(device, 1:20)
+            @test cpu_state(device).ice_temperature ≈ cpu.state.ice_temperature rtol = 1e-10
+            set_boundary!(device, :bottom, [1.0, 1.0, 1.0])
+            @test Array(device.boundary.bottom.flux) == [1.0, 1.0, 1.0]
+            sim = Simulation(device; verbose = false, output = OutputConfig(dir = mktempdir()))
+            @test haskey(Chion._run_metadata(sim)["boundary"]["bottom"], "flux")
+        end
+
         @testset "PDD active indices" begin
             ncol = 3
             forcing = SnowpackForcing(dt_days = [1.0, 30.0], ncol = ncol, air_temperature_c = [-2.0, 2.0],

@@ -505,7 +505,9 @@ The surface and bottom closures of the implicit heat solve are the `boundary` sl
 
 The bottom row is that of the ice substrate when the column has one. The energy that crosses
 either boundary enters `boundary_enthalpy`, so the enthalpy budget closes for every combination
-(`test/test_boundary_conditions.jl`). The values are scalars for all columns.
+(`test/test_boundary_conditions.jl`). A value is a number for all columns or a vector with one
+value per column, which `set_boundary!(model, :bottom, values)` updates (e.g. the near-surface ice
+temperature of a coupled ice-sheet model).
 
 ```@docs
 BoundaryConditions
@@ -515,6 +517,7 @@ PrescribedSurfaceTemperature
 Insulated
 GeothermalFlux
 PrescribedBottomTemperature
+set_boundary!
 ```
 
 ## API

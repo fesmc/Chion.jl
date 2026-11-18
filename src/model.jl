@@ -366,16 +366,18 @@ function _build_model(M, grid::Grid, source::Forcing, params, backend_choice, st
     device_state = to_backend(host_state, backend)
     forcing = AtmosphericForcing(source, first_year, params, backend)
     _validate_forcing(params, forcing.data)
-    return _assemble(M, grid, device_state, _cache(device_state, grid), params, forcing; kwargs...)
+    return _assemble(M, grid, device_state, _cache(device_state, grid), params, forcing; backend, kwargs...)
 end
 
 # The model from its parts; only BESSI has boundary conditions (in the model's number type).
-function _assemble(::Type{BESSIModel}, grid, state, cache, params, forcing;
+function _assemble(::Type{BESSIModel}, grid, state, cache, params, forcing; backend,
         boundary::BoundaryConditions = BoundaryConditions())
     validate(boundary)
-    return BESSIModel(grid, state, cache, params, _promote_param(boundary, number_type(params)), forcing)
+    _check_boundary_columns(boundary, ncols(grid))
+    boundary = _boundary_on(_promote_param(boundary, number_type(params)), backend)
+    return BESSIModel(grid, state, cache, params, boundary, forcing)
 end
-_assemble(M, grid, state, cache, params, forcing) = M(grid, state, cache, params, forcing)
+_assemble(M, grid, state, cache, params, forcing; backend) = M(grid, state, cache, params, forcing)
 
 """`model` with some fields replaced (the others shared), e.g. another forcing or state."""
 function _replace(model::M; kwargs...) where {M <: AbstractSnowModel}
@@ -486,7 +488,8 @@ function to_backend(model::M, backend) where {M <: AbstractSnowModel}
     cache.active_indices = _active_indices(state.runoff, findall(cache.active))
     source = model.forcing
     forcing = AtmosphericForcing(source.source, source.year, source.data, _kernel_fields(model.params, source.data, backend))
-    return _replace(model; state, cache, forcing)
+    hasfield(M, :boundary) || return _replace(model; state, cache, forcing)
+    return _replace(model; state, cache, forcing, boundary = _boundary_on(model.boundary, backend))
 end
 
 _copy_cache!(dest::BulkCache, src::BulkCache) = dest

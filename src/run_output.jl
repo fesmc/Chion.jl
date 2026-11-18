@@ -88,6 +88,7 @@ _toml_value(value::Integer) = value
 _toml_value(value::AbstractFloat) = Float64(value)
 _toml_value(value::Real) = Float64(_primal(value))
 _toml_value(value::Tuple) = collect(map(_toml_value, value))
+_toml_value(value::AbstractVector) = Float64.(_primal.(Array(value)))
 function _toml_value(scheme)
     table = Dict{String, Any}("type" => String(_scheme_name(scheme)))
     for name in fieldnames(typeof(scheme))

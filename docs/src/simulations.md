@@ -229,10 +229,31 @@ Further keys:
 The scheme names are listed on [Parameters](parameters.md#Schemes). A `--set` override reaches
 the coefficients of a scheme table, e.g. `--set model.diurnal_cycle.max_substeps=4`.
 
+## Published Setups
+
+`SimulationGreenlandMARv1(path)` and `SimulationAntarcticaMARv1(path, climatology)` build the
+Greenland and Antarctic runs of the Chion paper in one call (as Laddie's reproductions):
+forcing, grid, calibration, spin-up, years and, with `dir`, the outputs. `test/reproductions.jl`
+pins their totals for one MAR year.
+
+```julia
+sim = SimulationGreenlandMARv1("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; dir = "output/gris",
+    files = Dict(2026 => "/data/MAR/MARv3.14.3-10km-daily-ERA5-2026_repaired.nc"))
+run!(sim)
+```
+
+## Debugging
+
+`Simulation(model; debug = DebugConfig(check_nans = true))` checks the state of the active columns
+for NaN and Inf after every launch of the column step and stops with the variable, column and date.
+
 ## Reference
 
 ```@docs
 Simulation
+SimulationGreenlandMARv1
+SimulationAntarcticaMARv1
+DebugConfig
 Clock
 run!
 time_step!
@@ -244,6 +265,16 @@ CycledSpinup
 ClimatologySpinup
 OutputConfig
 Output
+EveryStep
+Daily
+Monthly
+Yearly
+Every
+Columns
+AreaSum
+AreaMean
+Mean
+Snapshot
 write_restart
 available_output_variables
 run_config

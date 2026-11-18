@@ -57,6 +57,7 @@ include("io.jl")
 include("outputs.jl")
 include("run_output.jl")
 include("simulation.jl")
+include("setups.jl")
 include("config.jl")
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ include("config.jl")
 # Grid and parameters
 export Grid, Layering, SpatialLayout
 export Params, PDDParams, ITMParams, ParamsGrISv1, ParamsAISv1
+export SimulationGreenlandMARv1, SimulationAntarcticaMARv1
 
 # Schemes
 export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
@@ -81,7 +83,7 @@ export ExactKinks, SmoothKinks
 
 # Boundary conditions
 export BoundaryConditions, SurfaceEnergyBalance, PrescribedSurfaceFlux, PrescribedSurfaceTemperature
-export Insulated, GeothermalFlux, PrescribedBottomTemperature
+export Insulated, GeothermalFlux, PrescribedBottomTemperature, set_boundary!
 
 # Models
 export BESSIModel, PDDModel, ITMModel

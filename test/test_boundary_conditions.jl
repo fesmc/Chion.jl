@@ -69,6 +69,30 @@ _temperatures(model) = vcat(model.temperature[1:model.N[1], 1], model.ice_temper
         @test issorted(T) && 250.0 < T[1] && T[end] < 270.0
     end
 
+    @testset "one value per column" begin
+        # Three columns with their own geothermal flux: each column gains its own q t.
+        q = [0.2, 0.5, 1.0]
+        forcing = SnowpackForcing(; dt_days = ones(30), ncol = 3, air_temperature_c = -20.0, snowfall_mm_day = 0.0,
+            rainfall_mm_day = 0.0, shortwave_down = 0.0, latitude_deg = 70.0)
+        params = Params(; temperature_init = 250.0, diurnal_cycle = NoDiurnalCycle())
+        model = BESSIModel(Grid(3); forcing, params,
+            boundary = BoundaryConditions(surface = PrescribedSurfaceFlux(0.0), bottom = GeothermalFlux(q)))
+        H0 = [column_enthalpy(model, c) for c in 1:3]
+        integrate!(model, 1:30)
+        @test [column_enthalpy(model, c) for c in 1:3] .- H0 ≈ q .* seconds rtol = 1e-9
+        # Per-column Dirichlet ends, updated with set_boundary! (e.g. from an ice-sheet model).
+        model = BESSIModel(Grid(3); forcing = SnowpackForcing(; dt_days = ones(365), ncol = 3, air_temperature_c = -20.0,
+                snowfall_mm_day = 0.0, rainfall_mm_day = 0.0, shortwave_down = 0.0, latitude_deg = 70.0), params,
+            boundary = BoundaryConditions(surface = PrescribedSurfaceTemperature([255.0, 260.0, 265.0]),
+                bottom = PrescribedBottomTemperature(fill(255.0, 3))))
+        set_boundary!(model, :bottom, [255.0, 260.0, 265.0])
+        integrate!(model, 1:365)
+        @test all(c -> all(T -> isapprox(T, (255.0, 260.0, 265.0)[c]; atol = 1e-6), model.ice_temperature[:, c]), 1:3)
+        @test_throws ArgumentError BESSIModel(Grid(3); forcing, params, boundary = BoundaryConditions(bottom = GeothermalFlux([1.0, 2.0])))
+        @test_throws ArgumentError set_boundary!(model, :bottom, [1.0, 2.0])
+        @test_throws ArgumentError set_boundary!(model, :bottom, [255.0, -1.0, 265.0])
+    end
+
     @testset "construction, TOML and metadata" begin
         @test BoundaryConditions() == BoundaryConditions(SurfaceEnergyBalance(), Insulated())
         model = _bc_model(BoundaryConditions(bottom = GeothermalFlux(0.06)))
