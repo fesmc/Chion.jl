@@ -100,3 +100,18 @@ end
     @test ForwardDiff.partials(sum(model.state.melt))[1] != 0          # the state carries the derivative
     @test smbstats(model).mean_kg_m2.melt ≈ ForwardDiff.value(sum(model.state.melt)) / 3
 end
+
+@testset "SmoothKinks: a model runs and differentiates" begin
+    f(x) = melt_and_runoff_total(x, :alpha_ice)
+    smooth(x) = begin
+        NF = typeof(x)
+        params = Params(; NF, alpha_ice = x, kinks = SmoothKinks())
+        model = BESSIModel(Grid(3; NF, layering = Layering(Ntot = 8)); forcing = _ad_forcing(), params)
+        integrate!(model, 1:12); integrate!(model, 1:12)
+        sum(model.state.melt) + sum(model.state.runoff)
+    end
+    slope = ForwardDiff.derivative(smooth, 0.40)
+    @test isfinite(slope)
+    @test slope ≈ _central_difference(δ -> smooth(0.40 + δ), 1e-7) rtol = 1e-4 atol = 1e-3
+    @test smooth(0.40) ≈ f(0.40) rtol = 0.05                   # a small change of the result
+end

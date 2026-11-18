@@ -182,6 +182,24 @@ end
     @test_throws ArgumentError BESSIModel(Grid(4); forcing = snowpack_forcing, backend = :tpu)
 end
 
+@testset "DebugConfig catches non-finite states" begin
+    snowpack_forcing, grid = _experiment_forcing(2001:2001)
+    forcing = Forcing(snowpack_forcing; grid)
+    sim = Simulation(BESSIModel(forcing); verbose = false, debug = DebugConfig(check_nans = true))
+    time_step!(sim)                                     # finite: no error
+    sim.model.state.Tsrf[3] = NaN
+    err = try time_step!(sim); nothing; catch e; e; end
+    @test err isa ErrorException && occursin("Non-finite", err.msg) && occursin("in column 3 at 2001-01-02", err.msg)
+    # Inactive columns are not checked; checks off by default.
+    model = BESSIModel(forcing)
+    set_active_mask!(model, [true, true, false, true])
+    model.state.Tsrf[3] = NaN
+    time_step!(Simulation(model; verbose = false, debug = DebugConfig(check_nans = true)))
+    @test isnan(model.state.Tsrf[3])
+    model.state.Tsrf[1] = NaN
+    @test time_step!(Simulation(model; verbose = false)) isa Simulation
+end
+
 @testset "Active columns" begin
     snowpack_forcing, grid = _experiment_forcing(2001:2001)
     forcing = Forcing(snowpack_forcing; grid)

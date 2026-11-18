@@ -18,6 +18,7 @@ include("constants.jl")
 include("numerics.jl")
 include("schemes.jl")
 include("boundary_conditions.jl")
+include("kinks.jl")
 include("params.jl")
 include("grid.jl")
 
@@ -76,6 +77,7 @@ export SemixTurbulentFluxes, BESSITurbulentFluxes
 export CloudProxyLongwave, GraybodyLongwave
 export NoDiurnalCycle, DiurnalSubsteps, DiurnalTemperatureCycle, NoDiurnalTemperatureCycle
 export SimplePDD, PISMPDD
+export ExactKinks, SmoothKinks
 
 # Boundary conditions
 export BoundaryConditions, SurfaceEnergyBalance, PrescribedSurfaceFlux, PrescribedSurfaceTemperature
@@ -96,7 +98,7 @@ export shortwave_down_from_transmissivity, wind_speed_from_geometry
 export temperature_variability_sigma, red_noise_monthly, update_air_pressure!
 
 # Simulation and output
-export Simulation, Clock, run!, time_step!, spin_up!, finished, yearly_step!, smbstats
+export Simulation, Clock, DebugConfig, run!, time_step!, spin_up!, finished, yearly_step!, smbstats
 export NoSpinup, CycledSpinup, ClimatologySpinup
 export Output, OutputConfig, available_output_variables, run_config, write_restart
 export Hour, Day, Week, Month, Year     # output frequencies, from Dates

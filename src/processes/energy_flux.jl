@@ -90,7 +90,7 @@ end
     z0h = z0m / c.turbulent_flux_scheme.zm_to_zh
     neutral_ch = c.turbulent_flux_scheme.karman^2 /
                  _safe_positive(log(c.turbulent_flux_scheme.reference_height / z0m) * log(c.turbulent_flux_scheme.reference_height / z0h))
-    wind = max(wind_speed, oftype(wind_speed, 0.1))
+    wind = _kmax(c.kinks, wind_speed, oftype(wind_speed, 0.1), Val(:wind))
     bulk_richardson = oftype(surface_temperature, 9.80665) * c.turbulent_flux_scheme.reference_height *
                       (air_temperature - surface_temperature) /
                       _safe_positive(air_temperature * wind^2)

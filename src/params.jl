@@ -102,6 +102,7 @@ struct Params{
         T <: AbstractTurbulentFluxScheme,
         L <: AbstractLongwaveScheme,
         DC <: AbstractDiurnalCycle,
+        K <: AbstractKinks,
     }
     # Material constants
     "ice density (kg m⁻³, default `917`)"
@@ -161,6 +162,8 @@ struct Params{
     longwave_scheme::L
     "diurnal cycle within a forcing step, an [`AbstractDiurnalCycle`](@ref) (default `DiurnalSubsteps()`)"
     diurnal_cycle::DC
+    "treatment of the kinks (`max`, `min`, `clamp`), an [`AbstractKinks`](@ref) (default `ExactKinks()`)"
+    kinks::K
 end
 
 # The default of every field of `Params`, in field order. A function, since the schemes are
@@ -193,6 +196,7 @@ _param_defaults(::Type{<:Params}) = (
     turbulent_flux_scheme = SemixTurbulentFluxes(),
     longwave_scheme = CloudProxyLongwave(),
     diurnal_cycle = DiurnalSubsteps(),
+    kinks = ExactKinks(),
 )
 
 """

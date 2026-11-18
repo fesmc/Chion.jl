@@ -72,6 +72,45 @@ function _validate_spinup(spinup::CycledSpinup, source)
 end
 
 # ---------------------------------------------------------------------------
+# Debug options
+# ---------------------------------------------------------------------------
+
+"""
+$(TYPEDEF)
+
+Debug options of a [`Simulation`](@ref).
+
+Set `check_nans = true` to check the prognostic state of the active columns for NaN and Inf after
+every launch of the column step (one step when outputs accumulate every step, else up to the next
+output period). The run then errors at once, naming the first variable to blow up, the column and
+the date. Costs a host copy of the state per launch.
+
+# Fields
+$(TYPEDFIELDS)
+"""
+@kwdef struct DebugConfig
+    "check the state for NaN and Inf after every launch of the column step (default `false`)"
+    check_nans::Bool = false
+end
+
+_checked_fields(::BESSIModel) = (:mass, :mass_w, :density, :temperature, :ice_temperature, :Tsrf, :albedo,
+    :smb_ice, :runoff, :melt, :refreezing, :vapor_mass)
+_checked_fields(model::AbstractSnowModel) = fieldnames(typeof(model.state))
+
+function _check_finite(debug::DebugConfig, model, time)
+    debug.check_nans || return nothing
+    active = model.cache.active
+    for name in _checked_fields(model)
+        values = _primal.(Array(getproperty(model.state, name)))
+        bad = values isa AbstractMatrix ? findfirst(c -> active[c] && !all(isfinite, view(values, :, c)), axes(values, 2)) :
+            findfirst(c -> active[c] && !isfinite(values[c]), eachindex(values))
+        bad === nothing ||
+            error("Non-finite `$name` in column $bad at $(Dates.format(time, "yyyy-mm-dd HH:MM")) (DebugConfig(check_nans = true)).")
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
 # Clock and simulation
 # ---------------------------------------------------------------------------
 
@@ -141,11 +180,13 @@ struct Simulation{M <: AbstractSnowModel, SP <: AbstractSpinup}
     name::String
     "whether `run!` prints a line per year"
     verbose::Bool
+    "debug options"
+    debug::DebugConfig
 end
 
 """
     Simulation(model; years = all forcing years, spinup = NoSpinup(), output = OutputConfig(),
-               restart = nothing, name = "chion", verbose = true)
+               restart = nothing, name = "chion", verbose = true, debug = DebugConfig())
 
 Wrap `model` for a run over the forcing `years` (in order; they may repeat, e.g.
 `repeat(1940:1969, 5)`), after `spinup`, writing `output` (an [`OutputConfig`](@ref), or one
@@ -163,7 +204,7 @@ run!(sim)
 """
 function Simulation(model::AbstractSnowModel; years = nothing, spinup::AbstractSpinup = NoSpinup(),
         output = OutputConfig(), restart::Union{Nothing, AbstractString} = nothing,
-        name::AbstractString = "chion", verbose::Bool = true)
+        name::AbstractString = "chion", verbose::Bool = true, debug::DebugConfig = DebugConfig())
     source = model.forcing.source
     run_years = years === nothing ? forcing_years(source) : collect(Int, years)
     isempty(run_years) && throw(ArgumentError("`years` is empty."))
@@ -175,7 +216,7 @@ function Simulation(model::AbstractSnowModel; years = nothing, spinup::AbstractS
     update_forcing!(model, first(run_years))
     clock = Clock(1, 1, 0, first(model.forcing.data.time_values))
     io = IOState(OutputRecorder[], restart !== nothing, false, 0.0)
-    return Simulation(model, clock, run_years, spinup, config, io, String(name), verbose)
+    return Simulation(model, clock, run_years, spinup, config, io, String(name), verbose, debug)
 end
 
 """Whether all forcing years of `sim` have been run."""
@@ -191,7 +232,7 @@ function to_backend(sim::Simulation, backend)
     sim.clock.iteration == 0 && !sim.io.spun_up ||
         throw(ArgumentError("Move a simulation to another backend before it starts (or move its model)."))
     return Simulation(to_backend(sim.model, backend); years = sim.years, spinup = sim.spinup,
-        output = sim.output, name = sim.name, verbose = sim.verbose)
+        output = sim.output, name = sim.name, verbose = sim.verbose, debug = sim.debug)
 end
 
 _log(sim::Simulation, message) = sim.verbose && (println(stdout, "[", sim.name, "] ", message); flush(stdout))
@@ -315,6 +356,7 @@ function _advance!(sim::Simulation, last_step::Int)
         end
         stop = _block_end(recorders, every_step, closes_at, k, last_step)
         _step!(model, k, stop)
+        _check_finite(sim.debug, model, times[stop])
         for rec in recorders
             _accumulate_forcing!(rec, data, k:stop, seconds_per_day)
             if every_step

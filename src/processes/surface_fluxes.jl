@@ -53,7 +53,8 @@ n is the constant night cloud fraction.
             isfinite(forcing.latitude_deg)
     safe_toa = max(toa, oftype(T, LONGWAVE_CLOUD_PROXY_MIN_TOA))
     clear_transmissivity = clear_sky_transmissivity(c, forcing.surface_height, toa)
-    deficit = clamp(one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity), zero(T), one(T))
+    deficit = _kclamp(c.kinks, one(T) - forcing.shortwave_down / _safe_positive(safe_toa * clear_transmissivity),
+        zero(T), one(T), Val(:fraction))
     cloud_effect = c.longwave_scheme.cloud_transmission_coefficient * exp(-c.longwave_scheme.cloud_transmission_decay_per_km * height_km)
     cloud_fraction = _safe_pow(clamp(deficit / _safe_positive(cloud_effect), zero(T), one(T)),
         one(T) / c.longwave_scheme.cloud_transmission_exponent)
@@ -338,7 +339,7 @@ function _bare_ice_surface_mass_fluxes_resolved(
             surface_albedo,
         )
     net_surface_flux = absorbed_shortwave + longwave_flux + sensible_heat_flux + latent_heat_flux + rain_heat_flux
-    melt_mass = max(net_surface_flux, zero(net_surface_flux)) * dt_seconds / c.Lm
+    melt_mass = _kmax(c.kinks, net_surface_flux, zero(net_surface_flux), Val(:flux)) * dt_seconds / c.Lm
     vapor_mass = latent_heat_flux * dt_seconds / (c.Lv + c.Lm)
     return (
         melt_mass=melt_mass,

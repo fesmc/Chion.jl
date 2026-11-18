@@ -27,6 +27,7 @@ const _SCHEME_SLOTS = (
     method = AbstractPDDMethod,
     surface = AbstractSurfaceBoundaryCondition,
     bottom = AbstractBottomBoundaryCondition,
+    kinks = AbstractKinks,
 )
 
 # One table of the scheme names: it defines the `_scheme_type(kind, ::Val{name})` methods and the
@@ -50,6 +51,7 @@ const _SCHEME_TABLE = (
     (AbstractSurfaceBoundaryCondition, "surface boundary condition",
         (energy_balance = SurfaceEnergyBalance, prescribed_flux = PrescribedSurfaceFlux,
          prescribed_temperature = PrescribedSurfaceTemperature)),
+    (AbstractKinks, "kink treatment", (exact = ExactKinks, smooth = SmoothKinks)),
     (AbstractBottomBoundaryCondition, "bottom boundary condition",
         (insulated = Insulated, geothermal_flux = GeothermalFlux, prescribed_temperature = PrescribedBottomTemperature)),
 )

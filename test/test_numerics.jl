@@ -87,3 +87,30 @@ end
     @test_throws ArgumentError Grid(2; x = [0.0, 1.0])
     @test_throws ArgumentError Grid(0)
 end
+
+@testset "Kinks" begin
+    @test Params().kinks === ExactKinks()
+    k = SmoothKinks(flux = 2.0, wind = 0.1, fraction = 0.0)
+    exact, smooth = ExactKinks(), k
+    for x in (-5.0, -2.0, -0.5, 0.0, 0.7, 2.0, 5.0)
+        @test Chion._kmax(exact, x, 0.0, Val(:flux)) === max(x, 0.0)
+        @test Chion._kclamp(exact, x, -1.0, 1.0, Val(:flux)) === clamp(x, -1.0, 1.0)
+    end
+    m(x) = Chion._kmax(smooth, x, 0.0, Val(:flux))
+    @test m(-2.0) == 0.0 && m(2.0) == 2.0 && m(3.0) == 3.0 && m(-3.0) == 0.0      # exact outside |x| < ε
+    @test m(0.0) ≈ 0.5                                                           # (0 + ε)² / 4ε
+    @test m(0.5) >= max(0.5, 0.0)                                                # above the kink
+    # C¹ at the band edges: one-sided slopes agree.
+    h = 1e-7
+    for edge in (-2.0, 2.0)
+        @test (m(edge + h) - m(edge)) / h ≈ (m(edge) - m(edge - h)) / h atol = 1e-5
+    end
+    # min and clamp follow; ε = 0 keeps a group exact.
+    @test Chion._kmin(smooth, 1.0, 1.0, Val(:flux)) ≈ 1.0 - 0.5
+    @test Chion._kclamp(smooth, 0.3, 0.0, 1.0, Val(:fraction)) === 0.3
+    @test Chion._kmax(smooth, -0.0001, 0.0, Val(:fraction)) === 0.0
+    @test_throws ArgumentError Params(kinks = SmoothKinks(flux = -1.0))
+    @test Params(NF = Float32, kinks = SmoothKinks()).kinks === SmoothKinks{Float32}(1f0, 0.05f0, 0.01f0)
+    @test Chion._scheme_from_config(Chion.AbstractKinks,
+        Dict{String, Any}("type" => "smooth", "flux" => 0.5)) == SmoothKinks(flux = 0.5)
+end
