@@ -7,7 +7,7 @@ CurrentModule = Chion
 `go_refreezing!` converts retained liquid water into solid mass using the cold
 content of subfreezing layers.
 
-For the layered BESSI model, `BESSIModel(...; refreezing_correction=1.0)`
+For the layered BESSI model, `Params(refreezing_correction=1.0)`
 multiplies the cold-content-limited refreezing capacity everywhere. The
 default preserves the original scheme. Values above one are an empirical
 correction representing an unresolved heat sink; refreezing remains capped by

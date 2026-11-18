@@ -137,9 +137,9 @@ differentiable.
 
 ### Docstrings
 
-- Use DocStringExtensions.jl with `$(TYPEDSIGNATURES)` when the signature does not include default
-  values for args and/or kwargs. DocStringExtensions is not yet a dependency of Chion: adding it is a
-  dependency change (see Common Pitfalls 10), so ask before the first use
+- Use DocStringExtensions.jl: `$(TYPEDEF)` and `$(TYPEDFIELDS)` for structs (every field gets a
+  docstring with unit and default, as in `Params`), `$(TYPEDSIGNATURES)` when the signature does not
+  include default values for args and/or kwargs
 - Use `jldoctest` blocks. Plain `julia` blocks are only exceptionally allowed since they are not tested
   by CI
 - Include `# output` with verifiable output; prefer `show` methods over boolean comparisons
@@ -184,7 +184,8 @@ Simulation
 │                                       #   data (host SnowpackForcing), fields (kernel view on device)
 ├── clock :: Clock                      # year_index, step, iteration, time
 ├── years, spinup                       # NoSpinup / CycledSpinup / ClimatologySpinup
-├── outputs :: Vector{Output}           # one file each (NetCDF or CSV), calendar periods, area sums
+├── output :: OutputConfig              # run directory (log.txt, chion_run.toml, restarts) and the
+│                                       # field outputs (one NetCDF or CSV file each, calendar periods)
 └── io :: IOState                       # open recorders, spun_up, wall time
 ```
 
@@ -219,7 +220,8 @@ forcing = Forcing("/path/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes =
 grid = Grid(forcing; layering = Layering(Ntot = 15))
 model = BESSIModel(grid; forcing, params = Params())   # ParamsAISv1() for Antarctica; backend = CUDABackend()
 sim = Simulation(model; years = 1980:1989, spinup = CycledSpinup(1960:1979; cycles = 2),
-    outputs = [Output("output/x/monthly.nc"; variables = :monthly, frequency = :monthly)])
+    output = OutputConfig(dir = "output/x", restart_every = 10,
+        outputs = [Output("monthly.nc"; variables = :monthly, frequency = :monthly)]))
 run!(sim)                  # run!(sim; years = 1) continues year by year; time_step!(sim) one step
 ```
 
@@ -310,11 +312,14 @@ column_step!(fields, params, layering, idx, forcing, workspace)
 
 - Full suite: `julia --project=. -e 'using Pkg; Pkg.test()'`. `test/test_gpu.jl` runs only when a CUDA
   device is functional (submit through SLURM for GPU coverage)
-- Single area, from the package root (test-only deps Test and CUDA are in `[extras]`; there is no
-  `test/Project.toml`):
+- Single area, from the package root (the test environment is `test/Project.toml`, with Aqua and
+  CUDA; `test/setup.jl` loads the shared packages):
   ```
-  julia --project=. -e 'using Test, Chion; include("test/test_experiment.jl")'
+  julia --project=test -e 'include("test/setup.jl"); include("test/test_simulation.jl")'
   ```
+- Regression gate of refactors: `julia --project=. --threads 16 test/regression/bitwise.jl compare
+  output/regression/base cpu` (27 cases incl. two GrIS years with output files; `save` writes a
+  baseline)
 - Julia stack traces are long: write test output to a file and `grep` it
 - A failing test is a signal about the change, not about the test. Do not loosen a tolerance to make it
   pass

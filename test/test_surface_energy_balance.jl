@@ -69,7 +69,7 @@ _seb_sums(state) = NamedTuple{_SEB_SUMS}(map(name -> getfield(state, name)[1], _
         model, forcing, shortwave = _ablating_column()   # 30 days of June, 10 of July
         mktempdir() do dir
             path = joinpath(dir, "monthly_seb.nc")
-            sim = Simulation(model; outputs = Output(path; variables = :monthly, frequency = :monthly), verbose = false)
+            sim = Simulation(model; output = Output(path; variables = :monthly, frequency = :monthly), verbose = false)
             run!(sim)
             @test finished(sim)
             NCDataset(path) do ds

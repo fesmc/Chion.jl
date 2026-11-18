@@ -8,7 +8,6 @@ See `examples/configs/` for complete files. Relative output paths are taken rela
 `output_dir` (default: the directory of the TOML file).
 """
 
-using TOML
 
 # ---------------------------------------------------------------------------
 # Scheme names: TOML strings are converted once, by dispatch, into scheme instances
@@ -223,7 +222,8 @@ or `:gpu`) and `output_dir` override the values in the file; `set` overrides any
 `set = ["model.alpha_dry" => 0.84, "model.diurnal_cycle.max_substeps" => 4]`. `dry_run = true`
 returns the simulation without running it.
 
-The file has the run settings (`name`, `backend`, `years`, `repeat`, `output_dir`) and the tables
+The file has the run settings (`name`, `backend`, `years`, `repeat`, `output_dir`, the run directory,
+and `restart_every`) and the tables
 `[forcing]`, `[grid]` (the [`Layering`](@ref)), `[model]` (`type`, `setup`, `number_type` and any
 field of the parameters; a scheme as a name or a table with `type`), `[spinup]` and `[[output]]`;
 see `examples/configs/`.
@@ -248,7 +248,8 @@ function _run_config(path, cfg, set, base, outdir, backend_name, dry_run)
         # `repeat = n` runs the years n times (e.g. to record every cycle of an equilibrium run)
         years = haskey(cfg, "years") ? repeat(collect(_config_years(cfg["years"])), get(cfg, "repeat", 1)) : nothing,
         spinup = _config_spinup(get(cfg, "spinup", nothing), cfg["forcing"], base),
-        outputs, name = get(cfg, "name", splitext(basename(path))[1]))
+        output = OutputConfig(; dir = outdir, outputs, restart_every = get(cfg, "restart_every", 0)),
+        name = get(cfg, "name", splitext(basename(path))[1]))
     dry_run && return sim
     _keep_config(path, cfg, set, outdir)
     return run!(sim)

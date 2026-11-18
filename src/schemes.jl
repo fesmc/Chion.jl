@@ -84,8 +84,9 @@ struct DynamicAlbedo <: AbstractAlbedoScheme end
 """
 $(TYPEDEF)
 
-The surface albedo of the `prescribed_albedo` forcing where it is given, and [`DynamicAlbedo`](@ref)
-elsewhere.
+The surface albedo of the `prescribed_albedo` forcing, which the model requires for every column
+and step. Where its `has_prescribed_albedo` mask is false inside the column step (e.g. forcing
+changed with [`set_input!`](@ref)), [`DynamicAlbedo`](@ref) applies.
 """
 struct PrescribedAlbedo <: AbstractAlbedoScheme end
 

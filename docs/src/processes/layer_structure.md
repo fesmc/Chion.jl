@@ -15,6 +15,9 @@ thickness is ``\Delta z_i = m_i/\rho_i``. Mass leaving the bottom of the column
 (bottom merges above ``\rho_i`` and the depth cap) is transferred to the
 underlying ice and forms the snow-to-ice term of the ice-sheet SMB.
 
+These are the fields of [`Layering`](@ref), part of the grid
+(`Grid(n; layering = Layering(Ntot = 20))`):
+
 | Parameter | Default | Meaning |
 | --- | ---: | --- |
 | `Ntot` | 15 | maximum number of snow/firn layers |
@@ -119,7 +122,7 @@ forms the surface when no snow is left. It is initialised at
 before it melts. Without the substrate, bare ice would be held at the melting
 point and negative energy fluxes discarded, which overestimates melt on
 sub-daily time scales. The substrate is impermeable: melt and rain on bare ice
-run off. Set `ice_substrate_layers=0` for the original bare-ice treatment at
+run off. Set `Layering(ice_substrate_layers=0)` for the original bare-ice treatment at
 the melting point.
 
 ## API

@@ -590,7 +590,7 @@ end
             model, forcing, grid = _sample_model_forcing_grid()
             path = joinpath(dir, "save_exact.nc")
             sim = Simulation(model; verbose=false,
-                outputs=[Output(path; variables=[:thickness], frequency=:step, kind=:snapshot)])
+                output=[Output(path; variables=[:thickness], frequency=:step, kind=:snapshot)])
             run!(sim)
             @test finished(sim)
             @test isfile(path)
@@ -623,7 +623,7 @@ end
             model, forcing, grid = _sample_model_forcing_grid()
             path = joinpath(dir, "save_group.nc")
             sim = Simulation(model; verbose=false,
-                outputs=[Output(path; variables=available_output_variables(model), frequency=:step, kind=:snapshot)])
+                output=[Output(path; variables=available_output_variables(model), frequency=:step, kind=:snapshot)])
             run!(sim)
             @test finished(sim)
             ds = NCDataset(path)
@@ -640,7 +640,7 @@ end
             model, forcing, grid = _sample_model_forcing_grid()
             path = joinpath(dir, "save_mixed.nc")
             sim = Simulation(model; verbose=false,
-                outputs=[Output(path; variables=[:thickness, :mass_base], frequency=:step, kind=:snapshot)])
+                output=[Output(path; variables=[:thickness, :mass_base], frequency=:step, kind=:snapshot)])
             run!(sim)
             @test finished(sim)
             ds = NCDataset(path)
@@ -657,7 +657,7 @@ end
             model, forcing, _ = _sample_model_forcing_grid()
             path = joinpath(dir, "monthly_lhf.nc")
             sim = run!(Simulation(model; verbose=false,
-                outputs=[Output(path; variables=[:latent_heat_flux], frequency=:monthly)]))
+                output=[Output(path; variables=[:latent_heat_flux], frequency=:monthly)]))
             @test finished(sim)
             ds = NCDataset(path)
             @test ds.dim["time"] == 3
@@ -672,7 +672,7 @@ end
         sim = Simulation(model; verbose=false)
         @test run!(sim) === sim
         @test finished(sim)
-        @test isempty(sim.outputs)
+        @test isempty(sim.output.outputs)
         @test isempty(sim.io.recorders)
     end
 
@@ -885,12 +885,12 @@ end
         )
         sim = run!(Simulation(BESSIModel(grid; forcing, params); verbose=false))
         @test finished(sim)
-        @test isempty(sim.outputs)
+        @test isempty(sim.output.outputs)
 
         mktempdir() do dir
             path = joinpath(dir, "column.nc")
             run!(Simulation(BESSIModel(grid; forcing, params); verbose=false,
-                outputs=[Output(path; variables=[:thickness], frequency=:step, kind=:snapshot)]))
+                output=[Output(path; variables=[:thickness], frequency=:step, kind=:snapshot)]))
             ds = NCDataset(path)
             @test !haskey(ds.dim, "x")
             @test ds.dim["column"] == 1
@@ -920,7 +920,7 @@ end
                 params=Params(diurnal_cycle=NoDiurnalCycle()))
             sim = run!(Simulation(model; verbose=false))
             @test finished(sim)
-            @test isempty(sim.outputs)
+            @test isempty(sim.output.outputs)
         end
     end
 
@@ -963,7 +963,7 @@ end
             )
             spatial_sim = run!(Simulation(PDDModel(spatial_grid; forcing=f, params); verbose=false))
             @test finished(spatial_sim)
-            @test isempty(spatial_sim.outputs)
+            @test isempty(spatial_sim.output.outputs)
             @test spatial_sim.clock.year_index == 2
 
             # Two calendar years: the forcing year run again as 2002.
@@ -971,7 +971,7 @@ end
             output_path = joinpath(dir, "pdd.nc")
             output_model = PDDModel(spatial_grid; forcing=two_years, params)
             output_sim = Simulation(output_model; verbose=false,
-                outputs=[Output(output_path; variables=collect(Chion.PDD_OUTPUT_VARS), frequency=:step,
+                output=[Output(output_path; variables=collect(Chion.PDD_OUTPUT_VARS), frequency=:step,
                     kind=:snapshot)])
             run!(output_sim)
             @test finished(output_sim)
@@ -994,7 +994,7 @@ end
             monthly_path = joinpath(dir, "pdd_monthly.nc")
             monthly_model = PDDModel(spatial_grid; forcing=f, params)
             monthly_sim = Simulation(monthly_model; verbose=false,
-                outputs=[Output(monthly_path; variables=[:smb_ice, :runoff, :pdd_sum], frequency=:monthly)])
+                output=[Output(monthly_path; variables=[:smb_ice, :runoff, :pdd_sum], frequency=:monthly)])
             @test finished(run!(monthly_sim))
             ds = NCDataset(monthly_path)
             @test ds.dim["time"] == 1
@@ -1009,7 +1009,7 @@ end
 
             err = _captured_exception() do
                 run!(Simulation(PDDModel(spatial_grid; forcing=f); verbose=false,
-                    outputs=[Output(joinpath(dir, "unsupported.nc"); variables=[:thickness], frequency=:step)]))
+                    output=[Output(joinpath(dir, "unsupported.nc"); variables=[:thickness], frequency=:step)]))
             end
             @test err isa Exception
             @test occursin("is not an output variable of PDDModel", sprint(showerror, err))

@@ -10,8 +10,8 @@ The executable checks live in `test/`; run them with
 `julia --project -e 'using Pkg; Pkg.test()'`. Relevant files are
 `test_longwave_consistency.jl` (insulated equilibrium, graybody longwave),
 `test_surface_energy_balance.jl` (closure of the SEB diagnostics),
-`test_case_api.jl` (API and scheme selection), `test_experiment.jl`
-(the `Experiment`/`Output` workflow), `test_forcing_host.jl` (host forcing
+`test_case_api.jl` (API and scheme selection), `test_simulation.jl`
+(the `Simulation`/`Output` workflow), `test_forcing_host.jl` (host forcing
 helpers) and `test_gpu.jl` (CPU/GPU agreement, needs `using CUDA`).
 
 ## Heat Conduction

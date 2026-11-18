@@ -79,6 +79,19 @@ function update_forcing!(model::AbstractSnowModel, year::Integer)
 end
 
 """
+    sync_forcing!(model)
+
+Rebuild the kernel view of the loaded forcing year from its host data, after the fields of
+`model.forcing.data` (a [`SnowpackForcing`](@ref)) were changed in place, e.g. by a coupled
+ice-sheet model.
+"""
+function sync_forcing!(model::AbstractSnowModel)
+    forcing = model.forcing
+    forcing.fields = _kernel_fields(model.params, forcing.data, _backend(model))
+    return model
+end
+
+"""
     set_input!(model, name, values)
 
 Replace the forcing field `name` (e.g. `:surface_height` from an ice-sheet model) of the loaded
@@ -220,7 +233,8 @@ The layered BESSI snowpack and firn model: a [`Grid`](@ref), the [`BESSIState`](
     BESSIModel(grid; forcing, params = Params(), backend = CPU(), state = nothing)
 
 `forcing` is a [`Forcing`](@ref) or an in-memory [`SnowpackForcing`](@ref); its first year is
-loaded. `state` (a host `BESSIState`, e.g. a restart) replaces the initial state of `params`.
+loaded. `backend` is a KernelAbstractions backend (`CPU()`, `CUDABackend()`) or its name
+(`:threads`, `:gpu`). `state` (a host `BESSIState`, e.g. a restart) replaces the initial state of `params`.
 Fields resolve through the model: `model.mass` (state), `model.thickness` (cache), `model.alpha_dry`
 (params), `model.ncol`, `model.Ntot` (grid), `model.year` (loaded forcing year).
 
@@ -333,7 +347,8 @@ for M in (:BESSIModel, :PDDModel, :ITMModel)
     end
 end
 
-function _build_model(M, grid::Grid, source::Forcing, params, backend, state, year)
+function _build_model(M, grid::Grid, source::Forcing, params, backend_choice, state, year)
+    backend = _ka_backend_from(backend_choice)
     number_type(grid) === number_type(params) || throw(ArgumentError(
         "The grid is in $(number_type(grid)) and the parameters in $(number_type(params)); " *
         "build both with the same `NF`."))

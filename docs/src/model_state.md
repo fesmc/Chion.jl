@@ -15,14 +15,31 @@ order of processes within one time step.*
 
 ## State Model
 
-`Simulation` owns both state snapshots:
+A model owns its state: `model.state` is the evolving prognostic state, a
+`BESSIState`, `PDDState` or `ITMState` on the model's backend.
+`initial_state(grid, params)` builds the initial state on the CPU, and a model
+built with `state = …` starts from a given one (e.g. a restart). The
+diagnostics and scratch arrays live in `model.cache`, and the fields of both
+are forwarded (`model.mass`, `model.thickness`). `cpu_state(model)` returns a
+host copy and `set_state!(model, state)` copies a host state into the model.
 
-- `sim.ref` is a deep copy of the initial state.
-- `sim.now` is the state advanced by `step!` and `run!`.
-
-`BESSIModel`, `PDDModel`, and `ITMModel` are configuration objects. Use
-`initial_state(model)` when a workflow needs to seed or mutate state before
-constructing a `Simulation`.
+```
+Simulation
+├── model :: BESSIModel
+│   ├── grid :: Grid                    # ncol, optional SpatialLayout (x, y, js, is, mask),
+│   │   └── layering :: Layering        #   Ntot, mass_max/split/min, near-surface thicknesses,
+│   │                                   #   ice substrate
+│   ├── state :: BESSIState             # layers (layer, column): mass, mass_w, density,
+│   │                                   #   temperature, ice_temperature; per column N, mass_base,
+│   │                                   #   smb_ice, runoff, …, Tsrf, albedo, *_sum SEB accumulators
+│   ├── cache :: BESSICache             # workspace (heat solve, boundary_enthalpy), thickness,
+│   │                                   #   wet_mass, bulk_density, liquid_water, active columns
+│   ├── params :: Params                # constants and schemes (see Parameters)
+│   └── forcing :: AtmosphericForcing   # Forcing source, loaded year (host data, kernel fields)
+├── clock :: Clock                      # year index, step, iteration, time
+├── years, spinup, output               # what run! does (OutputConfig: run directory, outputs)
+└── io                                  # output recorders, spin-up done, wall time
+```
 
 For `BESSIState`, each column stores one active-layer count `N[idx]` together
 with layer-wise arrays for:
@@ -46,10 +63,16 @@ with layer-wise arrays for:
 | `sensible_heat_flux_sum`, `rain_heat_flux_sum` | time-integrated sensible heat and rain heat | `W m^-2 day` |
 | `Tsrf` | snow–air (or ice–air) interface temperature | `K` |
 | `albedo` | surface albedo used by the energy solver | `1` |
-| `snow_age_days` | time since the last snowfall (`albedo=:aging`) | `day` |
-| `w_snow_max` | seasonal maximum snow water equivalent (`albedo=:semix`) | `kg m^-2` |
-| `thickness`, `wet_mass`, `bulk_density`, `liquid_water` | column diagnostics refreshed by `update_diagnostics!` | `m`, `kg m^-2`, `kg m^-3`, `kg m^-2` |
+| `snow_age_days` | time since the last snowfall (`AgingAlbedo`) | `day` |
+| `w_snow_max` | seasonal maximum snow water equivalent (`SemixAlbedo`) | `kg m^-2` |
 | `ice_temperature` | temperatures of the ice-substrate layers, `(ice_substrate_layers, column)` | `K` |
+
+The cache holds the column diagnostics `thickness` (m), `wet_mass`
+(kg m⁻²), `bulk_density` (kg m⁻³) and `liquid_water` (kg m⁻²), refreshed by
+`update_diagnostics!` (which `run!` calls at the end of every run), and the
+scratch arrays of the heat solve with the cumulative `boundary_enthalpy`
+(J m⁻²) of the enthalpy budget. `column_profile(model, idx)` returns the
+active layers of one column, and `column_enthalpy(model, idx)` its enthalpy.
 
 The surface energy balance sums are positive into the surface. Under snow and
 on the ice substrate the terms are evaluated at the solved surface temperature,
@@ -59,7 +82,7 @@ conduction), up to the linearization of the solve and the heat of snowfall,
 which is not among them.
 
 `PDDState` stores `snowpack_swe`, `smb_ice`, `runoff`, and `pdd_sum` as
-column vectors. Its snow reservoir is capped by `PDDModel.H_snow_max`.
+column vectors. Its snow reservoir is capped by `H_snow_max` of `PDDParams`.
 Refrozen water leaves that reservoir as superimposed ice, and `smb_ice`
 therefore contains only snow-to-ice conversion minus ice melt. For every PDD
 step, precipitation is partitioned according to
@@ -71,11 +94,10 @@ temperature and precipitation fields in Celsius and `mmWE day^-1`.
 
 ### Host/device boundary
 
-Public APIs accept `BESSIState`, `PDDState`, `ITMState`, and
-`SnowpackForcing`. Before a KernelAbstractions launch, Chion extracts concrete
-named tuples containing only the arrays required by that kernel. Complete
-state, forcing, model, simulation, and runtime objects are not kernel
-arguments.
+Before a KernelAbstractions launch, Chion extracts concrete named tuples
+containing only the arrays required by that kernel, and passes the isbits
+`Params` and `Layering` for inline dispatch on the schemes. Complete state,
+forcing, model and simulation objects are not kernel arguments.
 
 Every launch uses an `ndrange` equal to the active-index or output length.
 Kernel entry points index that range directly under `@inbounds`; empty work
@@ -83,9 +105,10 @@ sets are handled and validated on the host before launch.
 
 ## Step Ordering
 
-With the default diurnal substeps, a daily forcing step is first split into
-substeps (see [Diurnal Shortwave Cycle](processes/diurnal_cycle.md)); with the
-default `longwave_scheme=:cloud_proxy`, the incident longwave is derived once
+With the default diurnal substeps (`DiurnalSubsteps()`), a daily forcing step
+is first split into substeps (see
+[Diurnal Shortwave Cycle](processes/diurnal_cycle.md)); with the default
+`longwave_scheme = CloudProxyLongwave()`, the incident longwave is derived once
 from the daily forcing before that split. Each substep then executes, for a
 snow-covered column:
 
@@ -101,16 +124,16 @@ snow-covered column:
 7. melt, when the energy solve diagnoses melt energy; melt in excess of the
    snow melts the underlying ice and runs off
 8. percolation
-9. HTESSEL liquid-water compaction, when that scheme is active and liquid water remains
+9. HTESSEL liquid-water compaction, with `HTESSELDensification()` and liquid water remains
 10. refreezing
 11. near-surface remeshing again, so that the next energy solve sees the
     prescribed thin top layers, and the final albedo/snow-age update
 
-If a column has no snow after accumulation, `step!` takes the bare-ice branch
+If a column has no snow after accumulation, the column step takes the bare-ice branch
 and skips the snow-column process chain. With an ice substrate (the default),
 the energy solve runs on the substrate with the top substrate layer as the
 surface; bare ice cools and must re-warm before melting, and melt and rain run
-off. Without a substrate (`ice_substrate_layers=0`), bare ice is held at the
+off. Without a substrate (`Layering(ice_substrate_layers = 0)`), bare ice is held at the
 melting point and positive surface energy is converted directly into SMB loss.
 
 For BESSI, `smb_ice` is the cumulative mass transferred to the ice-sheet
@@ -119,30 +142,47 @@ NetCDF `smb_ice` is the change in that cumulative field during the month.
 
 ## Important Defaults
 
+The layering defaults ([`Layering`](@ref)):
+
 - `Ntot = 15`
 - `mass_max = 500 kg m^-2`
 - `mass_split = 300 kg m^-2`
 - `mass_min = 100 kg m^-2`
 - `near_surface_layer_max_thicknesses_m = (0.02, 0.05, 0.10, 0.30)`
 - `ice_substrate_layers = 5`, `ice_substrate_top_thickness_m = 0.05`
-- `rho_s = 315 kg m^-3` for the constant fresh-snow-density scheme
+
+and of the parameters ([`Params`](@ref)):
+
+- `ConstantFreshSnowDensity(density = 315)` kg m⁻³
 - `T0 = 273.15 K`
 
-The surface-energy defaults (`seb_scheme=:semix`, `albedo=:dynamic` with
-`alpha_dry, alpha_wet, alpha_ice = 0.81, 0.70, 0.40`,
-`longwave_scheme=:cloud_proxy`, SEMIX sensible heat factor 3.0 and stable
-coefficient 40, 8 diurnal substeps with a 1 K temperature cycle) were
-calibrated against MAR v3.14.3 over Greenland with daily forcing.
+The surface-energy defaults (`SemixSurfaceEnergyBalance()`, `DynamicAlbedo()`
+with `alpha_dry, alpha_wet, alpha_ice = 0.81, 0.70, 0.40`,
+`CloudProxyLongwave()`, `SemixTurbulentFluxes()` with sensible heat factor 3.0
+and stable coefficient 40, `DiurnalSubsteps()` with 8 substeps and a 1 K
+temperature cycle) were calibrated against MAR v3.14.3 over Greenland with
+daily forcing. All values are listed on [Parameters](parameters.md).
 
-## Advanced Entry Points
+## Entry Points
 
-Most users should run through an `Experiment` (see
-[Running Experiments](experiments.md)) or a `Simulation` and `run!`. Coupled workflows can
-use `init_integrator`, update `integrator.sim.forcing`, call
-`sync_forcing!`, step the initialized integrator, and finish with `finalize!`.
-The lower-level state `step!` methods remain available for advanced workflows
-that manage state, forcing slices, and workspaces directly.
+Most users run a `Simulation` with `run!` (see
+[Running Simulations](simulations.md)). Coupled workflows advance it with
+`time_step!` or `yearly_step!` and change the inputs in between (see
+[Models And Coupling](models.md#Coupling)). `integrate!(model, steps)` steps
+a model without a `Simulation`. Every path ends in `column_step!`, which
+advances one column by one forcing step and is the function inlined into the
+GPU kernel.
 
 ```@docs
-step!
+BESSIState
+PDDState
+ITMState
+initial_state
+BESSICache
+BulkCache
+AtmosphericForcing
+update_diagnostics!
+column_profile
+column_enthalpy
+column_step!
 ```

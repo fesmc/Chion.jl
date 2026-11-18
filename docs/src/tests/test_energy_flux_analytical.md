@@ -17,7 +17,7 @@ create a numerically singular top row, so the diagonal stays exactly one.
 A surface at `T0` under incident longwave ``\sigma T_0^4`` from an isothermal
 blackbody environment absorbs and emits the same graybody flux regardless of
 emissivity, so neither snow nor bare ice may warm or melt. The original BESSI
-treatment (`seb_scheme=:bessi`, unit incident absorption) is checked to retain
+treatment (`BESSISurfaceEnergyBalance()`, unit incident absorption) is checked to retain
 its spurious net gain ``(1-\epsilon)\,\sigma T_0^4``.
 
 ## Interface Conductance

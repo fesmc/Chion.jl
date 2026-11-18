@@ -49,7 +49,7 @@ directly to runoff.
 
 ## Notes
 
-- `max_lwc = 0.1` is fixed inside `step!`; it is a keyword only of the
+- `max_lwc = 0.1` is fixed inside the column step; it is a keyword only of the
   standalone `go_percolation!`
 - returned runoff has units ``\mathrm{kg\,m^{-2}}``
 

@@ -133,8 +133,8 @@ struct Simulation{M <: AbstractSnowModel, SP <: AbstractSpinup}
     years::Vector{Int}
     "spin-up before the first year"
     spinup::SP
-    "output specifications, one file each"
-    outputs::Vector{Output}
+    "run directory, field outputs, log, metadata and restarts"
+    output::OutputConfig
     "run-time state of the outputs"
     io::IOState
     "name of the run (in logs and output metadata)"
@@ -144,36 +144,38 @@ struct Simulation{M <: AbstractSnowModel, SP <: AbstractSpinup}
 end
 
 """
-    Simulation(model; years = all forcing years, spinup = NoSpinup(), outputs = Output[],
-               name = "chion", verbose = true)
+    Simulation(model; years = all forcing years, spinup = NoSpinup(), output = OutputConfig(),
+               restart = nothing, name = "chion", verbose = true)
 
 Wrap `model` for a run over the forcing `years` (in order; they may repeat, e.g.
-`repeat(1940:1969, 5)`), after `spinup`, writing `outputs`. The model's state is the initial
-state.
+`repeat(1940:1969, 5)`), after `spinup`, writing `output` (an [`OutputConfig`](@ref), or one
+[`Output`](@ref) or a list of them without a run directory). The model's state is the initial
+state; `restart` (a file from [`write_restart`](@ref)) replaces it and skips the spin-up.
 
 ```julia
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes = :parameterized)
 model = BESSIModel(Grid(forcing); forcing, params = Params())
 sim = Simulation(model; years = 1940:2026, spinup = CycledSpinup(1940:1969; cycles = 5),
-    outputs = [Output("output/monthly.nc"; variables = :monthly, frequency = :monthly)])
+    output = OutputConfig(dir = "output/gris", restart_every = 10,
+        outputs = [Output("monthly.nc"; variables = :monthly, frequency = :monthly)]))
 run!(sim)
 ```
 """
 function Simulation(model::AbstractSnowModel; years = nothing, spinup::AbstractSpinup = NoSpinup(),
-        outputs = Output[], name::AbstractString = "chion", verbose::Bool = true)
+        output = OutputConfig(), restart::Union{Nothing, AbstractString} = nothing,
+        name::AbstractString = "chion", verbose::Bool = true)
     source = model.forcing.source
     run_years = years === nothing ? forcing_years(source) : collect(Int, years)
     isempty(run_years) && throw(ArgumentError("`years` is empty."))
     missing_years = setdiff(run_years, forcing_years(source))
     isempty(missing_years) || throw(ArgumentError("The forcing has no data for $(join(sort(missing_years), ", "))."))
     _validate_spinup(spinup, source)
-    output_list = outputs isa Output ? [outputs] : collect(Output, outputs)
-    paths = [o.path for o in output_list]
-    allunique(paths) || throw(ArgumentError("Two outputs write to the same file."))
+    config = _output_config(output)
+    restart === nothing || _read_restart!(model, restart, run_years)
     update_forcing!(model, first(run_years))
     clock = Clock(1, 1, 0, first(model.forcing.data.time_values))
-    io = IOState(OutputRecorder[], false, false, 0.0)
-    return Simulation(model, clock, run_years, spinup, output_list, io, String(name), verbose)
+    io = IOState(OutputRecorder[], restart !== nothing, false, 0.0)
+    return Simulation(model, clock, run_years, spinup, config, io, String(name), verbose)
 end
 
 """Whether all forcing years of `sim` have been run."""
@@ -189,7 +191,7 @@ function to_backend(sim::Simulation, backend)
     sim.clock.iteration == 0 && !sim.io.spun_up ||
         throw(ArgumentError("Move a simulation to another backend before it starts (or move its model)."))
     return Simulation(to_backend(sim.model, backend); years = sim.years, spinup = sim.spinup,
-        outputs = sim.outputs, name = sim.name, verbose = sim.verbose)
+        output = sim.output, name = sim.name, verbose = sim.verbose)
 end
 
 _log(sim::Simulation, message) = sim.verbose && (println(stdout, "[", sim.name, "] ", message); flush(stdout))
@@ -206,6 +208,7 @@ Run the spin-up of `sim` (once; `run!` and `time_step!` call it before the first
 function spin_up!(sim::Simulation)
     sim.io.spun_up && return sim
     _log(sim, "spin-up: $(describe(sim.spinup))")
+    _log_line(sim, "spin-up: $(describe(sim.spinup))")
     _spin_up!(sim.model, sim.spinup, sim)
     sim.io.spun_up = true
     update_forcing!(sim.model, sim.years[min(sim.clock.year_index, length(sim.years))])
@@ -243,12 +246,14 @@ end
 # ---------------------------------------------------------------------------
 
 function _open_outputs!(sim::Simulation)
-    (isempty(sim.outputs) || !isempty(sim.io.recorders)) && return nothing
+    outputs = sim.output.outputs
+    (isempty(outputs) || !isempty(sim.io.recorders)) && return nothing
     model = sim.model
     area = forcing_area(model.forcing.source)
     metadata = _output_metadata(sim)
     try
-        for spec in sim.outputs
+        for spec in outputs
+            mkpath(dirname(spec.path))
             push!(sim.io.recorders, OutputRecorder(spec, model, model.state, model.grid, area, metadata))
         end
     catch
@@ -352,6 +357,11 @@ function _block_end(recorders, every_step::Bool, closes_at, k::Int, last_step::I
 end
 
 function _start!(sim::Simulation)
+    if _has_dir(sim.output) && sim.clock.iteration == 0 && !sim.io.spun_up
+        mkpath(sim.output.dir)
+        _write_metadata(sim)
+        _log_line(sim, "run \"$(sim.name)\" of a $(nameof(typeof(sim.model))), years $(first(sim.years))–$(last(sim.years))")
+    end
     spin_up!(sim)
     sim.io.closed && throw(ArgumentError("The simulation has finished; build a new one to run on."))
     _open_outputs!(sim)
@@ -394,9 +404,12 @@ function run!(sim::Simulation; years::Union{Nothing, Integer} = nothing)
     try
         for _ in 1:nyears
             year = sim.years[sim.clock.year_index]
+            t_year = time()
             update_forcing!(sim.model, year)
             _advance!(sim, forcing_steps(sim.model))
             _log(sim, "year $year done ($(sim.clock.year_index - 1) of $(length(sim.years)))")
+            _log_year(sim, year, time() - t_year)
+            _write_scheduled_restart(sim)
             GC.gc(false)
         end
         status = :complete
@@ -414,7 +427,9 @@ function Base.show(io::IO, ::MIME"text/plain", sim::Simulation)
     println(io, "  years:   ", first(sim.years), "–", last(sim.years), " (", length(sim.years), " runs)",
         finished(sim) ? ", finished" : ", next: $(sim.years[sim.clock.year_index]) step $(sim.clock.step)")
     println(io, "  spin-up: ", describe(sim.spinup), sim.io.spun_up ? " (done)" : "")
-    print(io, "  outputs: ", isempty(sim.outputs) ? "none" : join((o.path for o in sim.outputs), ", "))
+    _has_dir(sim.output) && println(io, "  run directory: ", sim.output.dir)
+    outputs = sim.output.outputs
+    print(io, "  outputs: ", isempty(outputs) ? "none" : join((basename(o.path) for o in outputs), ", "))
     return nothing
 end
 

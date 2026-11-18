@@ -18,7 +18,7 @@ const SOLAR_CONSTANT = 1361.0
 end
 
 """
-    clear_sky_transmissivity(c, height, toa)
+    clear_sky_transmissivity(params, height, toa)
 
 Daily shortwave transmissivity of a clear sky (Konzelmann et al., 1994) at the
 surface height `height` (m) and daily-mean top-of-atmosphere shortwave `toa`
@@ -27,7 +27,8 @@ the reference of the cloud proxy's cloud fraction. A height that is not finite
 (no surface height) or negative counts as sea level; `toa` is floored at
 $(LONGWAVE_CLOUD_PROXY_MIN_TOA) W m⁻², as in the proxy.
 """
-@inline function clear_sky_transmissivity(c::Params, height, toa)
+@inline function clear_sky_transmissivity(params::Params, height, toa)
+    c = params
     height_km = ifelse(isfinite(height), max(height, zero(height)), zero(height)) / oftype(height, 1000)
     safe_toa = max(toa, oftype(toa, LONGWAVE_CLOUD_PROXY_MIN_TOA))
     transmissivity = c.longwave_scheme.clear_sky_transmissivity_sea_level + c.longwave_scheme.clear_sky_transmissivity_per_km * height_km +

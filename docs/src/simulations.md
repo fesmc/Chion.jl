@@ -2,30 +2,59 @@
 CurrentModule = Chion
 ```
 
-# Running Experiments
+# Running Simulations
 
-An `Experiment` combines a model, its forcing, a spin-up and a list of outputs. `run!` spins the
-model up, runs every forcing year and writes each output at its own frequency. The forcing is
-read one year at a time, so long multi-file records fit in memory, also on a GPU node.
+A `Simulation` wraps a model with its forcing years, a spin-up and its output. `run!`
+spins the model up, runs every forcing year and writes each output at its own frequency. The
+model holds its forcing source and reads it one year at a time, so long multi-file records fit
+in memory, also on a GPU node.
 
 ```julia
 using Chion
+using CUDA                        # only for the GPU
 
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes=:parameterized)
-model = BESSIModel(forcing)
+model = BESSIModel(forcing; backend=CUDABackend())    # CPU() (threads) by default
 
-experiment = Experiment(model, forcing;
+sim = Simulation(model;
     years=1940:2026,
     spinup=CycledSpinup(1940:1969; cycles=5),
-    outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
-             Output("budget_yearly.csv"; variables=:budget, frequency=:yearly, aggregate=:area_sum)],
-    backend=:gpu)                 # needs `using CUDA`; :threads for the CPU
-result = run!(experiment)         # an ExperimentResult; result.state is the final state
+    output=OutputConfig(dir="output/greenland", restart_every=10,
+        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
+                 Output("budget_yearly.csv"; variables=:budget, frequency=:yearly, aggregate=:area_sum)]))
+run!(sim)                         # returns sim; the final state is sim.model.state
+smbstats(sim)                     # column means (kg m⁻²) and totals (Gt) of the mass fluxes
 ```
 
-`backend=:gpu` needs `using CUDA` first (configuration files run with
-`run_config` load it themselves). `Experiment(...; state=...)` starts from a
-given state instead of `initial_state(model)`.
+`BESSIModel(forcing; NF, layering, params, backend, state)` builds the [`Grid`](@ref) on the
+forcing columns; `BESSIModel(grid; forcing, …)` takes a grid built separately (see
+[Models And Coupling](models.md)). A GPU backend needs `using CUDA` first (configuration files
+run with `run_config` load it themselves); `to_backend(model, CUDABackend())` moves an existing
+model. `BESSIModel(...; state=...)` starts from a given host state (e.g. from `cpu_state`)
+instead of the initial state of the parameters.
+
+## Run directory and restarts
+
+`output` is an [`OutputConfig`](@ref), or one `Output` or a list of them (written at their
+paths, without a run directory). With `OutputConfig(; dir)`, the relative paths of the outputs
+are taken relative to the run directory `dir`, and the simulation also writes there
+
+- `log.txt`: one line per forcing year (column-mean SMB, melt, runoff; wall time),
+- `chion_run.toml`: the grid, the parameters and the run settings in the format of
+  [`run_config`](@ref),
+- `restart_<year>.jls`: the state every `restart_every` years and at the end of the run
+  (`restart_every = 0`, the default: only at the end).
+
+`Simulation(model; years, restart=path)` continues from a restart file and skips the spin-up;
+`write_restart(sim, path)` writes one at the start of any forcing year. `sim.output.outputs` lists
+the outputs of a simulation.
+
+## Stepping
+
+`run!` is resumable: `run!(sim; years=1)` runs the next forcing year only, and a further
+`run!(sim)` continues where it stopped. `time_step!(sim)` takes one forcing step,
+`finished(sim)` tells whether all years are done, and `sim.clock` holds the position (year
+index, step, iteration count, time). The outputs are closed when the last year is done.
 
 ## Forcing
 
@@ -45,9 +74,9 @@ Keywords of the file constructors:
   specific humidity becomes relative humidity over ice), `:generic` for any other file, `:auto`
   to detect.
 - `surface_fluxes` (default `:prescribed`): `:prescribed` uses the surface energy fluxes of the file (MAR: net shortwave
-  from `SWD − SWU`, `LWD`, `SHF`, `LHF` and the albedo `AL2`; use `albedo=:prescribed` in the
-  model), `:parameterized` leaves them to Chion, `:albedo` keeps only the albedo (Chion computes
-  the energy fluxes with it; use `albedo=:prescribed`), `:as_loaded` keeps whatever the loader
+  from `SWD − SWU`, `LWD`, `SHF`, `LHF` and the albedo `AL2`; use
+  `Params(albedo_scheme = PrescribedAlbedo())` in the model), `:parameterized` leaves them to Chion, `:albedo` keeps only the albedo (Chion computes
+  the energy fluxes with it; use `PrescribedAlbedo()`), `:as_loaded` keeps whatever the loader
   provides. With the default `:prescribed` and a default `BESSIModel` (dynamic albedo), the MAR
   fluxes are combined with Chion's own albedo; pass `surface_fluxes=:parameterized` for a fully
   parameterised energy balance.
@@ -61,8 +90,8 @@ Keywords of the file constructors:
 
 `forcing_grid(forcing)`, `forcing_years(forcing)`, `forcing_area(forcing)` and
 `load_forcing_year(forcing, year)` give access to the data, and `slice_forcing(f, r)` restricts
-a `SnowpackForcing` to the time indices `r`; `BESSIModel(forcing; kwargs...)`
-builds a model on the forcing columns. `relabel_year(snowpack_forcing, year)` moves the time
+a `SnowpackForcing` to the time indices `r`; `Grid(forcing)` and `BESSIModel(forcing; kwargs...)`
+build a grid and a model on the forcing columns. `relabel_year(snowpack_forcing, year)` moves the time
 stamps of one year's forcing to another year (the solar geometry stays), for running the weather
 of base years as future years, e.g. for a delta-method projection.
 
@@ -73,9 +102,11 @@ of base years as future years, e.g. for a delta-method projection.
   file of a single-file climatology (e.g. a day-by-day mean year), or the first year of a
   per-year source. In a configuration file, `[spinup]` with `type = "climatology"` and
   `path` takes the other settings (format, surface fluxes, …) from `[forcing]`.
-- `NoSpinup()` starts from the initial state, or from `Experiment(...; state=...)`.
+- `NoSpinup()` (the default) starts from the model's state: the initial state, or the `state` given to
+  the model constructor (e.g. a restart).
 
-`years` of the `Experiment` may repeat years, e.g. `repeat(1940:1969, 5)`, to record every cycle
+`spin_up!(sim)` runs the spin-up alone; `run!` and `time_step!` call it before the first step.
+`years` of the `Simulation` may repeat years, e.g. `repeat(1940:1969, 5)`, to record every cycle
 of an equilibrium run.
 
 ## Outputs
@@ -98,9 +129,11 @@ Output(path; variables=:default, frequency=:monthly, aggregate=:columns, kind=:m
 - `kind`: state variables as period means (`:mean`) or end-of-period values (`:snapshot`).
 - `period = (1980, 2017)` writes only those years.
 - `columns` records only a range of columns (e.g. one member of an ensemble run side by side),
-  with `grid` their `SnowpackGrid`.
+  with `grid` their `Grid`.
 
-NetCDF files from an `Experiment` use a `time` dimension with `time_bnds`.
+NetCDF files from a `Simulation` use a `time` dimension with `time_bnds`. The full model state
+at every forcing step is `Output(path; variables=[:mass, :density, :temperature, …],
+frequency=:step, kind=:snapshot)`.
 `available_output_variables(model)` lists the variables a model can write. The table below is
 for `BESSIModel`; `PDDModel` and `ITMModel` write the forcing fluxes and their own state and
 budget fields (`snowpack_swe`, `smb_ice`, `runoff`, … and `H_snow`, `melt`, `refreezing`, …).
@@ -130,18 +163,20 @@ check daily against monthly and yearly totals.
 
 ## Configuration files
 
-The same experiment as TOML, run with `julia --project -m Chion file.toml` (Julia ≥ 1.11) or
+The same simulation as TOML, run with `julia --project -m Chion file.toml` (Julia ≥ 1.11) or
 `run_config("file.toml")`. `--backend=gpu` and `--output-dir=DIR` override the file, and
 `--set section.key=value` overrides any entry (e.g. `--set model.alpha_dry=0.84`; in Julia
 `run_config(path; set=["model.alpha_dry" => 0.84])`). `run_config(path; dry_run=true)` returns
-the `Experiment` without running it. The file is copied next to the results, with the
-overrides applied.
+the `Simulation` without running it. `output_dir` is the run directory of the
+[`OutputConfig`](@ref): the outputs, the log, the restarts and a copy of the file (with the
+overrides applied) are written there.
 
 ```toml
 name = "greenland_parameterized"
 backend = "gpu"
 years = [1940, 2026]          # first and last year; `repeat = 5` runs them five times
-output_dir = "output/greenland"
+output_dir = "output/greenland"   # the run directory
+restart_every = 10            # a restart file every 10 years (0: only at the end)
 
 [forcing]
 path = "/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"
@@ -150,8 +185,18 @@ surface_fluxes = "parameterized"
 [forcing.files]
 2026 = "/data/MAR/MARv3.14.3-10km-daily-ERA5-2026_repaired.nc"
 
-[model]                       # BESSIModel keywords
+[grid]                        # Layering fields; omitted ones keep their defaults
+Ntot = 15
+
+[model]                       # model type, named setup, number type and Params fields
 type = "bessi"
+setup = "GrISv1"              # or "AISv1", the Antarctic calibration
+number_type = "Float64"
+albedo_scheme = "dynamic"     # a scheme by name, with its default coefficients
+
+[model.diurnal_cycle]         # or a scheme as a table: its name under `type`, and coefficients
+type = "substeps"
+max_substeps = 8
 
 [spinup]
 type = "cycled"               # none, cycled or climatology
@@ -174,28 +219,39 @@ Further keys:
 
 | Section | Keys |
 |---|---|
-| top level | `name`, `backend`, `output_dir`, `years` (`[first, last]`, `"1940:2026"` or one year), `repeat` |
+| top level | `name`, `backend` (`threads` or `gpu`), `output_dir`, `restart_every`, `years` (`[first, last]`, `"1940:2026"` or one year), `repeat` |
 | `[forcing]` | `path`, `format`, `surface_fluxes`, `files`, `mask = ["MSK", 50]`, `wind`, `area`, `area_file`, `variables = {air_temperature = "t2m", …}`, `options = {…}` (other `Forcing` keywords) |
-| `[model]` | `type = "bessi"`, `"pdd"` or `"itm"`; any model keyword, e.g. `albedo = "aging"`, `number_type = "Float32"`, `near_surface_layer_max_thicknesses_m = [0.02, 0.05, 0.1, 0.3]` |
+| `[grid]` | any [`Layering`](@ref) field, e.g. `Ntot = 20`, `near_surface_layer_max_thicknesses_m = [0.02, 0.05, 0.1, 0.3]`, `ice_substrate_layers = 0` |
+| `[model]` | `type = "bessi"`, `"pdd"` or `"itm"`; `setup = "GrISv1"` or `"AISv1"` (BESSI only); `number_type = "Float32"`; any field of [`Params`](@ref), [`PDDParams`](@ref) or [`ITMParams`](@ref), e.g. `alpha_dry = 0.84`, `albedo_scheme = "aging"`, `[model.albedo_scheme] type = "aging", cold_timescale_days = 15`, `method = "pism"` |
 | `[spinup]` | `type`, `years`, `cycles`; for `climatology` a `path` and an optional `[spinup.forcing]` table that overrides `[forcing]` |
 | `[[output]]` | `file`, `variables`, `frequency`, `aggregate`, `kind`, `period = [1980, 2017]`, `depths = {start = 0, stop = 20, step = 0.5}`, `snow_cover_threshold` |
+
+The scheme names are listed on [Parameters](parameters.md#Schemes). A `--set` override reaches
+the coefficients of a scheme table, e.g. `--set model.diurnal_cycle.max_substeps=4`.
 
 ## Reference
 
 ```@docs
-Forcing
+Simulation
+Clock
+run!
+time_step!
+spin_up!
+finished
+smbstats
+NoSpinup
+CycledSpinup
+ClimatologySpinup
+OutputConfig
 Output
-Experiment
-ExperimentResult
+write_restart
 available_output_variables
+run_config
+Forcing
 forcing_grid
 forcing_years
 forcing_area
 load_forcing_year
 slice_forcing
-CycledSpinup
-ClimatologySpinup
-NoSpinup
 relabel_year
-run_config
 ```

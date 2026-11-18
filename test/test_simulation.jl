@@ -27,7 +27,7 @@ _layering8() = Layering(Ntot = 8)
     model = BESSIModel(forcing; layering = _layering8())
     dir = mktempdir()
     out(name; kw...) = Output(joinpath(dir, name); kw...)
-    sim = Simulation(model; spinup = CycledSpinup(2001:2001; cycles = 1), verbose = false, outputs = [
+    sim = Simulation(model; spinup = CycledSpinup(2001:2001; cycles = 1), verbose = false, output = [
         out("daily.csv"; variables = :budget, frequency = :daily, aggregate = :area_sum),
         out("monthly.csv"; variables = :budget, frequency = :monthly, aggregate = :area_sum),
         out("yearly.csv"; variables = [:budget; :swe; :albedo], frequency = :yearly, aggregate = :area_sum),
@@ -117,7 +117,7 @@ end
     model = BESSIModel(forcing)
     @test_throws ArgumentError Simulation(model; years = [2001, 2003])           # no forcing for 2003
     @test_throws ArgumentError Simulation(model; spinup = CycledSpinup([1999]))
-    @test_throws ArgumentError Simulation(model; outputs = [Output("a.nc"), Output("a.nc")])
+    @test_throws ArgumentError Simulation(model; output = [Output("a.nc"), Output("a.nc")])
     @test_throws ArgumentError BESSIModel(Grid(3); forcing)                     # column count
     @test_throws ArgumentError BESSIModel(Grid(4; NF = Float32); forcing, params = Params())   # number type
     @test_throws ArgumentError Params(no_such_field = 1.0)
@@ -136,6 +136,50 @@ end
     run!(Simulation(model; verbose = false))
     continued = BESSIModel(forcing; state = cpu_state(model))
     @test continued.state.mass == model.state.mass
+end
+
+@testset "Run directory, metadata and restarts" begin
+    snowpack_forcing, grid = _experiment_forcing()
+    forcing = Forcing(snowpack_forcing; grid, area = fill(10.0, 4))
+    params = Params(albedo_scheme = AgingAlbedo(cold_timescale_days = 12), alpha_dry = 0.83)
+    dir = joinpath(mktempdir(), "run")
+    model = BESSIModel(forcing; layering = _layering8(), params)
+    sim = Simulation(model; name = "dirtest", verbose = false, output = OutputConfig(; dir, restart_every = 1,
+        outputs = [Output("budget.csv"; variables = :budget, frequency = :yearly, aggregate = :area_sum)]))
+    @test sim.output.outputs[1].path == joinpath(dir, "budget.csv")
+    run!(sim)
+    @test isfile(joinpath(dir, "budget.csv"))
+    @test isfile(joinpath(dir, "restart_2001.jls")) && isfile(joinpath(dir, "restart_2002.jls"))
+    log = read(joinpath(dir, "log.txt"), String)
+    @test occursin("year 2001 done", log) && occursin("year 2002 done", log) && occursin("restart written", log)
+    # The metadata is a run_config file: the same grid and parameters back.
+    meta = Chion.TOML.parsefile(joinpath(dir, "chion_run.toml"))
+    @test meta["name"] == "dirtest" && meta["years"] == [2001, 2002] && meta["columns"] == 4
+    M, back = Chion._config_params(meta["model"])
+    @test M === BESSIModel && back == params
+    @test Chion._config_layering(meta["grid"]) == model.grid.layering
+
+    # A restart after the first year continues to the state of the whole run.
+    continued = BESSIModel(forcing; layering = _layering8(), params)
+    sim2 = Simulation(continued; years = [2002], restart = joinpath(dir, "restart_2001.jls"), verbose = false)
+    @test sim2.io.spun_up
+    run!(sim2)
+    @test continued.state.mass == model.state.mass && continued.state.runoff == model.state.runoff
+    @test_throws ArgumentError Simulation(PDDModel(forcing); restart = joinpath(dir, "restart_2001.jls"))
+end
+
+@testset "Forcing edited in place and backend names" begin
+    snowpack_forcing, grid = _experiment_forcing(2001:2001)
+    edited = BESSIModel(Forcing(snowpack_forcing; grid); backend = :threads)
+    replaced = BESSIModel(Forcing(deepcopy(snowpack_forcing); grid))
+    data = edited.forcing.data
+    data.air_temperature .+= 1.5                           # e.g. a coupled model's warming
+    sync_forcing!(edited)
+    @test edited.forcing.fields.air_temperature == data.air_temperature
+    set_input!(replaced, :air_temperature, replaced.forcing.data.air_temperature .+ 1.5)
+    integrate!(edited, 1:365); integrate!(replaced, 1:365)
+    @test edited.state.mass == replaced.state.mass
+    @test_throws ArgumentError BESSIModel(Grid(4); forcing = snowpack_forcing, backend = :tpu)
 end
 
 @testset "Active columns" begin
@@ -281,7 +325,7 @@ end
         variables = [:surface_smb, :precipitation, :runoff]
         model = M(grid; forcing = Forcing(forcing; grid, area = fill(100.0, 4)))
         run!(Simulation(model; verbose = false,
-            outputs = Output(joinpath(dir, "budget.csv"); variables, frequency = :yearly, aggregate = :area_sum)))
+            output = Output(joinpath(dir, "budget.csv"); variables, frequency = :yearly, aggregate = :area_sum)))
         _, rows = _csv(joinpath(dir, "budget.csv"))
         smb, precip, runoff = rows[1]
         @test precip > 0 && runoff >= 0

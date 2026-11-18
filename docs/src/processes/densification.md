@@ -5,8 +5,9 @@ CurrentModule = Chion
 # Densification
 
 `go_densification!` updates layer density. The low-density scheme is chosen
-with the `BESSIModel` keyword `densification` (`:bessi`, the default, or
-`:htessel`); firn above 550 kg m⁻³ always follows Barnola et al. (1991).
+with the `densification_scheme` slot of [`Params`](@ref)
+([`BESSIDensification`](@ref)`()`, the default, or
+[`HTESSELDensification`](@ref)`()`); firn above 550 kg m⁻³ always follows Barnola et al. (1991).
 
 ## Common Update Rule
 
@@ -33,7 +34,7 @@ with `g = 9.81 m s^-2`.
 
 ## Low-Density Branch (`rho < 550 kg m^-3`)
 
-### BESSI Option (`:bessi`)
+### BESSI Option (`BESSIDensification`)
 
 The BESSI-style tendency is
 
@@ -49,7 +50,7 @@ P_{\mathrm{rain}}`` is the accumulation rate in kg m⁻² s⁻¹ of the current 
 and ``T`` the layer temperature. Snow below 550 kg m⁻³ therefore densifies only
 in steps with precipitation.
 
-### HTESSEL Option (`:htessel`)
+### HTESSEL Option (`HTESSELDensification`)
 
 The HTESSEL-style tendency is
 

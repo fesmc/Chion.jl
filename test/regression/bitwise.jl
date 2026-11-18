@@ -149,7 +149,7 @@ function run_gris(label, surface_fluxes, NF, outdir)
         Output(joinpath(outdir, "$(label)_budget.csv"); variables = :budget, frequency = :yearly, aggregate = :area_sum),
         Output(joinpath(outdir, "$(label)_firn.nc"); variables = :firn, frequency = Month(12), kind = :snapshot),
     ]
-    run!(Simulation(model; years = 1980:1981, outputs, name = label, verbose = false))
+    run!(Simulation(model; years = 1980:1981, output = outputs, name = label, verbose = false))
     return state_arrays(model)
 end
 

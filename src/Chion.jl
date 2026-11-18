@@ -8,6 +8,7 @@ using KernelAbstractions
 using KernelAbstractions: CPU
 using DocStringExtensions: TYPEDEF, TYPEDFIELDS, TYPEDSIGNATURES
 using SpecialFunctions: erfc
+using TOML
 
 # ---------------------------------------------------------------------------
 # Numerics, schemes, parameters and grid
@@ -52,6 +53,7 @@ include("model.jl")
 include("diagnostics.jl")
 include("io.jl")
 include("outputs.jl")
+include("run_output.jl")
 include("simulation.jl")
 include("config.jl")
 
@@ -77,7 +79,7 @@ export SimplePDD, PISMPDD
 # Models
 export BESSIModel, PDDModel, ITMModel
 export BESSIState, PDDState, ITMState, initial_state
-export CPU, to_backend, cpu_state, set_state!, set_active_mask!, set_input!, update_forcing!
+export CPU, to_backend, cpu_state, set_state!, set_active_mask!, set_input!, sync_forcing!, update_forcing!
 export integrate!, update_diagnostics!, column_enthalpy, column_profile
 
 # Forcing
@@ -91,7 +93,7 @@ export temperature_variability_sigma, red_noise_monthly, update_air_pressure!
 # Simulation and output
 export Simulation, Clock, run!, time_step!, spin_up!, finished, yearly_step!, smbstats
 export NoSpinup, CycledSpinup, ClimatologySpinup
-export Output, available_output_variables, run_config
+export Output, OutputConfig, available_output_variables, run_config, write_restart
 export Hour, Day, Week, Month, Year     # output frequencies, from Dates
 
 end

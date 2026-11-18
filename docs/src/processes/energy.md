@@ -57,11 +57,14 @@ so the surface forcing enters only the top row of the implicit tridiagonal
 system. A thin top layer therefore responds quickly without an artificial
 surface heat capacity.
 
-`BESSIModel` uses `turbulent_flux_scheme=:semix` by default for sensible and
-latent heat. Set `turbulent_flux_scheme=:bessi` to recover the BESSI bulk
-formulation. This choice is independent of `seb_scheme`, which defaults to
-`:semix` for consistent graybody longwave exchange, including incident absorption.
-Set `seb_scheme=:bessi` for the legacy longwave treatment. Prescribed
+`Params` uses `turbulent_flux_scheme = SemixTurbulentFluxes()` by default for
+sensible and latent heat. Set `turbulent_flux_scheme = BESSITurbulentFluxes()`
+to recover the BESSI bulk formulation. This choice is independent of
+`surface_energy_balance_scheme`, which defaults to
+`SemixSurfaceEnergyBalance()` for consistent graybody longwave exchange,
+including incident absorption. Set
+`surface_energy_balance_scheme = BESSISurfaceEnergyBalance()` for the legacy
+longwave treatment. Prescribed
 `q_sh` or `q_lh` forcing always takes precedence over either parameterization.
 
 ### Shortwave Radiation
@@ -77,7 +80,7 @@ where ``\alpha`` is the already diagnosed surface albedo stored in
 
 ### Longwave Radiation
 
-If `q_lw_down` is not prescribed, the default `longwave_scheme=:cloud_proxy`
+If `q_lw_down` is not prescribed, the default `longwave_scheme = CloudProxyLongwave()`
 derives it once per daily forcing step as
 ``q_{\mathrm{lw,down}} = \epsilon_a\,\sigma T_{\mathrm{air}}^4``. The effective
 emissivity weights a clear-sky and an overcast emissivity by a cloud fraction
@@ -89,12 +92,12 @@ emissivity weights a clear-sky and an overcast emissivity by a cloud fraction
 \epsilon_{cs/oc} = \epsilon_{cs/oc,0} + \epsilon_{cs/oc,T}\,(T_{\mathrm{air}} - T_0),
 ```
 
-and is limited to ``0.4 \le \epsilon_a \le 1`` (`lw_emissivity_max`). The cloud
+and is limited to ``0.4 \le \epsilon_a \le 1`` (`emissivity_max`). The cloud
 fraction is diagnosed from the daily shortwave transmissivity
 ``\tau = Q_{\mathrm{sw,down}}/Q_{\mathrm{sw,TOA}}`` by inverting the cloud
 transmission ``\tau/\tau_{cs} = 1 - a\,n^p e^{-b z}``, with the clear-sky
 transmissivity ``\tau_{cs} = \tau_0 + \tau_z z + \tau_S \ln(Q_{\mathrm{sw,TOA}}/300\,\mathrm{W\,m^{-2}})``
-(at most one; `clear_sky_transmissivity(c, z, Q_sw_TOA)`). All coefficients were fitted to daily MAR over the Greenland ice
+(at most one; `clear_sky_transmissivity(params, z, Q_sw_TOA)`). All coefficients were fitted to daily MAR over the Greenland ice
 sheet (1980–1989) with `examples/research/fit_cloud_proxy_longwave.jl`:
 ``\tau_0 = 0.718``, ``\tau_z = 0.0298\,\mathrm{km^{-1}}``, ``\tau_S = 0.0569``,
 ``a = 0.447``, ``p = 2.75``, ``b = 0.225\,\mathrm{km^{-1}}``,
@@ -105,7 +108,7 @@ computed from latitude and solar declination with a solar constant of
 1361 W m⁻² and the eccentricity factor ``1 + 0.033\cos(2\pi d/365)`` for day of
 year ``d``. In the polar night (``Q_{\mathrm{sw,TOA}} \le 50`` W m⁻²), for
 sub-daily forcing whose shortwave is not a daily mean (`dt_days < 0.75`), and
-for forcing without latitude, ``n`` is the constant `lw_night_cloud_fraction`
+for forcing without latitude, ``n`` is the constant `night_cloud_fraction`
 (0.85). Without a surface height the sea-level coefficients are used. No
 forcing beyond the standard shortwave is needed.
 
@@ -123,14 +126,15 @@ downwelling longwave of Chion against MAR, 2010–2019 (bias −0.2 W m⁻², RM
 annual mean.*
 
 The longwave is computed once per forcing interval and held fixed across the
-diurnal substeps. The defaults are fitted for Greenland. The Antarctic set used
-for the paper runs (`lw_clear_sky_emissivity=0.7314`,
-`lw_clear_sky_emissivity_temperature_slope=0.003378`,
-`lw_overcast_emissivity=0.9877`, `lw_overcast_emissivity_temperature_slope=0.004171`,
-`lw_cloud_emissivity_exponent=2.0`, `lw_night_cloud_fraction=0.9`) is listed
-as comments in the Antarctic example configurations.
+diurnal substeps. The coefficients above are fields of
+[`CloudProxyLongwave`](@ref). The defaults are fitted for Greenland. The
+Antarctic set used for the paper runs (`clear_sky_emissivity=0.7314`,
+`clear_sky_emissivity_temperature_slope=0.003378`,
+`overcast_emissivity=0.9877`, `overcast_emissivity_temperature_slope=0.004171`,
+`cloud_emissivity_exponent=2.0`, `night_cloud_fraction=0.9`) is part of the
+named setup [`ParamsAISv1`](@ref) (`setup = "AISv1"` in a configuration file).
 
-`longwave_scheme=:graybody` uses the constant ``\epsilon_{\mathrm{air}}`` (`ϵ_air`, 0.8) instead:
+`longwave_scheme = GraybodyLongwave()` uses the constant ``\epsilon_{\mathrm{air}}`` (`ϵ_air`, 0.8) instead:
 
 ```math
 Q_{\mathrm{lw}} =
@@ -162,7 +166,7 @@ where ``q_{\mathrm{lw,down}}`` is the prescribed, cloud-proxy or graybody
 incident longwave and ``\epsilon_{\mathrm{s}}`` is the surface emissivity:
 `ϵ_snow` (0.98) over snow and `eps_ice` (0.98) over bare ice. Only outgoing
 longwave is linearized. The energy diagnostics record the nonlinear flux at the
-resolved surface temperature. `seb_scheme=:bessi` (legacy BESSI) absorbs the
+resolved surface temperature. `BESSISurfaceEnergyBalance()` (legacy BESSI) absorbs the
 incident longwave completely (no ``\epsilon_s`` factor on ``q_{\mathrm{lw,down}}``)
 and uses `ϵ_snow` for emission over snow and bare ice alike.
 
@@ -171,15 +175,16 @@ and uses `ϵ_snow` for emission over snow and bare ice alike.
 If `q_sh` is not prescribed, the default SEMIX scheme follows the
 bulk-aerodynamic formulation of PALADYN (Willeit and Ganopolski, 2016) as used
 in SEMIX (Willeit et al., 2024). The neutral transfer coefficient at the
-reference height ``z = 10`` m is
+reference height ``z = 10`` m (`reference_height`) is
 
 ```math
 C_H^0 = \frac{\kappa^2}{\ln(z/z_{0m})\,\ln(z/z_{0h})},
 ```
 
-with ``\kappa = 0.4``, the momentum roughness `semix_z0m_snow` (``10^{-3}`` m)
-or `semix_z0m_ice` (``10^{-2}`` m) over bare ice, and
-``z_{0h} = z_{0m}/`` `semix_zm_to_zh` (10). Stability enters through the bulk
+with ``\kappa = 0.4`` (`karman`), the momentum roughness `z0m_snow` (``10^{-3}`` m)
+or `z0m_ice` (``10^{-2}`` m) over bare ice, and
+``z_{0h} = z_{0m}/`` `zm_to_zh` (10), all fields of
+[`SemixTurbulentFluxes`](@ref). Stability enters through the bulk
 Richardson number and the aerodynamic resistance,
 
 ```math
@@ -195,7 +200,7 @@ f_{\mathrm{stab}} =
 ```
 
 with ``\tilde u = \max(u, 0.1\,\mathrm{m\,s^{-1}})`` and
-``b`` = `semix_stable_coefficient` (40). Turbulent exchange is therefore
+``b`` = `stable_coefficient` (40). Turbulent exchange is therefore
 suppressed under the stable conditions that prevail over melting and cold
 ice-sheet surfaces. The sensible heat flux is
 
@@ -207,19 +212,19 @@ Q_{\mathrm{sh}} = f_H\,\frac{\rho_{\mathrm{air}}c_{p,\mathrm{air}}}{r_a}
 ```
 
 with ``R_d = 287.05`` J kg⁻¹ K⁻¹ and the exchange factor
-``f_H`` = `semix_sensible_exchange_factor` (3.0, calibrated against MAR over
+``f_H`` = `sensible_exchange_factor` (3.0, calibrated against MAR over
 Greenland; 2.5 for the Antarctic set). ``r_a`` is evaluated at the surface
 temperature of the previous step and held fixed in the implicit solve. Without
 wind or pressure forcing, ``u = 5`` m s⁻¹ and ``p`` follows from the surface
 height with the barometric formula (or 101 325 Pa).
 
-With `turbulent_flux_scheme=:bessi`, the code instead uses
+With `turbulent_flux_scheme = BESSITurbulentFluxes()`, the code instead uses
 
 ```math
 Q_{\mathrm{sh}}= D_{\mathrm{sh}}(T_{\mathrm{air}}-T_{s}),
 ```
 
-with default ``D_{\mathrm{sh}} = 10\,\mathrm{W\,m^{-2}\,K^{-1}}``. In the
+with default ``D_{\mathrm{sh}} = 10\,\mathrm{W\,m^{-2}\,K^{-1}}`` (`D_sh`). In the
 linearized form,
 
 ```math
@@ -274,12 +279,12 @@ q_{\mathrm{air}} = 0.622\,RH\,\frac{e_{\mathrm{sat,i}}(T_{\mathrm{air}})}{p},
 q_s = 0.622\,\frac{e_{\mathrm{sat,i}}(T_s)}{p},
 ```
 
-with ``f_E`` = `semix_latent_exchange_factor` (1.0) and the saturation vapour
+with ``f_E`` = `latent_exchange_factor` (1.0) and the saturation vapour
 pressure over ice
 ``e_{\mathrm{sat,i}}(T) = 611.2\,\mathrm{Pa}\,\exp\!\left(22.46\,\frac{T-T_0}{T-T_0+272.62\,\mathrm{K}}\right)``.
 The latent heat follows the surface phase: ``L = L_v + L_m`` (sublimation)
 for a subfreezing surface and ``L = L_v`` (evaporation) at the melting point.
-With `turbulent_flux_scheme=:bessi`, Chion instead uses the vapor-pressure
+With `BESSITurbulentFluxes()`, Chion instead uses the vapor-pressure
 parameterization of Rolstad and Oerlemans (2005) and Zolles and Born (2021)
 
 ```math
@@ -343,7 +348,7 @@ elapsed days gives a mean flux: `shortwave_down_sum`, `shortwave_net_sum`,
 (only in steps without snowfall) and `latent_heat_flux_sum`. They are
 diagnostics only and do not feed back on the solution. The `:monthly` output
 group writes them as monthly means in W m⁻² (see
-[Running Experiments](../experiments.md)).
+[Running Simulations](../simulations.md)).
 
 ## Diffusion
 
@@ -420,13 +425,13 @@ so the off-diagonal coefficients are proportional to ``\beta_i G_{i\pm1/2}``.
 
 ### Ice Substrate
 
-With `ice_substrate_layers > 0` (default 5), the solve continues below the
+With `Layering(ice_substrate_layers > 0)` (default 5), the solve continues below the
 snow/firn layers into a fixed-geometry layer of glacier ice. Substrate layer
 ``k`` has density ``\rho_i`` and thickness
 ``\Delta z_k = 2^{k-1}\,\Delta z_{\mathrm{top}}`` with
 `ice_substrate_top_thickness_m` ``= \Delta z_{\mathrm{top}}`` (default 0.05 m,
 1.55 m in total for five layers). Its temperatures are stored in
-`state.ice_temperature` and are solved in the same tridiagonal system as the
+`model.state.ice_temperature` and are solved in the same tridiagonal system as the
 snow, with the usual interface conductance between the deepest snow layer and
 the top of the substrate. The base of the substrate is insulated.
 
