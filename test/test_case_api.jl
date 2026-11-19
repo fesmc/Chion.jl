@@ -925,6 +925,52 @@ end
         end
     end
 
+    @testset "forcing cache" begin
+        mktempdir() do dir
+            pattern = joinpath(dir, "forcing_{year}.nc")
+            source = _write_sample_forcing_file(replace(pattern, "{year}" => "2001"))
+            cache = joinpath(dir, "cache")
+            direct = Chion._load_year(Forcing(pattern; format=:generic), 2001)
+            cached_forcing = Forcing(pattern; format=:generic, cache)
+            first_load = Chion._load_year(cached_forcing, 2001)
+            files = readdir(cache)
+            @test length(files) == 1 && endswith(files[1], ".jld2") && startswith(files[1], "forcing_2001_")
+            # The cached year is the loaded year, bit for bit, also through a new Forcing.
+            again = Chion._load_year(Forcing(pattern; format=:generic, cache), 2001)
+            for loaded in (first_load, again)
+                @test loaded.forcing.air_temperature == direct.forcing.air_temperature
+                @test loaded.forcing.q_lw_down == direct.forcing.q_lw_down
+                @test loaded.forcing.time_values == direct.forcing.time_values
+                @test loaded.grid.js == direct.grid.js && loaded.grid.is == direct.grid.is
+                @test typeof(loaded.forcing) == typeof(direct.forcing)
+            end
+            # Other loader settings get their own cache file.
+            masked = Chion._load_year(Forcing(pattern; format=:generic, mask=("MSK", 50.0), cache), 2001)
+            @test size(masked.forcing.air_temperature) == (2, 2)
+            @test length(readdir(cache)) == 2
+            # A changed source file is loaded again, not read from the stale cache.
+            NCDataset(source, "a") do ds
+                ds["TT"][1, :, :] .= -5.0
+            end
+            touch(source)
+            changed = Chion._load_year(Forcing(pattern; format=:generic, cache), 2001)
+            @test changed.forcing.air_temperature[:, 1] ≈ fill(268.15, 4)
+            # An unreadable cache file is replaced by a fresh load.
+            for f in readdir(cache; join=true)
+                write(f, "not a cache file")
+            end
+            @test_logs (:warn,) match_mode=:any Chion._load_year(Forcing(pattern; format=:generic, cache), 2001)
+            # Runs read through the cache like through the files.
+            model = BESSIModel(Grid(cached_forcing; layering=Layering(Ntot=4)); forcing=cached_forcing,
+                params=Params(diurnal_cycle=NoDiurnalCycle()))
+            reference = BESSIModel(Grid(direct.grid; layering=Layering(Ntot=4));
+                forcing=Forcing(pattern; format=:generic), params=Params(diurnal_cycle=NoDiurnalCycle()))
+            run!(Simulation(model; verbose=false))
+            run!(Simulation(reference; verbose=false))
+            @test model.state.mass == reference.state.mass && model.state.temperature == reference.state.temperature
+        end
+    end
+
     @testset "forcing-file loader accepts singleton-layer 4D variables" begin
         mktempdir() do dir
             forcing_path = _write_sample_forcing_file_4d(joinpath(dir, "forcing_sample_4d.nc"))

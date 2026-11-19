@@ -90,6 +90,13 @@ Keywords of the file constructors:
   `wind` is a constant or a variable name; `area` the column areas (km²) as a vector or variable
   name, and `area_file` a separate file that holds it; `years` restricts the years used;
   `transform = (forcing, year) -> forcing` modifies every year (e.g. a temperature change).
+- `cache = dir` keeps every decoded year in `dir` as a JLD2 file. A daily MAR year is a compressed
+  NetCDF file of 2.3 GB; decompressing it and selecting the ice columns takes about 3 s, longer
+  than a GPU needs to step the year. The first run writes the cache, later runs (and the later
+  cycles of a spin-up) read a year in about 0.1 s, bitwise identical. A cache file is tied to its
+  source file (path, size, modification time), the loader settings and the version of Chion's
+  loaders, and is rewritten when one of them changes; `transform` is applied after the cache.
+  Runs may share a directory (about 0.45 GB per Greenland year at 10 km).
 
 `forcing_grid(forcing)`, `forcing_years(forcing)`, `forcing_area(forcing)` and
 `load_forcing_year(forcing, year)` give access to the data, and `slice_forcing(f, r)` restricts
@@ -223,7 +230,7 @@ Further keys:
 | Section | Keys |
 |---|---|
 | top level | `name`, `backend` (`threads` or `gpu`), `output_dir`, `restart_every`, `years` (`[first, last]`, `"1940:2026"` or one year), `repeat` |
-| `[forcing]` | `path`, `format`, `surface_fluxes`, `files`, `mask = ["MSK", 50]`, `wind`, `area`, `area_file`, `variables = {air_temperature = "t2m", …}`, `options = {…}` (other `Forcing` keywords) |
+| `[forcing]` | `path`, `format`, `surface_fluxes`, `files`, `mask = ["MSK", 50]`, `wind`, `area`, `cache` (a directory, relative to the file), `area_file`, `variables = {air_temperature = "t2m", …}`, `options = {…}` (other `Forcing` keywords) |
 | `[grid]` | any [`Layering`](@ref) field, e.g. `Ntot = 20`, `near_surface_layer_max_thicknesses_m = [0.02, 0.05, 0.1, 0.3]`, `ice_substrate_layers = 0` |
 | `[model]` | `type = "bessi"`, `"pdd"` or `"itm"`; `setup = "GrISv1"` or `"AISv1"` (BESSI only); `number_type = "Float32"`; any field of [`Params`](@ref), [`PDDParams`](@ref) or [`ITMParams`](@ref), e.g. `alpha_dry = 0.84`, `albedo_scheme = "aging"`, `[model.albedo_scheme] type = "aging", cold_timescale_days = 15`, `method = "pism"` |
 | `[spinup]` | `type`, `years`, `cycles`; for `climatology` a `path` and an optional `[spinup.forcing]` table that overrides `[forcing]` |
