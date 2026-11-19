@@ -21,9 +21,9 @@ end
 
 """Melt plus runoff of column `idx` over the loaded year with the air temperature raised by `ΔT`,
 stepping the state arrays `fields` with the kernels' `column_step!`."""
-function melt_and_runoff!(fields, workspace, ΔT, model, idx)
-    for time_index in 1:Chion.forcing_steps(model)
-        step = Chion._step_forcing_at(model.forcing.fields, idx, time_index)
+function melt_and_runoff!(fields, workspace, ΔT, model, forcing_fields, nsteps, idx)
+    for time_index in 1:nsteps
+        step = Chion._step_forcing_at(forcing_fields, idx, time_index)
         step = Chion._with_step_forcing(step, (; air_temperature = step.air_temperature + ΔT))
         Chion.column_step!(fields, model.params, model.grid.layering, model.boundary, idx, step, workspace)
     end
@@ -36,14 +36,16 @@ _zero_tangent(x::AbstractArray{<:AbstractFloat}) = zero(x)
 _zero_tangent(x::AbstractArray) = copy(x)
 _zero_tangent(x) = Chion._mapfields(_zero_tangent, x)
 
-melt_and_runoff(ΔT, model, idx) = melt_and_runoff!(_copies(model)..., ΔT, model, idx)
+melt_and_runoff(ΔT, model, idx) = melt_and_runoff!(_copies(model)..., ΔT, model, model.forcing.fields,
+    Chion.forcing_steps(model), idx)
 
 function enzyme_slope(model, idx)
     fields, workspace = _copies(model)
     dfields = map(_zero_tangent, fields)
     dworkspace = _zero_tangent(workspace)
     return only(Enzyme.autodiff(Enzyme.Forward, melt_and_runoff!, Duplicated(fields, dfields),
-        Duplicated(workspace, dworkspace), Duplicated(0.0, 1.0), Const(model), Const(idx)))
+        Duplicated(workspace, dworkspace), Duplicated(0.0, 1.0), Const(model), Const(model.forcing.fields),
+        Const(Chion.forcing_steps(model)), Const(idx)))
 end
 
 _central_difference(f, h) = (f(h) - f(-h)) / 2h

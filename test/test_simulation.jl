@@ -200,6 +200,23 @@ end
     @test time_step!(Simulation(model; verbose = false)) isa Simulation
 end
 
+@testset "Forcing years with different field types" begin
+    # 2001 has a constant wind, 2002 a varying one (as a repaired file may store a field differently).
+    f1, grid = _experiment_forcing(2001:2001)
+    f2, _ = _experiment_forcing(2002:2002)
+    w2 = SnowpackForcing(; time_values = f2.time_values, dt_days = f2.dt_days, air_temperature = f2.air_temperature,
+        snowfall_rate = f2.snowfall_rate, rainfall_rate = f2.rainfall_rate, shortwave_down = f2.shortwave_down,
+        latitude_deg = f2.latitude_deg, wind_speed = fill(4.0, 4, length(f2.dt_days)))
+    @test typeof(f2.fields.wind_speed) != typeof(w2.fields.wind_speed)
+    source = Forcing(y -> y == 2001 ? f1 : w2, 2001:2002; grid)
+    sim = Simulation(BESSIModel(source); verbose = false)
+    run!(sim)
+    @test finished(sim) && sim.model.year == 2002
+    reference = BESSIModel(Forcing(y -> y == 2001 ? f1 : f2, 2001:2002; grid))
+    run!(Simulation(reference; verbose = false))
+    @test sim.model.state.mass == reference.state.mass       # the same values, stored differently
+end
+
 @testset "Active columns" begin
     snowpack_forcing, grid = _experiment_forcing(2001:2001)
     forcing = Forcing(snowpack_forcing; grid)

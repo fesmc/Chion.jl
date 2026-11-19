@@ -20,15 +20,18 @@ number type. [`update_forcing!`](@ref) loads another year.
 # Fields
 $(TYPEDFIELDS)
 """
-mutable struct AtmosphericForcing{S <: Forcing, D <: SnowpackForcing, F}
+mutable struct AtmosphericForcing{S <: Forcing}
     "where the forcing comes from, one calendar year at a time"
     source::S
     "the loaded calendar year"
     year::Int
+    # The types of the loaded year may differ between years (a field constant in one year and
+    # varying in another, a repaired file): they are resolved at the kernel launches (function
+    # barriers), so these two fields are not parametric.
     "the loaded year on the host"
-    data::D
+    data::SnowpackForcing
     "the loaded year as the kernels read it, on the model's backend"
-    fields::F
+    fields::Union{NamedTuple, PDDForcing, ITMForcing}
 end
 
 _as_forcing(forcing::Forcing) = forcing
@@ -69,9 +72,6 @@ function update_forcing!(model::AbstractSnowModel, year::Integer)
     data = load_forcing_year(forcing.source, year)
     _validate_forcing(model.params, data)
     fields = _kernel_fields(model.params, data, _backend(model))
-    typeof(data) === typeof(forcing.data) && typeof(fields) === typeof(forcing.fields) ||
-        error("The forcing of $year has other field types than that of $(forcing.year) " *
-              "(e.g. a field constant in one year and varying in the other).")
     forcing.year = Int(year)
     forcing.data = data
     forcing.fields = fields
