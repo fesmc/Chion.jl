@@ -3,7 +3,7 @@ Run-level output of a Simulation, as Laddie's `OutputConfig`: one run directory 
 outputs, a log, the run metadata (a TOML file that `run_config` reruns) and restart files.
 =#
 
-using Serialization: serialize, deserialize
+using JLD2: JLD2, jldopen
 
 """
 $(TYPEDEF)
@@ -17,7 +17,7 @@ and the simulation writes there:
 - `log.txt`: one line per forcing year (column-mean SMB, melt, runoff; wall time),
 - `chion_run.toml`: the grid, the parameters and the run settings in the format of
   [`run_config`](@ref) (rerunning it with the forcing section added reproduces the run),
-- `restart_<year>.jls` every `restart_every` years and at the end of the run (`0`: only at the end),
+- `restart_<year>.jld2` every `restart_every` years and at the end of the run (`0`: only at the end),
   read by `Simulation(model; restart = path)`.
 
 Without `dir` only the outputs are written, at their paths.
@@ -152,17 +152,33 @@ end
 # Restarts
 # ---------------------------------------------------------------------------
 
+const RESTART_FORMAT_VERSION = 2
+
 """
     write_restart(sim, path)
 
-Write the host state of `sim`'s model and the next forcing year to `path` (Julia `Serialization`;
-read it with `Simulation(model; restart = path)` in the same Chion version).
+Write the host state of `sim`'s model and the next forcing year to `path`, a JLD2 (HDF5) file read
+by `Simulation(model; restart = path)`. The state arrays are stored by name under `state/` (e.g.
+`state/mass`, layers × columns), so the file can also be read outside Julia (h5py, `h5dump`); the
+attributes `format_version`, `model`, `number_type`, `columns`, `chion_version`, `last_year` and
+`next_year` (absent at the end of the run) describe it.
 """
 function write_restart(sim, path::AbstractString)
     sim.clock.step == 1 || throw(ArgumentError("Restarts are written at the start of a forcing year."))
-    next_year = finished(sim) ? nothing : sim.years[sim.clock.year_index]
-    serialize(path, (; version = 1, state = cpu_state(sim.model), next_year, last_year = _last_run_year(sim),
-        model = string(nameof(typeof(sim.model))), number_type = string(number_type(sim.model))))
+    state = cpu_state(sim.model)
+    last_year = _last_run_year(sim)
+    jldopen(path, "w") do file
+        file["format_version"] = RESTART_FORMAT_VERSION
+        file["model"] = string(nameof(typeof(sim.model)))
+        file["number_type"] = string(number_type(sim.model))
+        file["columns"] = ncols(sim.model)
+        file["chion_version"] = string(pkgversion(@__MODULE__))
+        last_year === nothing || (file["last_year"] = last_year)
+        finished(sim) || (file["next_year"] = sim.years[sim.clock.year_index])
+        for name in fieldnames(typeof(state))
+            file["state/$(name)"] = getfield(state, name)
+        end
+    end
     return path
 end
 
@@ -175,18 +191,48 @@ function _write_scheduled_restart(sim)
     year === nothing && return nothing
     due = finished(sim) || (output.restart_every > 0 && (sim.clock.year_index - 1) % output.restart_every == 0)
     due || return nothing
-    path = write_restart(sim, joinpath(output.dir, "restart_$(year).jls"))
+    path = write_restart(sim, joinpath(output.dir, "restart_$(year).jld2"))
     _log_line(sim, "restart written: $(basename(path))")
     return nothing
 end
 
 """Load a restart file into the model of `sim`; the spin-up is then skipped."""
 function _read_restart!(model, path::AbstractString, years)
-    data = deserialize(path)
-    data.model == string(nameof(typeof(model))) ||
-        throw(ArgumentError("The restart is of a $(data.model), the model a $(nameof(typeof(model)))."))
-    set_state!(model, data.state)
-    data.next_year === nothing || data.next_year == first(years) ||
-        @warn "The restart continues at $(data.next_year), the simulation starts at $(first(years))."
+    isfile(path) || throw(ArgumentError("The restart file $(path) does not exist."))
+    _is_hdf5(path) || throw(ArgumentError("$(path) is not a Chion restart (a JLD2 file)."))
+    state, next_year = jldopen(path, "r") do file
+        version = haskey(file, "format_version") ? file["format_version"] : 0
+        version == RESTART_FORMAT_VERSION ||
+            throw(ArgumentError("$(path) is not a Chion restart of format version $(RESTART_FORMAT_VERSION)."))
+        file["model"] == string(nameof(typeof(model))) ||
+            throw(ArgumentError("The restart is of a $(file["model"]), the model a $(nameof(typeof(model)))."))
+        return _restart_state(model.state, file["state"]), get(file, "next_year", nothing)
+    end
+    set_state!(model, state)
+    next_year === nothing || next_year == first(years) ||
+        @warn "The restart continues at $(next_year), the simulation starts at $(first(years))."
     return nothing
+end
+
+# HDF5 files (and JLD2 files) start with this signature (or have it at 512, 1024, … bytes).
+function _is_hdf5(path)
+    signature = UInt8[0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]
+    return open(path) do io
+        offset = 0
+        while offset + 8 <= filesize(io)
+            seek(io, offset)
+            read(io, 8) == signature && return true
+            offset = offset == 0 ? 512 : 2offset
+        end
+        return false
+    end
+end
+
+# The host state of the model's state type from the arrays of a restart, field by field.
+function _restart_state(state, group)
+    names = fieldnames(typeof(state))
+    stored = Set(Symbol.(keys(group)))
+    missing_names = setdiff(names, stored)
+    isempty(missing_names) || throw(ArgumentError("The restart lacks the state fields $(join(missing_names, ", "))."))
+    return Base.typename(typeof(state)).wrapper((group[String(name)] for name in names)...)
 end

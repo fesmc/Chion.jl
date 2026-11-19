@@ -42,8 +42,11 @@ are taken relative to the run directory `dir`, and the simulation also writes th
 - `log.txt`: one line per forcing year (column-mean SMB, melt, runoff; wall time),
 - `chion_run.toml`: the grid, the parameters and the run settings in the format of
   [`run_config`](@ref),
-- `restart_<year>.jls`: the state every `restart_every` years and at the end of the run
-  (`restart_every = 0`, the default: only at the end).
+- `restart_<year>.jld2`: the state every `restart_every` years and at the end of the run
+  (`restart_every = 0`, the default: only at the end). A JLD2 (HDF5) file with the state arrays
+  by name (`state/mass`, `state/temperature`, …, layers × columns) and the attributes
+  `format_version`, `model`, `number_type`, `columns`, `chion_version`, `last_year` and
+  `next_year`; it can also be read with h5py or `h5dump`.
 
 `Simulation(model; years, restart=path)` continues from a restart file and skips the spin-up;
 `write_restart(sim, path)` writes one at the start of any forcing year. `sim.output.outputs` lists

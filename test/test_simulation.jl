@@ -149,7 +149,7 @@ end
     @test sim.output.outputs[1].path == joinpath(dir, "budget.csv")
     run!(sim)
     @test isfile(joinpath(dir, "budget.csv"))
-    @test isfile(joinpath(dir, "restart_2001.jls")) && isfile(joinpath(dir, "restart_2002.jls"))
+    @test isfile(joinpath(dir, "restart_2001.jld2")) && isfile(joinpath(dir, "restart_2002.jld2"))
     log = read(joinpath(dir, "log.txt"), String)
     @test occursin("year 2001 done", log) && occursin("year 2002 done", log) && occursin("restart written", log)
     # The metadata is a run_config file: the same grid and parameters back.
@@ -161,11 +161,23 @@ end
 
     # A restart after the first year continues to the state of the whole run.
     continued = BESSIModel(forcing; layering = _layering8(), params)
-    sim2 = Simulation(continued; years = [2002], restart = joinpath(dir, "restart_2001.jls"), verbose = false)
+    sim2 = Simulation(continued; years = [2002], restart = joinpath(dir, "restart_2001.jld2"), verbose = false)
     @test sim2.io.spun_up
     run!(sim2)
     @test continued.state.mass == model.state.mass && continued.state.runoff == model.state.runoff
-    @test_throws ArgumentError Simulation(PDDModel(forcing); restart = joinpath(dir, "restart_2001.jls"))
+    @test_throws ArgumentError Simulation(PDDModel(forcing); restart = joinpath(dir, "restart_2001.jld2"))
+    # The restart is an HDF5 file with the state arrays by name.
+    NCDataset(joinpath(dir, "restart_2001.jld2")) do ds
+        @test ds.group["state"]["mass"][:, :] == Chion.JLD2.load(joinpath(dir, "restart_2001.jld2"), "state/mass")
+    end
+    Chion.JLD2.jldopen(joinpath(dir, "restart_2001.jld2")) do file
+        @test file["model"] == "BESSIModel" && file["next_year"] == 2002 && file["last_year"] == 2001
+        @test file["columns"] == 4 && file["number_type"] == "Float64"
+    end
+    @test !haskey(Chion.JLD2.load(joinpath(dir, "restart_2002.jld2")), "next_year")
+    # A file that is not a restart.
+    @test_throws ArgumentError Simulation(BESSIModel(forcing; layering = _layering8(), params);
+        restart = joinpath(dir, "budget.csv"))
 end
 
 @testset "Forcing edited in place and backend names" begin
