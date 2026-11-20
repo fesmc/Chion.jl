@@ -1,238 +1,180 @@
 # Chion.jl
 
-Chion is a fast, intermediate-complexity snowpack mass and energy balance model.
-It supports single-column and gridded snowpack runs, CPU execution,
-single-GPU execution through `CUDA.jl`, and optional NetCDF output.
+Chion is a fast, intermediate-complexity snowpack and firn model for ice sheets and seasonal snow,
+written in Julia for CPUs and GPUs. It computes the surface mass and energy balance from
+atmospheric forcing in independent vertical columns:
 
-Runs from forcing files are described by an `Experiment` (model, forcing,
-spin-up and outputs; see below), in Julia or as a TOML file. Underneath it, the
-low-level `Simulation` API runs forcing held in memory and supports
-step-by-step coupling (`SnowpackGrid` → model → `SnowpackForcing` →
-`Simulation` → `run!`).
+- **`BESSIModel`**, the multilayer model (after BESSI; Born et al., 2019): surface energy balance
+  with bulk-aerodynamic turbulent fluxes and a parameterised longwave, heat conduction with a Robin
+  surface boundary, densification, percolation and refreezing, a refined near-surface grid, a
+  thermal ice substrate and diurnal substeps for daily forcing.
+- **`PDDModel`**, a positive-degree-day model, and **`ITMModel`**, the insolation–temperature–melt
+  model.
 
-This model is still work in progress. Not everything is validated yet, and the
-API may still change.
+The defaults are calibrated against MAR v3.14.3 over Greenland with daily forcing
+(`ParamsGrISv1()`, = `Params()`); `ParamsAISv1()` is the Antarctic setup.
 
-## Features
-
-- Layered snowpack mass and energy balance (BESSI) with a SEMIX surface
-  energy balance, a Robin surface boundary, fine near-surface layers, and a
-  thermal ice substrate below the snow
-- Defaults calibrated against MAR v3.14.3 over Greenland for daily forcing:
-  dynamic albedo, cloud-proxy longwave (no extra forcing needed), SEMIX
-  sensible heat, and diurnal substeps
-- Bulk positive-degree-day (`PDDModel`) and insolation-temperature-melt
-  (`ITMModel`) models
-- Simulation-first public API for manual and file-backed forcing workflows
-- CPU and single-GPU execution backends
-- Per-year BESSI history and optional NetCDF output, including monthly fields
+This model is still work in progress: not everything is validated yet, and the API may change.
 
 ## Installation
 
-From the repository root:
-
 ```julia
 using Pkg
-Pkg.activate(".")
+Pkg.activate("path/to/Chion.jl")
 Pkg.instantiate()
-```
-
-Then load the package with:
-
-```julia
 using Chion
 ```
 
-GPU runs require a working CUDA environment. `CUDA.jl` is a weak dependency:
-add it to your own environment (`Pkg.add("CUDA")`) and run `using CUDA` before
-using `backend=:gpu` (`run_config` loads it itself). NetCDF loading and output
-use `NCDatasets.jl`. Running a configuration with `julia -m Chion` needs
-Julia ≥ 1.11.
+NetCDF input and output use `NCDatasets.jl`. The GPU backend needs `CUDA.jl`, a weak dependency:
+add it to your environment and run `using CUDA` before building a model with
+`backend = CUDABackend()`.
 
-## Running An Experiment
+## Quick start
 
-An experiment is a model, its forcing, a spin-up and the outputs. The forcing is read one year at
-a time, so long multi-file records fit in memory, and each output is written at its own frequency.
+One column with two days of hand-written forcing (temperatures in °C, precipitation in mm w.e. per
+day):
 
 ```julia
 using Chion
+
+forcing = SnowpackForcing(
+    dt_days = [1.0, 1.0],
+    air_temperature_c = [-12.0, -10.0],
+    snowfall_mm_day = [1.0, 0.0],
+    rainfall_mm_day = 0.0,
+    shortwave_down = [120.0, 160.0],
+    latitude_deg = 72.0,            # used by the diurnal substeps and the longwave
+)
+model = BESSIModel(Grid(1); forcing)
+sim = Simulation(model)
+run!(sim)
+model.temperature                   # layer temperatures (K); model.mass, model.density, …
+```
+
+## A gridded run
+
+forcing → `Grid` → model (parameters, boundary conditions, backend) → `Simulation` (years, spin-up, outputs).
+
+```julia
+using Chion
+using CUDA                                         # only for the GPU
 
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc";   # one file per year
-    surface_fluxes=:parameterized)          # Chion computes the surface energy balance itself
-model = BESSIModel(forcing)                 # the calibrated defaults on the forcing columns
+    surface_fluxes = :parameterized,               # Chion computes the surface energy balance
+    cache = "output/forcing_cache")                # decoded years: 0.1 s instead of ~3 s per MAR year
+grid = Grid(forcing; layering = Layering(Ntot = 15))
+model = BESSIModel(grid; forcing, params = Params(), backend = CUDABackend())   # CPU() by default
 
-experiment = Experiment(model, forcing;
-    years=1940:2026,
-    spinup=CycledSpinup(1940:1969; cycles=5),
-    outputs=[
-        Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),               # maps
-        Output("budget_yearly.csv"; variables=:budget, frequency=:yearly, aggregate=:area_sum),  # Gt
-        Output("firn.nc"; variables=:firn, frequency=Month(6), kind=:snapshot),       # profiles
-    ],
-    backend=:gpu)                           # :threads for the CPU; :gpu needs `using CUDA`
-
-result = run!(experiment)                   # result.state is the final state
+sim = Simulation(model;
+    years = 1940:2026,
+    spinup = CycledSpinup(1940:1969; cycles = 5),
+    output = OutputConfig(dir = "output/greenland", outputs = [   # run directory
+        Output("monthly.nc"; variables = :monthly, frequency = Monthly()),
+        Output("budget_yearly.csv"; variables = :budget, frequency = Yearly(), aggregate = AreaSum()),
+        Output("firn.nc"; variables = :firn, frequency = Every(Month(6)), kind = Snapshot()),
+    ]))
+run!(sim)                  # run!(sim; years = 1) runs one year and can be called again
 ```
 
-The same experiment as a TOML file (see `examples/configs/`):
+The run directory holds the outputs, `log.txt`, the run metadata `chion_run.toml` and JLD2
+restarts (`OutputConfig(restart_every = 10)`). The Greenland and Antarctic runs of the Chion paper
+are named setups: `SimulationGreenlandMARv1(path; dir)` and `SimulationAntarcticaMARv1(…)`.
+
+- **Forcing**: `Forcing(path; format, surface_fluxes, …)` reads MAR (`format = :mar`), single-site
+  ALMA (`:alma`, e.g. ESM-SnowMIP) or any NetCDF file with a `variables` name mapping.
+  `Forcing(snowpack_forcing)` wraps forcing in memory, `Forcing(year -> …, years; grid)` takes a
+  function, and `transform` changes every year (e.g. a warming).
+- **Spin-up**: `CycledSpinup(years; cycles)`, `ClimatologySpinup(forcing; years)` or `NoSpinup()`.
+- **Outputs**: `Output(path; variables, frequency, aggregate, kind, period, regions, depths)`, as
+  `.nc` or `.csv`. Frequencies are `EveryStep()`, `Daily()`, `Monthly()`, `Yearly()` or
+  `Every(period)`. `AreaSum()` gives ice-sheet or regional totals (Gt, km²). Fluxes are period
+  totals; state variables are period means (`Mean()`) or end-of-period snapshots (`Snapshot()`).
+  `available_output_variables(model)` lists the variables.
+
+## Parameterisations
+
+Every exchangeable parameterisation is a type that carries its own coefficients, passed in a slot
+of `Params`; the model code selects it by dispatch:
+
+```julia
+params = Params(
+    albedo_scheme = AgingAlbedo(cold_timescale_days = 15),
+    densification_scheme = HTESSELDensification(),
+    turbulent_flux_scheme = SemixTurbulentFluxes(sensible_exchange_factor = 2.5),
+    diurnal_cycle = NoDiurnalCycle(),
+)
+```
+
+The surface and bottom boundary conditions of the heat solve are types too: `boundary =
+BoundaryConditions(bottom = GeothermalFlux(0.05))`. Their values can be one per column and updated
+during a run with `set_boundary!`. `subtypes(Chion.AbstractAlbedoScheme)` lists the
+implementations of a scheme; the [parameter page](https://fesmc.github.io/Chion.jl/dev/parameters/)
+lists every default.
+
+## Configuration files
+
+The same simulation as a TOML file: `[forcing]`, `[grid]` (= `Layering`), `[model]` (= `Params`
+fields, schemes by name or as tables with `type`), `[spinup]`, `[[output]]`.
 
 ```bash
-julia --project -m Chion examples/configs/greenland_parameterized.toml --backend=gpu
+julia --project -m Chion my_run.toml --backend=gpu
 julia --project -m Chion my_run.toml --set model.alpha_dry=0.84   # override any entry
 ```
 
-- `Forcing(path; format, surface_fluxes, …)` reads MAR output (`format=:mar`: variable names, ice
-  mask, constant wind, cell areas), single-site ALMA forcing (`format=:alma`, e.g. ESM-SnowMIP) or
-  any NetCDF file with a `variables` name mapping;
-  `Forcing(snowpack_forcing)` wraps forcing in memory and `Forcing(year -> …, years; grid)` takes a
-  function for preprocessing the loaders do not cover. A `transform` applies changes such as a
-  temperature offset to every year.
-- `CycledSpinup(years; cycles)`, `ClimatologySpinup(forcing; years)` or `NoSpinup()`.
-- `Output(path; variables, frequency, aggregate, kind, period, regions)`: `.nc` or `.csv`;
-  frequencies `:step`, `:daily`, `:monthly`, `:yearly` or any period (`Day(5)`, `Month(6)`);
-  `aggregate=:area_sum` gives ice-sheet or regional totals (Gt, km²). Fluxes are period totals,
-  state variables period means or end-of-period snapshots. `available_output_variables(model)`
-  lists the variables; groups are `:budget`, `:monthly`, `:snow`, `:firn` and `:default`.
+In Julia: `run_config("my_run.toml"; backend, set)`.
 
-## Quick Start (Low-Level API)
+## Coupling and stepping
 
-This is the smallest supported end-to-end workflow using forcing arrays.
-High-level forcing inputs use Celsius and `mmWE/day`.
+- `time_step!(sim)` advances one forcing step; `yearly_step!(sim)` advances one year, the usual
+  exchange interval with an ice-sheet model.
+- `set_input!` and `set_active_mask!` change the forcing and the active columns between steps, and
+  `set_boundary!` changes the boundary values (e.g. the ice temperature below the column).
+- `integrate!(model, steps)` steps a model without a `Simulation`, as used for automatic
+  differentiation.
+- `to_backend(model, backend)` moves a model between devices; `cpu_state(model)` returns a host
+  copy of its state.
 
-```julia
-using Chion
+## Backends and differentiability
 
-grid = SnowpackGrid(1)
+- **CPU**: `CPU()` is the default, threaded over columns (`julia --threads N`).
+- **GPU**: `CUDABackend()`, with one GPU thread per column; load CUDA.jl first.
+- **AD**: Enzyme forward mode works through the column step on the CPU and the GPU. ForwardDiff
+  works through a whole model built at `NF = Dual`. A Reactant backend (`ReactantBackend()`) is a
+  prototype.
+- **Number type**: `Grid(…; NF = Float32)` with `Params(; NF = Float32)` runs in single precision
+  (about 2× faster on a GPU).
 
-model = BESSIModel(grid;
-    albedo=:dynamic,
-    densification=:bessi,
-    fresh_snow_density=:constant,
-    Ntot=5,
-)
+## ITM forcing
 
-forcing = SnowpackForcing(
-    dt_days=[1.0, 1.0, 1.0],
-    air_temperature_c=[-15.0, -12.0, -10.0],
-    snowfall_mm_day=[2.0, 0.0, 0.0],
-    rainfall_mm_day=0.0,
-    shortwave_down=[80.0, 150.0, 220.0],
-    latitude_deg=72.0,  # needed by the default diurnal substeps
-)
+`ITMModel` is the Fortran-compatible insolation–temperature–melt bulk model. It requires
+`latitude_deg`, `surface_height`, `ice_thickness` (m) and `annual_pdd` (K day) in the forcing.
 
-simulation = Simulation(model;
-    forcing=forcing,
-    years=1,              # the defaults: one pass, CPU, no NetCDF output
-    backend=:threads,
-    write_netcdf=false,
-)
+- **Insolation input**: ITM uses `q_sw_net` when it is supplied, otherwise `shortwave_down`.
+- **Top-of-atmosphere radiation**: this insolation must be top-of-atmosphere radiation, which ITM
+  attenuates with its elevation-dependent transmissivity. Surface shortwave such as MAR `SWD` would
+  be attenuated twice and strongly underestimate melt.
+- **Units**: its budgets keep the Fortran model's rates in mm w.e. per day and cumulative
+  diagnostics in mm w.e.
 
-result = run!(simulation)
-state = simulation.now
-```
+## Examples and the paper
 
-Useful return values:
-
-- `result.status`: run termination status
-- `result.history`: per-year BESSI summary records
-- `result.netcdf_path`: NetCDF output path when enabled
-
-For coupled runs, use the initialized stepper API:
-
-```julia
-integrator = init_integrator(simulation)
-integrator.sim.forcing.air_temperature .= 265.15
-sync_forcing!(integrator)
-step!(integrator, 1.0, true)
-result = finalize!(integrator)
-```
-
-`simulation.ref` remains the reference state; `simulation.now` is the evolving
-state.
-
-## File-Backed Forcing
-
-`load_forcing_file` reads a NetCDF forcing file and returns a named tuple with a
-`SnowpackGrid` and `SnowpackForcing`.
-
-```julia
-loaded = load_forcing_file("forcing.nc")
-
-simulation = Simulation(BESSIModel(loaded.grid);
-    forcing=loaded.forcing,
-    years=1,
-    netcdf_variables=:all,
-    write_netcdf=true,
-)
-
-result = run!(simulation)
-```
-
-The generic loader accepts common `(time, y, x)` layouts and MAR-style
-`(x, y, TIME)` fields. Dimensions are recognised by the names passed as
-`x_name`/`y_name` (or `x`/`y`) and a time dimension; extra dimensions such as
-vertical levels or sectors are read at their first index. The default diurnal
-substeps need latitude (`LAT` in MAR files); set
-`diurnal_shortwave_substeps=false` for forcing without latitude or with
-sub-daily time steps.
-
-Spatial selection can be applied while loading:
-
-```julia
-loaded = load_forcing_file("forcing.nc";
-    mask_name="MSK",
-    mask_threshold=50.0,
-)
-```
-
-## Examples
-
-The `examples/` folder is currently kept out of the repository (it is
-git-ignored), and its configurations point to forcing data on the PIK cluster.
-Where it is available, it contains:
+The `examples/` folder is git-ignored; its configurations point to forcing data on the PIK cluster.
 
 | Folder | Contents |
 | --- | --- |
-| `examples/configs/` | complete experiments as TOML files, run with `julia --project -m Chion <file>.toml` |
-| `examples/runs/` | short scripts for experiments that need code: Northern Hemisphere snow from ERA5, the ten ESM-SnowMIP sites |
-| `examples/figures/` | `compare_with_mar.jl <run dir>` for the yearly budget against MAR, and older figure scripts |
-| `examples/research/` | native 3-hourly forcing, longwave fit and benchmarks (low-level API, settings from `CHION_*` environment variables) |
+| `examples/quickstart.jl`, `examples/tutorial.jl` | the gridded Greenland run above, and a guided tour of the API |
+| `examples/configs/` | complete simulations as TOML files |
+| `examples/research/` | native 3-hourly forcing, calibration and benchmark scripts |
 
-The runs and figures of the Chion model description paper are in a separate repository, Chion-paper
-(a checkout next to this one): one short Julia file per model run and per figure, with Chion as a path
-dependency and a committed manifest.
-
-The configs cover Greenland and Antarctica (parameterized, prescribed, firn
-profiles for SUMup). Each run writes its output and a copy of its configuration to `output_dir`.
+The runs and figures of the Chion model description paper are in a separate repository,
+Chion-paper (a checkout next to this one). It has one short Julia file per model run and per
+figure, Chion as a path dependency and a committed manifest.
 
 ## Documentation
 
-Read the [Chion.jl documentation](https://fesmc.github.io/Chion.jl/dev/).
-The documentation source lives in `docs/src/`. Build it locally with:
+Read the [Chion.jl documentation](https://fesmc.github.io/Chion.jl/dev/). Build it locally with:
 
 ```bash
 julia --project=docs -e 'using Pkg; Pkg.develop(path="."); Pkg.instantiate()'
 julia --project=docs docs/make.jl
 ```
-
-## Outputs And Backends
-
-- `backend=:threads` runs on CPU.
-- `backend=:gpu` runs on a CUDA device; load CUDA.jl first (`using CUDA`), which
-  activates the `ChionCUDAExt` package extension.
-- `write_netcdf=false` (the `Simulation` default) skips NetCDF entirely.
-- NetCDF output requires spatial grid coordinates.
-- `history_year_stride` controls how often BESSI year metrics are recorded.
-- `netcdf_variables=:all` selects the fields exposed by the chosen model.
-- `netcdf_variables=:monthly` writes monthly BESSI, PDD, or ITM diagnostics.
-
-## ITM
-
-`ITMModel` is the Fortran-compatible insolation-temperature-melt bulk model.
-It requires explicit `latitude_deg`, `surface_height`, `ice_thickness` (m),
-and `annual_pdd` (K day) forcing. ITM uses `q_sw_net` as its insolation input
-when supplied; otherwise it uses `shortwave_down`. This insolation is
-top-of-atmosphere radiation, which ITM attenuates with its elevation-dependent
-transmissivity; supplying surface shortwave such as MAR `SWD` attenuates it
-twice and strongly underestimates melt. Its internal budgets retain the
-Fortran model's `mmWE/day` rates and cumulative `mmWE` diagnostics.
