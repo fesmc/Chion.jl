@@ -367,7 +367,9 @@ column_step!(fields, params, layering, idx, forcing, workspace)
 
 The defaults of `Params` (= `ParamsGrISv1()`) and `Layering` are the Greenland calibration against MAR
 v3.14.3 (daily forcing); the Antarctic runs use `ParamsAISv1()` (`setup = "AISv1"` in TOML). The paper runs
-(`run_paper_experiments.sh`) and the manuscript depend on them. `PDDModel` and `ITMModel` are pinned to
+and the manuscript depend on them: they live in the separate Chion-paper repository (`../Chion-paper`, one
+Julia file per run and per figure, Chion as a path dependency), whose run files use the public API, so an
+API change updates them too. `PDDModel` and `ITMModel` are pinned to
 the Fortran budgets by tests in `test/test_case_api.jl`.
 
 - Never change what the defaults produce as a side effect of another change: a refactor is bitwise
