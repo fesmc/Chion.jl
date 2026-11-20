@@ -7,8 +7,8 @@ are retained as validation material; they are not currently backed by a file in
 
 ## Parameterization
 
-This formula applies only with `BESSIModel(...; fresh_snow_density=:parameterized)`.
-The default `:constant` uses `rho_s = 315 kg m^-3` (see
+This formula applies only with `Params(fresh_snow_density_scheme = ParameterizedFreshSnowDensity())`.
+The default `ConstantFreshSnowDensity()` uses `density = 315 kg m^-3` (see
 [Accumulation And Melt](../processes/accumulation_ablation.md#Fresh-Snow-Density)).
 With the parameterized scheme, fresh-snow density is
 

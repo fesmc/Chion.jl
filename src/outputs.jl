@@ -1,5 +1,5 @@
 """
-Output specifications for `Experiment` runs: which variables are written, at which frequency,
+Output specifications of a `Simulation`: which variables are written, at which frequency,
 how they are aggregated in space, and where.
 
     Output("smb_monthly.nc"; variables=[:surface_smb, :melt], frequency=:monthly)
@@ -120,22 +120,130 @@ function _expand_variables(spec)
 end
 
 # ---------------------------------------------------------------------------
+# Output choices: names in keywords and TOML are converted once, in `Output`
+# ---------------------------------------------------------------------------
+
+"""Abstract supertype of the period of an [`Output`](@ref): [`EveryStep`](@ref), [`Daily`](@ref),
+[`Monthly`](@ref), [`Yearly`](@ref) or [`Every`](@ref)`(period)`, aligned to the calendar."""
+abstract type AbstractOutputFrequency end
+"""$(TYPEDEF)
+
+One record per forcing step (`frequency = :step`)."""
+struct EveryStep <: AbstractOutputFrequency end
+"""$(TYPEDEF)
+
+One record per calendar day (`frequency = :daily`)."""
+struct Daily <: AbstractOutputFrequency end
+"""$(TYPEDEF)
+
+One record per calendar month (`frequency = :monthly`)."""
+struct Monthly <: AbstractOutputFrequency end
+"""$(TYPEDEF)
+
+One record per calendar year (`frequency = :yearly`)."""
+struct Yearly <: AbstractOutputFrequency end
+"""
+$(TYPEDEF)
+
+One record per `period` (a `Dates.Period` such as `Month(6)`), aligned to the calendar: months from
+January, days from 1970-01-01.
+
+# Fields
+$(TYPEDFIELDS)
+"""
+struct Every{P <: Dates.Period} <: AbstractOutputFrequency
+    "length of the period"
+    period::P
+    Every(period::P) where {P <: Dates.Period} =
+        Dates.value(period) > 0 ? new{P}(period) : throw(ArgumentError("Output frequency must be positive."))
+end
+
+"""Abstract supertype of the spatial aggregation of an [`Output`](@ref): [`Columns`](@ref),
+[`AreaSum`](@ref) or [`AreaMean`](@ref)."""
+abstract type AbstractAggregation end
+"""$(TYPEDEF)
+
+One value per column, on the x–y grid when the grid has coordinates (`aggregate = :columns`)."""
+struct Columns <: AbstractAggregation end
+"""$(TYPEDEF)
+
+Area sums: mass in Gt, snow cover in km², firn air content in km³, intensive variables as
+area-weighted means (`aggregate = :area_sum`)."""
+struct AreaSum <: AbstractAggregation end
+"""$(TYPEDEF)
+
+Area-weighted means of every variable (`aggregate = :area_mean`)."""
+struct AreaMean <: AbstractAggregation end
+
+"""Abstract supertype of how an [`Output`](@ref) records state variables: [`Mean`](@ref) or
+[`Snapshot`](@ref)."""
+abstract type AbstractOutputKind end
+"""$(TYPEDEF)
+
+Period means of the state variables (`kind = :mean`)."""
+struct Mean <: AbstractOutputKind end
+"""$(TYPEDEF)
+
+State variables at the end of the period (`kind = :snapshot`)."""
+struct Snapshot <: AbstractOutputKind end
+
+abstract type AbstractOutputFormat end
+"""NetCDF file (`.nc`)."""
+struct NetCDFFormat <: AbstractOutputFormat end
+"""Comma-separated text file (`.csv`)."""
+struct CSVFormat <: AbstractOutputFormat end
+
+const _OUTPUT_FREQUENCIES = (step = EveryStep(), daily = Daily(), monthly = Monthly(), yearly = Yearly())
+const _AGGREGATIONS = (columns = Columns(), area_sum = AreaSum(), area_mean = AreaMean())
+const _OUTPUT_KINDS = (mean = Mean(), snapshot = Snapshot())
+const _OUTPUT_FORMATS = (; Symbol(".nc") => NetCDFFormat(), Symbol(".csv") => CSVFormat())
+
+function _output_choice(table::NamedTuple, value::Union{Symbol, AbstractString}, what)
+    name = Symbol(lowercase(String(value)))
+    haskey(table, name) || throw(ArgumentError("Unknown output $what \"$value\"; use $(join(keys(table), ", "))."))
+    return table[name]
+end
+_output_frequency(f::AbstractOutputFrequency) = f
+_output_frequency(f::Dates.Period) = Every(f)
+_output_frequency(f::Union{Symbol, AbstractString}) = _output_choice(_OUTPUT_FREQUENCIES, f, "frequency")
+_output_frequency(f) = throw(ArgumentError("Unsupported output frequency $f."))
+_aggregation(a::AbstractAggregation) = a
+_aggregation(a::Union{Symbol, AbstractString}) = _output_choice(_AGGREGATIONS, a, "aggregation")
+_output_kind(k::AbstractOutputKind) = k
+_output_kind(k::Union{Symbol, AbstractString}) = _output_choice(_OUTPUT_KINDS, k, "kind")
+
+# The names of the choices, written into the NetCDF attributes.
+_label(choice) = String(only(name for (name, value) in pairs(_choice_table(choice)) if value === choice))
+_label(f::Every) = string(f.period)
+_choice_table(::AbstractOutputFrequency) = _OUTPUT_FREQUENCIES
+_choice_table(::AbstractAggregation) = _AGGREGATIONS
+_choice_table(::AbstractOutputKind) = _OUTPUT_KINDS
+
+# Traits of the choices.
+_per_column(::Columns) = true
+_per_column(::AbstractAggregation) = false
+_records_means(::Mean) = true
+_records_means(::Snapshot) = false
+
+# ---------------------------------------------------------------------------
 # Output specification
 # ---------------------------------------------------------------------------
 
-struct Output
+struct Output{F <: AbstractOutputFrequency, A <: AbstractAggregation, K <: AbstractOutputKind,
+        W <: AbstractOutputFormat}
     path::String
     variables::Vector{Symbol}
-    frequency::Any            # :step, :daily, :monthly, :yearly, or a Dates.Period
-    aggregate::Symbol         # :columns, :area_sum, :area_mean
-    kind::Symbol              # :mean or :snapshot (state variables)
+    frequency::F
+    aggregate::A
+    kind::K
+    format::W
     period::Union{Nothing, Tuple{DateTime, DateTime}}
     regions::Any              # nothing or NamedTuple of masks
     area::Union{Nothing, Vector{Float64}}
     depths::Vector{Float64}
     snow_cover_threshold::Float64
     columns::Union{Nothing, UnitRange{Int}}   # nothing (all) or the recorded columns
-    grid::Union{Nothing, SnowpackGrid}        # grid of `columns`
+    grid::Union{Nothing, Grid}                # grid of `columns`
 end
 
 """
@@ -146,27 +254,29 @@ end
 - `path`: `.nc` (NetCDF) or `.csv` (only for area-aggregated output or a single column).
 - `variables`: a list of names or a group (`:budget`, `:monthly`, `:default`, `:snow`, `:firn`);
   see `available_output_variables(model)`.
-- `frequency`: `:step`, `:daily`, `:monthly`, `:yearly`, or a period such as `Day(5)`, `Month(6)`.
+- `frequency`: `:step`, `:daily`, `:monthly`, `:yearly`, or a period such as `Day(5)`, `Month(6)`
+  (or the types `EveryStep()`, `Daily()`, `Monthly()`, `Yearly()`, `Every(Month(6))`).
   Periods are aligned to the calendar (months from January, days from 1970-01-01).
 - `aggregate`: `:columns` (one value per column, on the x–y grid when the grid has coordinates),
   `:area_sum` (mass fluxes and stores in Gt, snow cover in km², firn air content in km³,
   intensive variables as area-weighted means) or `:area_mean` (all area-weighted means).
-- `kind`: `:mean` (period mean) or `:snapshot` (end of period) for state variables.
+- `kind`: `:mean` (period mean) or `:snapshot` (end of period) for state variables (or `Mean()`,
+  `Snapshot()`); `aggregate` also takes `Columns()`, `AreaSum()`, `AreaMean()`.
 - `period`: `(first, last)` years or dates; records outside are not written.
 - `regions`: for area aggregation, a NamedTuple of masks (column vectors or y–x matrices),
   e.g. `(eurasia=mask1, north_america=mask2)`; default all columns.
 - `area`: column areas in km² (default: from the forcing, e.g. MAR `AREA`).
 - `depths`: bin edges (m) of `:density_profile` and depths of `:temperature_profile`.
 - `columns`: record only these columns of the domain (a unit range), e.g. one member of an
-  ensemble run side by side; `grid` is their `SnowpackGrid` (default: no spatial coordinates),
+  ensemble run side by side; `grid` is their `Grid` (default: no spatial coordinates),
   and `regions` and `area` refer to them.
 """
 function Output(
     path::AbstractString;
     variables=:default,
     frequency=:monthly,
-    aggregate::Symbol=:columns,
-    kind::Symbol=:mean,
+    aggregate=:columns,
+    kind=:mean,
     period=nothing,
     regions=nothing,
     area=nothing,
@@ -175,39 +285,33 @@ function Output(
     columns=nothing,
     grid=nothing,
 )
-    ext = lowercase(splitext(path)[2])
-    ext in (".nc", ".csv") || error("Output path must end in .nc or .csv: $path")
-    aggregate in (:columns, :area_sum, :area_mean) || error("`aggregate` must be :columns, :area_sum or :area_mean.")
-    kind in (:mean, :snapshot) || error("`kind` must be :mean or :snapshot.")
-    _validate_frequency(frequency)
-    !isnothing(regions) && aggregate == :columns && error("`regions` requires area aggregation.")
+    ext = Symbol(lowercase(splitext(path)[2]))
+    haskey(_OUTPUT_FORMATS, ext) || throw(ArgumentError("Output path must end in .nc or .csv: $path"))
+    format = _OUTPUT_FORMATS[ext]
+    frequency = _output_frequency(frequency)
+    aggregate = _aggregation(aggregate)
+    kind = _output_kind(kind)
+    !isnothing(regions) && _per_column(aggregate) && throw(ArgumentError("`regions` requires area aggregation."))
     cols = isnothing(columns) ? nothing : UnitRange{Int}(columns)
     isnothing(grid) || isnothing(cols) || ncols(grid) == length(cols) ||
         error("`grid` has $(ncols(grid)) columns for $(length(cols)) `columns`.")
     isnothing(grid) || !isnothing(cols) || error("`grid` requires `columns`.")
-    return Output(String(path), _expand_variables(variables), frequency, aggregate, kind,
+    return Output(String(path), _expand_variables(variables), frequency, aggregate, kind, format,
         _normalize_period(period), regions, isnothing(area) ? nothing : Float64.(collect(area)),
         Float64.(collect(depths)), Float64(snow_cover_threshold), cols, grid)
 end
-
-_validate_frequency(f::Dates.Period) = (Dates.value(f) > 0 || error("Output frequency must be positive."); nothing)
-_validate_frequency(f::Symbol) = (f in (:step, :daily, :monthly, :yearly) ||
-    error("Output frequency must be :step, :daily, :monthly, :yearly or a Dates.Period, got :$f."); nothing)
-_validate_frequency(f::AbstractString) = _validate_frequency(Symbol(f))
-_validate_frequency(f) = error("Unsupported output frequency $f.")
 
 _normalize_period(::Nothing) = nothing
 _normalize_period(p::AbstractRange{<:Integer}) = (DateTime(first(p)), DateTime(last(p) + 1) - Millisecond(1))
 _normalize_period(p::Tuple{<:Integer, <:Integer}) = (DateTime(p[1]), DateTime(p[2] + 1) - Millisecond(1))
 _normalize_period(p::Tuple) = (DateTime(p[1]), DateTime(p[2]))
 
-"""Calendar bucket of time `t` for `frequency`; a period ends where the bucket changes."""
-_bucket(f::Symbol, t::DateTime, k::Int) =
-    f === :step ? k :
-    f === :daily ? Dates.value(Date(t)) :
-    f === :monthly ? 12 * year(t) + month(t) :
-    year(t)
-_bucket(f::AbstractString, t, k) = _bucket(Symbol(f), t, k)
+"""Calendar bucket of time `t` (step `k`) for `frequency`; a period ends where the bucket changes."""
+_bucket(::EveryStep, t::DateTime, k::Int) = k
+_bucket(::Daily, t::DateTime, k::Int) = Dates.value(Date(t))
+_bucket(::Monthly, t::DateTime, k::Int) = 12 * year(t) + month(t)
+_bucket(::Yearly, t::DateTime, k::Int) = year(t)
+_bucket(f::Every, t::DateTime, k::Int) = _bucket(f.period, t, k)
 _bucket(f::Dates.Month, t::DateTime, k::Int) = (12 * year(t) + month(t) - 1) ÷ Dates.value(f)
 _bucket(f::Dates.Year, t::DateTime, k::Int) = fld(year(t), Dates.value(f))
 _bucket(f::Dates.Day, t::DateTime, k::Int) = fld(Dates.value(Date(t) - Date(1970)), Dates.value(f))
@@ -294,9 +398,8 @@ function _update_derived!(rec::OutputRecorder, state)
     rec.derived === nothing && return nothing
     # Allocate on the device of `state` (the buffers are first made from the host state).
     typeof(rec.derived.swe) == typeof(similar(state.runoff)) || (rec.derived = _derived_buffers(state, ncols(state)))
-    k! = _derived_column_kernel!(_ka_backend(state.mass))
-    k!(rec.derived, get_fields(state), state.c.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold);
-        ndrange=ncols(state))
+    launch!(_derived_column_kernel!, state.mass, ncols(state),
+        rec.derived, get_fields(state), rec.model.params.rho_i, convert(eltype(state.runoff), rec.spec.snow_cover_threshold))
     return nothing
 end
 
@@ -307,27 +410,27 @@ function OutputRecorder(spec::Output, model, state, domain_grid, forcing_area, n
     columns = something(spec.columns, 1:ncols(domain_grid))
     (first(columns) >= 1 && last(columns) <= ncols(domain_grid)) ||
         error("Output columns $columns lie outside the $(ncols(domain_grid)) columns of the domain.")
-    grid = spec.columns === nothing ? domain_grid : something(spec.grid, SnowpackGrid(length(columns)))
+    grid = spec.columns === nothing ? domain_grid : something(spec.grid, Grid(length(columns)))
     forcing_area = forcing_area === nothing || spec.columns === nothing ? forcing_area : forcing_area[columns]
     vars = [output_variable(model, v) for v in spec.variables]
     model isa BESSIModel || any(v -> v.shape != :column, vars) && error("Only column variables for $(nameof(typeof(model))).")
-    if spec.aggregate != :columns
+    if !_per_column(spec.aggregate)
         bad = filter(v -> v.shape != :column, vars)
         isempty(bad) || error("Layer and profile variables cannot be area-aggregated: $(join(string.(getfield.(bad, :name)), ", ")).")
     end
     ext = lowercase(splitext(spec.path)[2])
-    ext == ".csv" && spec.aggregate == :columns && ncols(grid) > 1 &&
+    spec.format === CSVFormat() && _per_column(spec.aggregate) && ncols(grid) > 1 &&
         error("CSV output needs area aggregation or a single column; use .nc for $(ncols(grid)) columns: $(spec.path)")
     ncol = ncols(grid)
     area = spec.area !== nothing ? spec.area : forcing_area !== nothing ? forcing_area :
-        spec.aggregate == :columns ? ones(ncol) :
+        _per_column(spec.aggregate) ? ones(ncol) :
         error("Area aggregation needs column areas: pass `area` to the Output or provide them in the Forcing.")
     length(area) == ncol || error("`area` has $(length(area)) values for $ncol columns.")
     regions = _region_masks(spec.regions, grid, ncol)
     rec = OutputRecorder(spec, vars, model, Dict(), Dict(), Dict(), Dict(), nothing, 0.0, nothing, nothing,
         false, false, nothing, 0, area, regions, columns)
     for v in vars
-        if v.class == :state && v.shape == :column && spec.kind == :mean
+        if v.class == :state && v.shape == :column && _records_means(spec.kind)
             rec.needs_every_step = true
         elseif v.shape in (:layer, :substrate, :depth)
             rec.needs_host_state = true
@@ -359,7 +462,7 @@ function _start_period!(rec::OutputRecorder, state, t::DateTime)
             rec.flux_prev[:runoff_for_smb] = copy(_runoff_counter_value(state))
             rec.flux_prev[:vapor_for_smb] = copy(_vapor_counter(state))
         end
-        if v.class == :state && v.shape == :column && rec.spec.kind == :mean
+        if v.class == :state && v.shape == :column && _records_means(rec.spec.kind)
             rec.sums[v.name] = fill!(similar(state.runoff, Float64, ncols(state)), 0.0)
         end
     end
@@ -411,7 +514,7 @@ function _accumulate_step!(rec::OutputRecorder, state, dt_days::Float64)
     _update_derived!(rec, state)
     for (name, acc) in rec.sums
         src = _column_source(rec, state, name)
-        acc .+= src .* dt_days
+        acc .+= _primal.(src) .* dt_days
     end
     return nothing
 end
@@ -442,14 +545,14 @@ function _period_values(rec::OutputRecorder, state, host_state)
         elseif v.class == :rate
             Δ = _host_vector(getproperty(state, _COUNTER_OF[name]) .- rec.rate_prev[name])
             out[name] = rec.days > 0 ? Δ ./ rec.days : zero(Δ)
-        elseif v.shape == :column && rec.spec.kind == :mean
+        elseif v.shape == :column && _records_means(rec.spec.kind)
             out[name] = rec.days > 0 ? _host_vector(rec.sums[name]) ./ rec.days : _host_vector(_column_source(rec, state, name))
         elseif v.shape == :column
             out[name] = _host_vector(_column_source(rec, state, name); copy_array=true)
         elseif v.shape in (:layer, :substrate)
-            out[name] = Float64.(Array(getproperty(host_state, name)))           # (layer, column)
+            out[name] = Float64.(_primal.(Array(getproperty(host_state, name))))   # (layer, column)
         elseif v.shape == :depth
-            out[name] = _depth_profile(host_state, name, rec.spec.depths)          # (depth, column)
+            out[name] = _depth_profile(host_state, name, rec.spec.depths, rec.model)   # (depth, column)
         end
         out[name] = _recorded(rec, out[name])
     end
@@ -457,12 +560,12 @@ function _period_values(rec::OutputRecorder, state, host_state)
 end
 
 """Density in the depth bins (edges `depths`) or temperature at the depths `depths`, per column."""
-function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64})
-    N, m, ρ, T, Ti = Array(state.N), Array(state.mass), Array(state.density), Array(state.temperature), Array(state.ice_temperature)
-    p = state.parameters
-    rho_ice = Float64(p.c.rho_i)
+function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64}, model)
+    N = Array(state.N)
+    m, ρ, T, Ti = (_primal.(Array(x)) for x in (state.mass, state.density, state.temperature, state.ice_temperature))
+    rho_ice = Float64(_primal(model.params.rho_i))
     nsub = size(Ti, 1)
-    sub_dz = [p.ice_substrate_top_thickness_m * 2.0^(k - 1) for k in 1:nsub]
+    sub_dz = [_primal(model.grid.layering.ice_substrate_top_thickness_m) * 2.0^(k - 1) for k in 1:nsub]
     ncol = length(N)
     nout = name == :density_profile ? length(depths) - 1 : length(depths)
     out = fill(NaN, nout, ncol)
@@ -502,22 +605,20 @@ function _depth_profile(state::BESSIState, name::Symbol, depths::Vector{Float64}
 end
 
 """Area aggregation of one column vector over every region."""
-function _aggregate(rec::OutputRecorder, v::OutputVariable, values::Vector{Float64})
-    out = Float64[]
-    for (_, mask) in rec.regions
-        if rec.spec.aggregate == :area_sum && v.quantity != :intensive
-            scale = v.quantity == :mass ? 1e-6 : v.quantity == :length ? 1e-3 : 1.0   # Gt, km³, km²
-            push!(out, sum(values[mask] .* rec.area[mask]) * scale)
-        else
-            a = rec.area[mask]
-            push!(out, sum(values[mask] .* a) / sum(a))
-        end
-    end
-    return out
-end
+_aggregate(rec::OutputRecorder, v::OutputVariable, values::Vector{Float64}) =
+    [_aggregate_region(rec.spec.aggregate, v, values[mask], rec.area[mask]) for (_, mask) in rec.regions]
 
-function _aggregate_units(rec::OutputRecorder, v::OutputVariable)
-    rec.spec.aggregate == :area_sum || return v.units
+# Area sums of extensive quantities in Gt, km³, km²; area-weighted means otherwise.
+function _aggregate_region(::AreaSum, v::OutputVariable, values, area)
+    v.quantity == :intensive && return _aggregate_region(AreaMean(), v, values, area)
+    scale = v.quantity == :mass ? 1e-6 : v.quantity == :length ? 1e-3 : 1.0
+    return sum(values .* area) * scale
+end
+_aggregate_region(::AbstractAggregation, v::OutputVariable, values, area) = sum(values .* area) / sum(area)
+
+_aggregate_units(rec::OutputRecorder, v::OutputVariable) = _aggregate_units(rec.spec.aggregate, v)
+_aggregate_units(::AbstractAggregation, v::OutputVariable) = v.units
+function _aggregate_units(::AreaSum, v::OutputVariable)
     v.quantity == :mass && return "Gt"
     v.quantity == :fraction && return "km2"
     v.quantity == :length && return "km3"
@@ -561,11 +662,14 @@ _column_label(rec_regions, v, r, units) =
 
 function _open_writer(spec::Output, vars, grid, nc_meta, model, state, nregions)
     mkpath(dirname(abspath(spec.path)))
-    ext = lowercase(splitext(spec.path)[2])
-    if ext == ".csv"
-        io = open(spec.path, "w")
-        return CSVWriter(io, Tuple{Symbol, Int}[])     # header on the first record (needs region names)
-    end
+    return _open_writer(spec.format, spec, vars, grid, nc_meta, model, state, nregions)
+end
+
+# The header is written with the first record (it needs the region names).
+_open_writer(::CSVFormat, spec, vars, grid, nc_meta, model, state, nregions) =
+    CSVWriter(open(spec.path, "w"), Tuple{Symbol, Int}[])
+
+function _open_writer(::NetCDFFormat, spec, vars, grid, nc_meta, model, state, nregions)
     ds = NCDataset(spec.path, "c")
     defDim(ds, "time", Inf)
     tv = defVar(ds, "time", Float64, ("time",); attrib=Dict("standard_name" => "time", "units" => NETCDF_TIME_UNITS,
@@ -575,13 +679,13 @@ function _open_writer(spec::Output, vars, grid, nc_meta, model, state, nregions)
     for (k, v) in nc_meta
         ds.attrib[k] = v
     end
-    ds.attrib["output_frequency"] = string(spec.frequency)
-    ds.attrib["output_aggregate"] = string(spec.aggregate)
-    ds.attrib["state_kind"] = string(spec.kind)
-    spatial = spec.aggregate == :columns && has_spatial_coords(grid)
+    ds.attrib["output_frequency"] = _label(spec.frequency)
+    ds.attrib["output_aggregate"] = _label(spec.aggregate)
+    ds.attrib["state_kind"] = _label(spec.kind)
+    spatial = _per_column(spec.aggregate) && has_spatial_coords(grid)
     nx = spatial ? length(grid.x) : 0
     ny = spatial ? length(grid.y) : 0
-    if spec.aggregate == :columns
+    if _per_column(spec.aggregate)
         if spatial
             defDim(ds, "x", nx); defDim(ds, "y", ny)
             defVar(ds, "x", Float64.(grid.x), ("x",); attrib=Dict("long_name" => "x coordinate"))
@@ -598,18 +702,17 @@ function _open_writer(spec::Output, vars, grid, nc_meta, model, state, nregions)
     handles = Dict{Symbol, Any}()
     for v in vars
         dims = v.shape == :column ? (cdims..., "time") :
-            v.shape == :layer ? (_ensure_dim!(ds, "layer", state.Ntot); (cdims..., "layer", "time")) :
+            v.shape == :layer ? (_ensure_dim!(ds, "layer", size(state.mass, 1)); (cdims..., "layer", "time")) :
             v.shape == :substrate ? (_ensure_dim!(ds, "substrate_layer", size(state.ice_temperature, 1)); (cdims..., "substrate_layer", "time")) :
             _depth_dims!(ds, v, spec.depths, cdims)
-        units = spec.aggregate == :area_sum && v.quantity != :intensive ?
-            (v.quantity == :mass ? "Gt" : v.quantity == :fraction ? "km2" : "km3") : v.units
+        units = _aggregate_units(spec.aggregate, v)
         handles[v.name] = defVar(ds, String(v.name), Float32, dims; fillvalue=NaN32,
             attrib=Dict("units" => units, "long_name" => v.long_name,
                 "cell_methods" => "time: " * (v.class == :flux ? "sum" : v.class == :rate ? "mean" :
-                    (v.shape == :column && spec.kind == :mean) ? "mean" : "point")))
+                    (v.shape == :column && _records_means(spec.kind)) ? "mean" : "point")))
     end
     return NetCDFWriter(ds, handles, spatial, spatial ? grid.is : Int[], spatial ? grid.js : Int[], nx, ny,
-        spec.aggregate != :columns)
+        !_per_column(spec.aggregate))
 end
 
 _ensure_dim!(ds, name, n) = haskey(ds.dim, name) || defDim(ds, name, n)
@@ -636,13 +739,13 @@ function _write_record!(w::CSVWriter, rec::OutputRecorder, values, t0, t1, r)
             push!(w.columns, (v.name, k))
         end
         labels = [_column_label(rec.regions, v.name, k, _aggregate_units(rec, v)) for v in rec.vars for k in eachindex(rec.regions)]
-        rec.spec.aggregate == :columns && (labels = [String(v.name) * " ($(v.units))" for v in rec.vars])
+        _per_column(rec.spec.aggregate) && (labels = [String(v.name) * " ($(v.units))" for v in rec.vars])
         println(w.io, join(vcat(["period_start", "period_end"], labels), ','))
     end
     fields = String[string(t0), string(t1)]
     for v in rec.vars
         x = values[v.name]
-        vals = rec.spec.aggregate == :columns ? [x[1]] : _aggregate(rec, v, x)
+        vals = _per_column(rec.spec.aggregate) ? [x[1]] : _aggregate(rec, v, x)
         append!(fields, repr.(vals))
     end
     println(w.io, join(fields, ','))

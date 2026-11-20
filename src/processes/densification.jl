@@ -30,7 +30,7 @@ Firn densification translated into array-backed kernels.
 Return the HTESSEL low-density densification tendency for one layer.
 """
 @inline function _htessel_low_density_rate(
-    c::SnowpackPhysicalConstants,
+    c::Params,
     overburden_pressure,
     temperature,
     density,
@@ -104,7 +104,7 @@ Return the low-density densification tendency for the BESSI formulation.
 """
 @inline function _low_density_tendency(
     ::BESSIDensification,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     overburden_pressure,
     temperature,
     density,
@@ -120,7 +120,7 @@ Return the low-density densification tendency for the HTESSEL formulation.
 """
 @inline function _low_density_tendency(
     ::HTESSELDensification,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     overburden_pressure,
     temperature,
     density,
@@ -188,7 +188,7 @@ function _go_densification_scheme!(
     density,
     temperature,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     accumulation_rate,
     dt_seconds,
     low_density_scheme::AbstractDensificationScheme,
@@ -265,34 +265,35 @@ function _go_densification!(
     density,
     temperature,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     accumulation_rate,
     dt_seconds,
 )
     return _go_densification_scheme!(
-        N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds, densification_scheme(c),
+        N_storage, mass, density, temperature, idx, c, accumulation_rate, dt_seconds, c.densification_scheme,
     )
 end
 
 """
-    go_densification!(state, idx, accumulation_rate, dt_seconds)
+    go_densification!(model, idx, accumulation_rate, dt_seconds)
 
-Advance snow density for column `idx` of `state` over one time step. Mutates
-`state.density` in-place and returns `nothing`.
+Advance the snow density of column `idx` of a CPU `model` over one time step. Mutates its
+`density` in place and returns `nothing`.
 """
 function go_densification!(
-    state,
+    model,
     idx::Int,
     accumulation_rate,
     dt_seconds,
 )
+    state = model.state
     return _go_densification!(
         state.N,
         state.mass,
         state.density,
         state.temperature,
         idx,
-        state.c,
+        model.params,
         accumulation_rate,
         dt_seconds,
     )

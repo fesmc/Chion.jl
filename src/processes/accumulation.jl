@@ -9,22 +9,22 @@ Diagnose the density of newly fallen snow from the configured scheme in `c`.
 The result is clamped to a physically plausible range between fresh snow and
 ice density.
 """
-@inline _fresh_snow_density(c::SnowpackPhysicalConstants, air_temperature, wind_speed) =
-    _fresh_snow_density(fresh_snow_density_scheme(c), c, air_temperature, wind_speed)
+@inline _fresh_snow_density(c::Params, air_temperature, wind_speed) =
+    _fresh_snow_density(c.fresh_snow_density_scheme, c, air_temperature, wind_speed)
 
 @inline _fresh_snow_density(::ConstantFreshSnowDensity, c, air_temperature, wind_speed) =
-    clamp(c.rho_s, oftype(c.rho_s, 50), c.rho_i)
+    clamp(c.fresh_snow_density_scheme.density, oftype(c.rho_i, 50), c.rho_i)
 
 @inline function _fresh_snow_density(
     ::ParameterizedFreshSnowDensity,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     air_temperature,
     wind_speed,
 )
     nonnegative_wind_speed = max(wind_speed, zero(wind_speed))
-    fresh_snow_density = c.rho_s_a +
-                         c.rho_s_b * (air_temperature - c.T0) +
-                         c.rho_s_c * sqrt(nonnegative_wind_speed)
+    fresh_snow_density = c.fresh_snow_density_scheme.intercept +
+                         c.fresh_snow_density_scheme.temperature_coefficient * (air_temperature - c.T0) +
+                         c.fresh_snow_density_scheme.wind_coefficient * sqrt(nonnegative_wind_speed)
     return clamp(fresh_snow_density, oftype(fresh_snow_density, 50), c.rho_i)
 end
 
@@ -49,7 +49,7 @@ function _apply_accumulation_resolved!(
     Tsrf,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     Ntot::Int,
     mass_max,
     mass_split,
@@ -170,7 +170,7 @@ function _apply_accumulation!(
     Tsrf,
     albedo_dynamic,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
     Ntot::Int,
     mass_max,
     mass_split,

@@ -5,8 +5,8 @@ using Chion
 using CUDA
 
 Chion.backend_functional(::Chion.GPUBackend) = CUDA.functional()
-Chion.storage_type(backend::Chion.GPUBackend) =
-    CUDA.functional() ? CUDA.CuArray : Chion._require_functional(backend)
+Chion._cuda_ka_backend(::Nothing) =
+    CUDA.functional() ? CUDA.CUDABackend() : error("`backend = :gpu` requested, but CUDA is not functional.")
 
 # Inline the whole column step into the CUDA kernel: without it, every non-inlined call
 # passes large structs (e.g. the 0.5 kB physical constants) through local memory, which

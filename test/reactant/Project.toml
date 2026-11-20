@@ -1,0 +1,12 @@
+[deps]
+CUDA = "052768ef-5323-5732-b1bb-66c8b64840ba"
+Chion = "d76e9efd-0eaf-4f3e-a1bf-7ee81c31eef7"
+Dates = "ade2ca70-3891-5945-98fb-dc099432e06a"
+Reactant = "3c362404-f566-11ee-1572-e11a4b42c853"
+Test = "8dfdfd4c-a5fe-597b-b3c7-8b8d0a1d4b32"
+
+[sources]
+Chion = {path = "../.."}
+
+[compat]
+Reactant = "0.2"

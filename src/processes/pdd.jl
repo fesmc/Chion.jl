@@ -155,60 +155,25 @@ function _pdd_step_arrays!(
     state::PDDState,
     forcing,
     time_index::Int,
-    model::PDDModel,
+    params::PDDParams,
     active_indices,
 )
-    ncol = length(state.snowpack_swe)
-    size(forcing.air_temperature, 1) == ncol ||
-        error("Forcing column count must match the PDD state column count.")
-    length(state.smb_ice) == ncol || error("PDD SMB length must match the state column count.")
-    length(state.runoff) == ncol || error("PDD runoff length must match the state column count.")
-    length(state.pdd_sum) == ncol || error("PDD diagnostic length must match the state column count.")
-    1 <= time_index <= size(forcing.air_temperature, 2) ||
-        error("PDD forcing time index is out of bounds.")
-    isempty(active_indices) && return nothing
-
-    kernel! = _pdd_step_kernel!(_ka_backend(state.snowpack_swe))
-    kernel!(
+    launch!(_pdd_step_kernel!, state.snowpack_swe, length(active_indices),
         get_fields(state),
         forcing.air_temperature,
         forcing.snowfall_rate,
         forcing.rainfall_rate,
         time_index,
         _step_dt(forcing.dt_days, time_index),
-        model.ddf_snow,
-        model.ddf_ice,
-        model.refreezing_fraction,
-        model.temperature_sigma,
-        model.H_snow_max,
-        pdd_method(model),
-        model.c.T0,
-        model.c.seconds_per_day,
-        active_indices;
-        ndrange=length(active_indices),
-    )
-    return nothing
-end
-
-function pdd_step!(
-    model::PDDModel,
-    state::PDDState,
-    forcing::SnowpackForcing,
-    time_index::Int,
-)
-    active_indices = collect(1:length(state.snowpack_swe))
-    return _pdd_step_arrays!(
-        state,
-        forcing,
-        time_index,
-        model,
+        params.ddf_snow,
+        params.ddf_ice,
+        params.refreezing_fraction,
+        params.temperature_sigma,
+        params.H_snow_max,
+        params.method,
+        params.T0,
+        params.seconds_per_day,
         active_indices,
     )
-end
-
-function pdd_step!(model::PDDModel, state::PDDState, forcing::SnowpackForcing)
-    for time_index in 1:_step_time_count(forcing)
-        pdd_step!(model, state, forcing, time_index)
-    end
     return nothing
 end

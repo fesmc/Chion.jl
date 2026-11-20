@@ -1,12 +1,16 @@
-using Test
-using CUDA
-using Chion
-include("test_geometric_accumulation.jl")
+include("setup.jl")
 
+include("test_geometric_accumulation.jl")
 include("test_albedo_timestep.jl")
 include("test_case_api.jl")
-include("test_experiment.jl")
+include("test_simulation.jl")
 include("test_longwave_consistency.jl")
 include("test_surface_energy_balance.jl")
+include("test_boundary_conditions.jl")
 include("test_forcing_host.jl")
+include("test_numerics.jl")
+include("test_autodiff.jl")
+include("reproductions.jl")
+include("display.jl")
+include("code_quality.jl")
 include("test_gpu.jl")

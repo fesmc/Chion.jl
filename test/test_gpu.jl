@@ -4,141 +4,103 @@ using Chion
 
 if Chion.cuda_available()
     @testset "GPU execution" begin
+        gpu = CUDABackend()
+
         @testset "BESSI transposed storage matches CPU" begin
             ncol = 4
-            grid = SnowpackGrid(ncol)
-            forcing = SnowpackForcing(
-                dt_days=[1.0, 1.0],
-                ncol=ncol,
-                air_temperature_c=[-8.0, -6.0],
-                snowfall_mm_day=[2.0, 1.0],
-                rainfall_mm_day=0.0,
-                shortwave_down=[100.0, 120.0],
-                latitude_deg=fill(70.0, ncol),
-            )
-            model = BESSIModel(grid; Ntot=4, albedo=:aging)
-            cpu_sim = Simulation(model; forcing=forcing, backend=:threads, years=1)
-            gpu_sim = Simulation(model; forcing=forcing, backend=:gpu, years=1)
+            forcing = SnowpackForcing(dt_days = [1.0, 1.0], ncol = ncol, air_temperature_c = [-8.0, -6.0],
+                snowfall_mm_day = [2.0, 1.0], rainfall_mm_day = 0.0, shortwave_down = [100.0, 120.0],
+                latitude_deg = fill(70.0, ncol))
+            grid = Grid(ncol; layering = Layering(Ntot = 4))
+            params = Params(albedo_scheme = AgingAlbedo())
+            cpu = BESSIModel(grid; forcing, params)
+            device = BESSIModel(grid; forcing, params, backend = gpu)
+            @test device.state.mass isa Chion.TransposedLayerMatrix
+            @test size(device.state.mass.parent) == (ncol, 4)
+            @test device.forcing.fields.q_lw_down isa Chion.ConstantForcingMatrix
+            @test device.forcing.fields.latitude_deg isa Chion.ColumnForcingMatrix
+            @test device.forcing.fields.air_temperature.values isa CuArray   # compact: varies in time only
+            # A changed input reaches the device.
+            set_input!(device, :latitude_deg, fill(72.0, ncol))
+            set_input!(cpu, :latitude_deg, fill(72.0, ncol))
+            @test Array(device.forcing.fields.latitude_deg.values) == fill(72.0, ncol)
 
-            integrator = init_integrator(gpu_sim; io=devnull)
-            gpu_state = integrator.model_runtime.data.state
-            @test gpu_state.mass isa Chion.TransposedLayerMatrix
-            @test size(gpu_state.mass.parent) == (ncol, model.Ntot)
-            @test integrator.model_runtime.data.step_fields.q_lw_down isa Chion.ConstantForcingMatrix
-            @test integrator.model_runtime.data.step_fields.latitude_deg isa Chion.ColumnForcingMatrix
-            forcing.air_temperature[:, 1] .= 264.0
-            forcing.air_pressure .*= 0.99
-            sync_forcing!(integrator)
-            @test Array(integrator.model_runtime.data.step_fields.air_temperature.values) ==
-                forcing.air_temperature.values
-            @test Array(integrator.model_runtime.data.step_fields.air_pressure) ==
-                forcing.air_pressure
-
-            cpu_result = run!(cpu_sim; io=devnull)
-            run!(integrator)
-            gpu_result = finalize!(integrator)
-
-            @test cpu_result.status == gpu_result.status == :complete
-            @test gpu_sim.now.mass ≈ cpu_sim.now.mass
-            @test gpu_sim.now.mass_w ≈ cpu_sim.now.mass_w
-            @test gpu_sim.now.density ≈ cpu_sim.now.density
-            @test gpu_sim.now.temperature ≈ cpu_sim.now.temperature
-            @test gpu_sim.now.smb_ice ≈ cpu_sim.now.smb_ice
-            @test gpu_sim.now.albedo ≈ cpu_sim.now.albedo
-            @test gpu_sim.now.snow_age_days ≈ cpu_sim.now.snow_age_days
+            run!(Simulation(cpu; verbose = false))
+            run!(Simulation(device; verbose = false))
+            host = cpu_state(device)
+            for name in (:mass, :mass_w, :density, :temperature, :smb_ice, :albedo, :snow_age_days)
+                @test getfield(host, name) ≈ getfield(cpu.state, name)
+            end
+            @test Array(device.thickness) ≈ cpu.thickness
+            # Back to the CPU.
+            back = to_backend(device, CPU())
+            @test back.state.mass == host.mass && back.state.mass isa Matrix
         end
 
-        @testset "BESSI GPU handles a partial final workgroup" begin
+        @testset "BESSI GPU handles a partial final workgroup and bare ice" begin
             # The production GrIS mask does not generally contain an exact
             # multiple of the CUDA workgroup size (256) active columns.
             ncol = 257
-            forcing = SnowpackForcing(
-                dt_days=[1.0],
-                ncol=ncol,
-                air_temperature_c=-5.0,
-                snowfall_mm_day=1.0,
-                rainfall_mm_day=0.0,
-                shortwave_down=100.0,
-                latitude_deg=70.0,
-            )
-            sim = Simulation(BESSIModel(SnowpackGrid(ncol); Ntot=4, albedo=:aging);
-                forcing=forcing, backend=:gpu, years=1)
-            @test run!(sim; io=devnull).status == :complete
+            for (temperature, snowfall, shortwave) in ((-5.0, 1.0, 100.0), (2.0, 0.0, 250.0))
+                forcing = SnowpackForcing(dt_days = [1.0], ncol = ncol, air_temperature_c = temperature,
+                    snowfall_mm_day = snowfall, rainfall_mm_day = 0.0, shortwave_down = shortwave, latitude_deg = 70.0)
+                model = BESSIModel(Grid(ncol; layering = Layering(Ntot = 4)); forcing,
+                    params = Params(albedo_scheme = AgingAlbedo()), backend = gpu)
+                sim = run!(Simulation(model; verbose = false))
+                @test finished(sim)
+                @test all(isfinite, Array(model.albedo))
+            end
         end
 
-        @testset "BESSI GPU handles bare-ice columns" begin
-            ncol = 257
-            forcing = SnowpackForcing(
-                dt_days=[1.0],
-                ncol=ncol,
-                air_temperature_c=2.0,
-                snowfall_mm_day=0.0,
-                rainfall_mm_day=0.0,
-                shortwave_down=250.0,
-                latitude_deg=70.0,
-            )
-            model = BESSIModel(SnowpackGrid(ncol); Ntot=4, albedo=:aging)
-            sim = Simulation(model;
-                forcing=forcing, backend=:gpu, years=1)
-            @test run!(sim; io=devnull).status == :complete
-            @test all(isfinite, sim.now.albedo)
+        @testset "Per-column boundary conditions on the GPU" begin
+            forcing = SnowpackForcing(dt_days = ones(20), ncol = 3, air_temperature_c = -20.0, snowfall_mm_day = 1.0,
+                rainfall_mm_day = 0.0, shortwave_down = 50.0, latitude_deg = 70.0)
+            params = Params(temperature_init = 250.0)
+            boundary = BoundaryConditions(bottom = GeothermalFlux([0.2, 0.5, 1.0]))
+            cpu = BESSIModel(Grid(3); forcing, params, boundary)
+            device = BESSIModel(Grid(3); forcing, params, boundary, backend = gpu)
+            @test device.boundary.bottom.flux isa CuArray
+            integrate!(cpu, 1:20); integrate!(device, 1:20)
+            @test cpu_state(device).ice_temperature ≈ cpu.state.ice_temperature rtol = 1e-10
+            set_boundary!(device, :bottom, [1.0, 1.0, 1.0])
+            @test Array(device.boundary.bottom.flux) == [1.0, 1.0, 1.0]
+            sim = Simulation(device; verbose = false, output = OutputConfig(dir = mktempdir()))
+            @test haskey(Chion._run_metadata(sim)["boundary"]["bottom"], "flux")
         end
 
         @testset "PDD active indices" begin
             ncol = 3
-            forcing = SnowpackForcing(
-                dt_days=[1.0, 30.0],
-                ncol=ncol,
-                air_temperature_c=[-2.0, 2.0],
-                snowfall_mm_day=[1.0, 1.0],
-                rainfall_mm_day=[0.0, 1.0],
-                shortwave_down=100.0,
-            )
-            sim = Simulation(PDDModel(SnowpackGrid(ncol));
-                forcing=forcing,
-                backend=:gpu,
-                years=1,
-            )
-            integrator = init_integrator(sim; io=devnull)
-            runtime_forcing = integrator.model_runtime.data.step_fields
-            @test runtime_forcing.air_temperature !== forcing.air_temperature
-            @test runtime_forcing.snowfall_rate !== forcing.snowfall_rate
-            @test runtime_forcing.rainfall_rate !== forcing.rainfall_rate
-            @test !hasproperty(runtime_forcing, :shortwave_down)
-            @test !hasproperty(runtime_forcing, :air_pressure)
-            set_active_mask!(integrator, [true, false, true])
-            run!(integrator)
-            result = finalize!(integrator)
-
-            @test result.status == :complete
-            @test sim.now.pdd_sum[1] > 0.0
-            @test sim.now.pdd_sum[2] == 0.0
-            @test sim.now.pdd_sum[3] > 0.0
+            forcing = SnowpackForcing(dt_days = [1.0, 30.0], ncol = ncol, air_temperature_c = [-2.0, 2.0],
+                snowfall_mm_day = [1.0, 1.0], rainfall_mm_day = [0.0, 1.0], shortwave_down = 100.0)
+            model = PDDModel(Grid(ncol); forcing, backend = gpu)
+            fields = model.forcing.fields
+            @test fields.air_temperature.values isa CuArray
+            @test !hasproperty(fields, :shortwave_down) && !hasproperty(fields, :air_pressure)
+            sim = Simulation(model; verbose = false)
+            set_active_mask!(sim, [true, false, true])
+            run!(sim)
+            pdd = Array(model.pdd_sum)
+            @test pdd[1] > 0.0 && pdd[2] == 0.0 && pdd[3] > 0.0
         end
 
         @testset "ITM GPU matches CPU" begin
             ncol = 3
-            forcing = SnowpackForcing(
-                dt_days=[1.0, 1.0, 1.0],
-                ncol=ncol,
-                air_temperature=[270.0 272.0 275.0; 268.0 271.0 274.0; 265.0 270.0 276.0],
-                snowfall_rate=fill(2.0 / 86_400, ncol, 3),
-                rainfall_rate=zeros(ncol, 3),
-                shortwave_down=fill(450.0, ncol, 3),
-                latitude_deg=[65.0, 70.0, 75.0],
-                surface_height=[300.0, 1200.0, 2500.0],
-                ice_thickness=[1000.0, 1500.0, 2500.0],
-                annual_pdd=[400.0, 150.0, 20.0],
-            )
-            runs = Dict(backend => Simulation(ITMModel(SnowpackGrid(ncol)); forcing, backend, years=2)
-                        for backend in (:threads, :gpu))
-            for sim in values(runs)
-                @test run!(sim; io=devnull).status == :complete
+            forcing = SnowpackForcing(dt_days = [1.0, 1.0, 1.0], ncol = ncol,
+                air_temperature = [270.0 272.0 275.0; 268.0 271.0 274.0; 265.0 270.0 276.0],
+                snowfall_rate = fill(2.0 / 86_400, ncol, 3), rainfall_rate = zeros(ncol, 3),
+                shortwave_down = fill(450.0, ncol, 3), latitude_deg = [65.0, 70.0, 75.0],
+                surface_height = [300.0, 1200.0, 2500.0], ice_thickness = [1000.0, 1500.0, 2500.0],
+                annual_pdd = [400.0, 150.0, 20.0])
+            models = Dict(backend => ITMModel(Grid(ncol); forcing, backend) for backend in (CPU(), gpu))
+            for model in values(models)
+                sim = Simulation(model; years = [2001, 2001], verbose = false)
+                run!(sim)
+                @test finished(sim)
             end
-            cpu, gpu = runs[:threads].now, runs[:gpu].now
+            cpu, device = models[CPU()].state, cpu_state(models[gpu])
             @test any(cpu.melt_cum .> 0.0)
             for name in (:H_snow, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum, :Tsrf)
-                @test Array(getproperty(gpu, name)) ≈ Array(getproperty(cpu, name)) rtol=1e-10
+                @test getfield(device, name) ≈ getfield(cpu, name) rtol = 1e-10
             end
         end
     end

@@ -3,18 +3,11 @@ Layer-structure updates and basal depletion for array-backed snowpack states.
 """
 
 """
-    _safe_nonnegative(x)
-
-Clamp `x` to zero from below.
-"""
-@inline _safe_nonnegative(x) = x > zero(x) ? x : zero(x)
-
-"""
     _solid_enthalpy(mass, temperature, c)
 
 Enthalpy (J m⁻²) of solid mass at `temperature`, relative to liquid water at T₀.
 """
-@inline _solid_enthalpy(mass, temperature, c::SnowpackPhysicalConstants) =
+@inline _solid_enthalpy(mass, temperature, c::Params) =
     mass * (c.ci * (temperature - c.T0) - c.Lm)
 
 """
@@ -40,7 +33,7 @@ function _reset_layer_at_index!(
     temperature,
     idx::Int,
     layer_index::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     _set_layer!(mass, layer_index, idx, zero(eltype(mass)))
     _set_layer!(mass_w, layer_index, idx, zero(eltype(mass_w)))
@@ -115,7 +108,7 @@ function _merge_surface_layer!(
     Ntot::Int,
     mass_split,
     mass_min,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     n = _n_active(N_storage, idx)
     surface_mass = n > 0 ? _get_layer(mass, 1, idx) : zero(eltype(mass))
@@ -196,7 +189,7 @@ function _merge_bottom_layer!(
     mass_base,
     smb_ice,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     n = _n_active(N_storage, idx)
     if n < 2
@@ -256,7 +249,7 @@ function _remove_surface_layer!(
     density,
     temperature,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     n = _n_active(N_storage, idx)
     if n <= 0
@@ -293,7 +286,7 @@ runoff.
     temperature,
     runoff,
     idx::Int,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     n = _n_active(N_storage, idx)
     residual = _get_layer(mass_w, 1, idx) + max(_get_layer(mass, 1, idx), zero(eltype(mass)))
@@ -326,7 +319,7 @@ function _continuous_bottom_deplete!(
     albedo_dynamic,
     idx::Int,
     d_m_in,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     d_m = _safe_nonnegative(d_m_in)
     ice_to_base = zero(d_m)
@@ -405,7 +398,7 @@ function _free_slot_for_surface_split!(
     idx::Int,
     Ntot::Int,
     mass_max,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     if Ntot == 1
         overflow = max(_get_layer(mass, 1, idx) - mass_max, zero(eltype(mass)))
@@ -465,7 +458,7 @@ mass-layer structure unchanged.
 function _cap_near_surface_layer_thicknesses!(
     N_storage, mass, mass_w, density, temperature,
     idx::Int, Ntot::Int, maximum_thicknesses_m::NTuple{4, <:Real},
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     all(isinf, maximum_thicknesses_m) && return nothing
     n = _n_active(N_storage, idx)
@@ -518,7 +511,7 @@ padded; its deepest active layer may remain thinner than its target.
 """
 function _fill_near_surface_layer_thicknesses!(
     N_storage, mass, mass_w, density, temperature, idx::Int,
-    target_thicknesses_m::NTuple{4, <:Real}, c::SnowpackPhysicalConstants,
+    target_thicknesses_m::NTuple{4, <:Real}, c::Params,
 )
     all(isinf, target_thicknesses_m) && return nothing
     n = _n_active(N_storage, idx)
@@ -586,7 +579,7 @@ layers of a full column are never split, so the deep bulk layer may grow.
 function _split_deep_layers!(
     N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
     idx::Int, Ntot::Int, first_deep::Int, mass_max, mass_split,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     k = first_deep
     exported_enthalpy = zero(eltype(mass))
@@ -624,7 +617,7 @@ end
 @inline function _remesh_near_surface_layers!(
     N_storage, mass, mass_w, density, temperature, mass_base, smb_ice,
     idx::Int, Ntot::Int, target_thicknesses_m::NTuple{4, <:Real},
-    mass_max, mass_split, c::SnowpackPhysicalConstants,
+    mass_max, mass_split, c::Params,
 )
     _cap_near_surface_layer_thicknesses!(
         N_storage, mass, mass_w, density, temperature,
@@ -665,7 +658,7 @@ function _enforce_snow_depth_cap!(
     Ntot::Int,
     mass_split,
     dt_seconds,
-    c::SnowpackPhysicalConstants,
+    c::Params,
 )
     total_active_snow_depth = zero(eltype(mass))
     @inbounds for layer_index in 1:_n_active(N_storage, idx)
@@ -723,17 +716,17 @@ function _enforce_snow_depth_cap!(
 end
 
 """
-    continuous_bottom_deplete!(state, idx, d_m_in)
+    continuous_bottom_deplete!(model, idx, d_m_in)
 
-Public wrapper for basal depletion of column `idx` in `state`. Mutates the
-state state in-place and returns a named tuple with transferred ice and
-runoff.
+Basal depletion of column `idx` of a CPU `model`. Mutates its state in place and returns a named
+tuple with the transferred ice and runoff.
 """
 function continuous_bottom_deplete!(
-    state,
+    model,
     idx::Int,
     d_m_in,
 )
+    state = model.state
     return _continuous_bottom_deplete!(
         state.N,
         state.mass,
@@ -747,6 +740,6 @@ function continuous_bottom_deplete!(
         state.albedo,
         idx,
         d_m_in,
-        state.c,
+        model.params,
     )
 end

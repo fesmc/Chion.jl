@@ -1,4 +1,7 @@
-"""State containers owned by `Simulation.ref` and `Simulation.now`."""
+#=
+Prognostic state of the models: the arrays that a time step reads and updates. Diagnostics and
+scratch arrays are in the model's cache (`model.jl`).
+=#
 
 """
 Logical `(layer, column)` matrix backed by `(column, layer)` storage.
@@ -29,77 +32,73 @@ Base.similar(matrix::TransposedLayerMatrix, ::Type{T}, n::Int) where {T} =
     similar(matrix.parent, T, n)
 Base.Array(matrix::TransposedLayerMatrix) = permutedims(Array(matrix.parent), (2, 1))
 Adapt.@adapt_structure TransposedLayerMatrix
+Adapt.parent_type(::Type{TransposedLayerMatrix{T, M}}) where {T, M} = M
 
 """
-    BESSIState
+$(TYPEDEF)
 
-Flat BESSI state container. Evolving arrays live directly on the state so user
-code can inspect fields as `sim.now.mass`, `sim.now.runoff`, and
-`sim.now.thickness` without going through an intermediate domain wrapper.
+Prognostic state of a [`BESSIModel`](@ref): the snow and firn layers `(layer, column)` (on a GPU
+stored `(column, layer)` for coalesced access, see `TransposedLayerMatrix`), the ice-substrate
+temperatures, and per column the number of active layers, the cumulative mass fluxes (kg m⁻²),
+the time-integrated surface energy balance (W m⁻² day, positive into the surface) and the surface
+properties.
+
+# Fields
+$(TYPEDFIELDS)
 """
-struct BESSIState{
-        NF <: AbstractFloat,
-        P <: BESSIParameters,
-        NI <: AbstractVector{<:Integer},
-        MT <: AbstractMatrix{NF},
-        VT <: AbstractVector{NF},
-    }
-    parameters::P
-    ncol::Int
+struct BESSIState{NI <: AbstractVector{<:Integer}, MT <: AbstractMatrix, VT <: AbstractVector}
+    "number of active snow and firn layers"
     N::NI
+    "solid mass of the layers (kg m⁻²)"
     mass::MT
+    "liquid water of the layers (kg m⁻²)"
     mass_w::MT
+    "density of the layers (kg m⁻³)"
     density::MT
+    "temperature of the layers (K)"
     temperature::MT
-    mass_base::VT
-    smb_ice::VT
-    runoff::VT
-    melt::VT
-    refreezing::VT
-    vapor_mass::VT
-    sublimation::VT
-    latent_heat_flux_sum::VT
-    # Time-integrated surface energy balance (W m⁻² day), positive into the
-    # surface: shortwave down and absorbed, longwave down and net, sensible
-    # heat, and the heat of rain. Diagnostics only.
-    shortwave_down_sum::VT
-    shortwave_net_sum::VT
-    longwave_down_sum::VT
-    longwave_net_sum::VT
-    sensible_heat_flux_sum::VT
-    rain_heat_flux_sum::VT
-    Tsrf::VT
-    albedo::VT
-    snow_age_days::VT
-    w_snow_max::VT
-    thickness::VT
-    wet_mass::VT
-    bulk_density::VT
-    liquid_water::VT
-    # Temperatures of the optional fixed-geometry ice substrate below the
-    # snow/firn column, `(ice_substrate_layers, column)`.
+    "temperature of the ice-substrate layers (K)"
     ice_temperature::MT
+    "firn mass passed to the ice below (kg m⁻², cumulative)"
+    mass_base::VT
+    "net mass forcing of the ice sheet (kg m⁻², cumulative)"
+    smb_ice::VT
+    "runoff (kg m⁻², cumulative)"
+    runoff::VT
+    "melt (kg m⁻², cumulative)"
+    melt::VT
+    "refreezing (kg m⁻², cumulative)"
+    refreezing::VT
+    "net vapour exchange, deposition positive (kg m⁻², cumulative)"
+    vapor_mass::VT
+    "sublimation (kg m⁻², cumulative)"
+    sublimation::VT
+    "latent heat flux (W m⁻² day, cumulative)"
+    latent_heat_flux_sum::VT
+    "shortwave down (W m⁻² day, cumulative)"
+    shortwave_down_sum::VT
+    "absorbed shortwave (W m⁻² day, cumulative)"
+    shortwave_net_sum::VT
+    "longwave down (W m⁻² day, cumulative)"
+    longwave_down_sum::VT
+    "net longwave (W m⁻² day, cumulative)"
+    longwave_net_sum::VT
+    "sensible heat flux (W m⁻² day, cumulative)"
+    sensible_heat_flux_sum::VT
+    "heat of rain (W m⁻² day, cumulative)"
+    rain_heat_flux_sum::VT
+    "surface temperature (K)"
+    Tsrf::VT
+    "surface albedo (–)"
+    albedo::VT
+    "time since the latest snowfall, `AgingAlbedo` (day)"
+    snow_age_days::VT
+    "seasonal maximum of the snow water equivalent, `SemixAlbedo` (kg m⁻²)"
+    w_snow_max::VT
 end
 
-const _BESSI_STATE_PARAMETER_NAMES = (
-    :c, :Ntot, :mass_max, :mass_split, :mass_min, :refreezing_correction,
-)
-
-@inline function Base.getproperty(state::BESSIState, name::Symbol)
-    hasfield(typeof(state), name) && return getfield(state, name)
-    name in _BESSI_STATE_PARAMETER_NAMES &&
-        return getproperty(getfield(state, :parameters), name)
-    return getfield(state, name)
-end
-
-function Base.propertynames(state::BESSIState, private::Bool=false)
-    public = (_BESSI_STATE_PARAMETER_NAMES..., :ncol, _BESSI_ARRAY_FIELD_NAMES...)
-    return private ? (:parameters, public...) : public
-end
-
-const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature)
-# Layer-first matrices that share the layer storage conversions.
-@inline _is_bessi_layer_field(name::Symbol) = name in _BESSI_LAYER_FIELD_NAMES || name === :ice_temperature
+# Layer-first matrices, transposed on a device.
+const _BESSI_LAYER_FIELD_NAMES = (:mass, :mass_w, :density, :temperature, :ice_temperature)
 # Surface energy balance accumulators, in the order of the state fields.
 const _BESSI_SEB_SUM_NAMES = (
     :shortwave_down_sum,
@@ -109,32 +108,13 @@ const _BESSI_SEB_SUM_NAMES = (
     :sensible_heat_flux_sum,
     :rain_heat_flux_sum,
 )
-const _BESSI_ARRAY_FIELD_NAMES = (
-    :N,
-    _BESSI_LAYER_FIELD_NAMES...,
-    :mass_base,
-    :smb_ice,
-    :runoff,
-    :melt,
-    :refreezing,
-    :vapor_mass,
-    :sublimation,
-    :latent_heat_flux_sum,
-    _BESSI_SEB_SUM_NAMES...,
-    :Tsrf,
-    :albedo,
-    :snow_age_days,
-    :w_snow_max,
-    :thickness,
-    :wet_mass,
-    :bulk_density,
-    :liquid_water,
-    :ice_temperature,
-)
+const _BESSI_ARRAY_FIELD_NAMES = fieldnames(BESSIState)
 
-@inline get_fields(state::BESSIState) = NamedTuple{_BESSI_ARRAY_FIELD_NAMES}(
-    ntuple(index -> getfield(state, _BESSI_ARRAY_FIELD_NAMES[index]), Val(length(_BESSI_ARRAY_FIELD_NAMES))),
-)
+"""The arrays of a state as a NamedTuple, the form the kernels receive."""
+@inline get_fields(state) = _fields(state)
+
+ncols(state::BESSIState) = length(state.N)
+number_type(state::BESSIState) = eltype(state.mass)
 
 @inline function _zero_seb_sums!(fields, idx)
     @inbounds begin
@@ -148,16 +128,19 @@ const _BESSI_ARRAY_FIELD_NAMES = (
     return nothing
 end
 
-@kernel function _initialize_bessi_state_kernel!(
+"""Reset the columns `indices` (all with `1:ncol`) to the initial state: no snow layers, the
+initial density and temperature in the empty layers and the substrate, zero counters."""
+@kernel function _initialize_bessi_columns_kernel!(
     fields,
-    Ntot::Int,
+    indices,
     density_init,
     temperature_init,
     surface_temperature_init,
     albedo_init,
 )
-    idx = @index(Global)
+    item = @index(Global)
     @inbounds begin
+        idx = indices[item]
         fields.N[idx] = 0
         fields.mass_base[idx] = zero(density_init)
         fields.smb_ice[idx] = zero(density_init)
@@ -172,11 +155,7 @@ end
         fields.albedo[idx] = albedo_init
         fields.snow_age_days[idx] = zero(density_init)
         fields.w_snow_max[idx] = zero(density_init)
-        fields.thickness[idx] = zero(density_init)
-        fields.wet_mass[idx] = zero(density_init)
-        fields.bulk_density[idx] = zero(density_init)
-        fields.liquid_water[idx] = zero(density_init)
-        for layer_index in 1:Ntot
+        for layer_index in 1:size(fields.mass, 1)
             fields.mass[layer_index, idx] = zero(density_init)
             fields.mass_w[layer_index, idx] = zero(density_init)
             fields.density[layer_index, idx] = density_init
@@ -191,221 +170,151 @@ end
 @inline _state_init_workgroupsize(::KernelAbstractions.CPU) = 1024
 @inline _state_init_workgroupsize(::KernelAbstractions.Backend) = 256
 
-function _initialize_bessi_state_arrays!(
-    state::BESSIState,
-    density_init,
-    temperature_init,
-)
-    backend = _ka_backend(state.mass)
-    kernel! = _initialize_bessi_state_kernel!(backend, _state_init_workgroupsize(backend))
-    kernel!(
+function _initialize_columns!(state::BESSIState, params::Params, indices)
+    launch!(_initialize_bessi_columns_kernel!, state.mass, length(indices),
         get_fields(state),
-        state.Ntot,
-        convert(eltype(state.mass), density_init),
-        convert(eltype(state.mass), temperature_init),
-        state.c.T0,
-        _initial_snow_albedo(state.c);
-        ndrange=state.ncol,
+        indices,
+        params.density_init,
+        params.temperature_init,
+        params.T0,
+        params.alpha_dry;
+        workgroupsize = _state_init_workgroupsize(_ka_backend(state.mass)),
     )
     return state
 end
 
-function BESSIState(model::BESSIModel)
-    NF = number_type(model.c)
-    ncol = ncols(model.grid)
+"""
+    initial_state(grid, params) -> BESSIState | PDDState | ITMState
+
+Initial state of the columns of `grid` on the CPU: no snow, the initial density and temperature
+of `params` (a [`Params`](@ref)), or the initial bulk state for `PDDParams` and `ITMParams`.
+"""
+function initial_state(grid::Grid, params::Params)
+    NF = number_type(params)
+    ncol = ncols(grid)
+    nlayer = grid.layering.Ntot
+    layer() = Matrix{NF}(undef, nlayer, ncol)
+    column() = Vector{NF}(undef, ncol)
     state = BESSIState(
-        model.parameters,
-        ncol,
         Vector{Int}(undef, ncol),
-        Matrix{NF}(undef, model.Ntot, ncol),
-        Matrix{NF}(undef, model.Ntot, ncol),
-        Matrix{NF}(undef, model.Ntot, ncol),
-        Matrix{NF}(undef, model.Ntot, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        (Vector{NF}(undef, ncol) for _ in _BESSI_SEB_SUM_NAMES)...,
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Vector{NF}(undef, ncol),
-        Matrix{NF}(undef, model.ice_substrate_layers, ncol),
+        layer(), layer(), layer(), layer(),
+        Matrix{NF}(undef, grid.layering.ice_substrate_layers, ncol),
+        ntuple(_ -> column(), fieldcount(BESSIState) - 6)...,
     )
-    return _initialize_bessi_state_arrays!(state, model.density_init, model.temperature_init)
+    return _initialize_columns!(state, params, 1:ncol)
 end
 
-# `Array` of a `TransposedLayerMatrix` restores the logical `(layer, column)` layout.
-@inline _cpu_state_array(state::BESSIState, name::Symbol) = Array(getfield(state, name))
+# ---------------------------------------------------------------------------
+# Backends
+# ---------------------------------------------------------------------------
+
+"""A copy of the array `a` on the KernelAbstractions `backend`."""
+_to_device(backend, a::AbstractArray) = (b = KernelAbstractions.allocate(backend, eltype(a), size(a)); copyto!(b, a); b)
+
+# A layer matrix: `(layer, column)` on the CPU, transposed on a device.
+_layer_to_backend(matrix, ::KernelAbstractions.CPU) = Array(matrix)
+_layer_to_backend(matrix, backend) =
+    TransposedLayerMatrix(_to_device(backend, permutedims(Array(matrix), (2, 1))))
+_vector_to_backend(vector, ::KernelAbstractions.CPU) = Array(vector)
+_vector_to_backend(vector, backend) = _to_device(backend, Array(vector))
 
 """
-    cpu_state(state::BESSIState) -> BESSIState
+    to_backend(state, backend)
 
-Copy of `state` with every array on the host (`Array`), e.g. to inspect or save
-the state of a GPU run.
+A copy of `state` with every array on the KernelAbstractions `backend` (`CPU()`, or e.g.
+`CUDABackend()` after `using CUDA`).
 """
-function cpu_state(state::BESSIState)
-    return BESSIState(
-        state.parameters,
-        state.ncol,
-        (_cpu_state_array(state, name) for name in _BESSI_ARRAY_FIELD_NAMES)...,
-    )
+function to_backend(state::BESSIState, backend)
+    arrays = map(fieldnames(BESSIState)) do name
+        value = getfield(state, name)
+        name in _BESSI_LAYER_FIELD_NAMES ? _layer_to_backend(value, backend) : _vector_to_backend(value, backend)
+    end
+    return BESSIState(arrays...)
 end
 
-@inline _gpu_layer_matrix(matrix, storage_type) =
-    TransposedLayerMatrix(adapt(storage_type, permutedims(Array(matrix), (2, 1))))
-@inline _gpu_state_array(state::BESSIState, name::Symbol, storage_type) =
-    _is_bessi_layer_field(name) ?
-    _gpu_layer_matrix(getfield(state, name), storage_type) :
-    adapt(storage_type, getfield(state, name))
-
 """
-    gpu_state(state::BESSIState[, storage_type]) -> BESSIState
+$(TYPEDEF)
 
-Copy of `state` on the GPU (layer fields transposed to column-major per layer).
-Needs `using CUDA` and a functional GPU.
+State of a [`PDDModel`](@ref): the snow reservoir and the cumulative mass fluxes (mm w.e.).
+
+# Fields
+$(TYPEDFIELDS)
 """
-function gpu_state(state::BESSIState, storage_type=gpu_storage_type())
-    return BESSIState(
-        state.parameters,
-        state.ncol,
-        (_gpu_state_array(state, name, storage_type) for name in _BESSI_ARRAY_FIELD_NAMES)...,
-    )
-end
-
-@adapt_structure BESSIState
-ncols(state::BESSIState) = state.ncol
-
-"""Mutable state for `PDDModel`."""
-struct PDDState{ST <: AbstractVector{<:AbstractFloat}}
+struct PDDState{ST <: AbstractVector{<:Real}}
+    "snow water equivalent (mm w.e.)"
     snowpack_swe::ST
+    "net mass forcing of the ice sheet (mm w.e., cumulative)"
     smb_ice::ST
+    "runoff (mm w.e., cumulative)"
     runoff::ST
+    "positive degree days (K day, cumulative)"
     pdd_sum::ST
 end
 
-const _PDD_STATE_FIELD_NAMES = (:snowpack_swe, :smb_ice, :runoff, :pdd_sum)
-@inline get_fields(state::PDDState) = NamedTuple{_PDD_STATE_FIELD_NAMES}(
-    ntuple(index -> getfield(state, _PDD_STATE_FIELD_NAMES[index]), Val(length(_PDD_STATE_FIELD_NAMES))),
-)
+const _PDD_STATE_FIELD_NAMES = fieldnames(PDDState)
 
-function PDDState(model::PDDModel)
-    ncol = ncols(model.grid)
-    NF = number_type(model.c)
-    return PDDState(
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-        zeros(NF, ncol),
-    )
+function initial_state(grid::Grid, params::PDDParams)
+    NF = number_type(params)
+    ncol = ncols(grid)
+    return PDDState(zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol))
 end
 
 """
-    initial_state(model) -> BESSIState | PDDState | ITMState
+$(TYPEDEF)
 
-Fresh model state for `model` on the CPU, initialised from the model's
-`density_init`, `temperature_init` and layer settings. Pass it (possibly
-modified) as `Simulation(model; state=...)` or `Experiment(...; state=...)`.
+State of an [`ITMModel`](@ref). The instantaneous budget fields are in ITM's native
+mm w.e. day⁻¹; the cumulative fields (`*_cum`, `smb_ice`) in mm w.e.
+
+# Fields
+$(TYPEDFIELDS)
 """
-function initial_state end
-
-initial_state(model::PDDModel) = PDDState(model)
-Adapt.@adapt_structure PDDState
-
-"""Mutable state for the bulk Fortran-compatible `ITMModel`.
-
-Instantaneous budget fields use ITM's native mm w.e. day⁻¹ units; cumulative
-fields use mm w.e. and are the quantities exposed in regular output.
-"""
-struct ITMState{ST <: AbstractVector{<:AbstractFloat}}
+struct ITMState{ST <: AbstractVector{<:Real}}
+    "snow water equivalent (mm w.e.)"
     H_snow::ST
+    "surface albedo (–)"
     alb_s::ST
+    "surface mass balance (mm w.e. day⁻¹)"
     smb::ST
+    "ice-sheet mass balance (mm w.e. day⁻¹)"
     smbi::ST
+    "melt (mm w.e. day⁻¹)"
     melt::ST
+    "runoff (mm w.e. day⁻¹)"
     runoff::ST
+    "refreezing (mm w.e. day⁻¹)"
     refreezing::ST
+    "surface temperature (K)"
     Tsrf::ST
+    "net melt (mm w.e. day⁻¹)"
     melt_net::ST
+    "surface mass balance (mm w.e., cumulative)"
     smb_cum::ST
+    "ice-sheet mass balance (mm w.e., cumulative)"
     smb_ice::ST
+    "melt (mm w.e., cumulative)"
     melt_cum::ST
+    "runoff (mm w.e., cumulative)"
     runoff_cum::ST
+    "refreezing (mm w.e., cumulative)"
     refreezing_cum::ST
 end
 
-const _ITM_STATE_FIELD_NAMES = (
-    :H_snow, :alb_s, :smb, :smbi, :melt, :runoff, :refreezing, :Tsrf,
-    :melt_net, :smb_cum, :smb_ice, :melt_cum, :runoff_cum, :refreezing_cum,
-)
-@inline get_fields(state::ITMState) = NamedTuple{_ITM_STATE_FIELD_NAMES}(
-    ntuple(index -> getfield(state, _ITM_STATE_FIELD_NAMES[index]), Val(length(_ITM_STATE_FIELD_NAMES))),
-)
+const _ITM_STATE_FIELD_NAMES = fieldnames(ITMState)
 
-function ITMState(model::ITMModel)
-    ncol = ncols(model.grid)
-    NF = number_type(model.c)
+function initial_state(grid::Grid, params::ITMParams)
+    NF = number_type(params)
+    ncol = ncols(grid)
     return ITMState(
-        fill(model.H_snow_max, ncol), fill(model.alb_snow_dry, ncol), zeros(NF, ncol), zeros(NF, ncol),
-        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), fill(model.c.T0, ncol), zeros(NF, ncol),
+        fill(params.H_snow_max, ncol), fill(params.alb_snow_dry, ncol), zeros(NF, ncol), zeros(NF, ncol),
+        zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), fill(params.T0, ncol), zeros(NF, ncol),
         zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol), zeros(NF, ncol),
     )
 end
 
-initial_state(model::ITMModel) = ITMState(model)
-Adapt.@adapt_structure ITMState
-
-initial_state(model::BESSIModel) = BESSIState(model)
-reference_state(state::BESSIState) = deepcopy(state)
-reference_state(state::PDDState) = deepcopy(state)
-reference_state(state::ITMState) = deepcopy(state)
-
-@inline _copy_state_array!(dest, src) = copyto!(dest, src)
-function _copy_state_array!(dest::AbstractMatrix, src::TransposedLayerMatrix)
-    permutedims!(dest, Array(src.parent), (2, 1))
-    return dest
-end
-
-function _copy_bessi_state!(dest::BESSIState, src::BESSIState)
-    dest.Ntot == src.Ntot || error("Cannot copy state with different `Ntot`.")
-    dest.ncol == src.ncol || error("Cannot copy state with different column count.")
-    for name in _BESSI_ARRAY_FIELD_NAMES
-        _copy_state_array!(getfield(dest, name), getfield(src, name))
-    end
-    return dest
-end
-
-"""
-    update_diagnostics!(state::BESSIState)
-
-Recompute the column diagnostics `thickness`, `wet_mass`, `bulk_density` and
-`liquid_water` from the layer fields. `run!` calls it at the end of a run.
-"""
-function update_diagnostics!(state::BESSIState)
-    summarize_domain_state!(
-        state.thickness,
-        state.wet_mass,
-        state.bulk_density,
-        state.mass_base,
-        state.smb_ice,
-        state.liquid_water,
-        state.runoff,
-        state.melt,
-        state.refreezing,
-        state.vapor_mass,
-        state.sublimation,
-        state.latent_heat_flux_sum,
-        state.albedo,
-        state,
-    )
-    return state
-end
 ncols(state::Union{PDDState, ITMState}) = length(state.runoff)
+number_type(state::Union{PDDState, ITMState}) = eltype(state.runoff)
+to_backend(state::Union{PDDState, ITMState}, backend) = _mapfields(v -> _vector_to_backend(v, backend), state)
+
+Adapt.@adapt_structure BESSIState
+Adapt.@adapt_structure PDDState
+Adapt.@adapt_structure ITMState

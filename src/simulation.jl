@@ -1,534 +1,560 @@
-"""
-Simulation orchestration for Chion.
+#=
+Simulation: a model with its time integration — the clock, the forcing years, the spin-up and the
+outputs. `run!` continues from where the previous call stopped, `time_step!` takes one forcing
+step. As Laddie's `Simulation`; the time step is set by the forcing calendar.
+=#
 
-`Simulation` owns reference and current model state (`ref` and `now`), while
-`SimulationIntegrator` owns initialized runtime state for explicit stepping.
-"""
+# ---------------------------------------------------------------------------
+# Spin-up
+# ---------------------------------------------------------------------------
 
 """
-    Simulation(model; forcing, state=nothing, years=1, backend=:threads,
-               write_netcdf=false, netcdf_variables, output_dir, name, ...)
+Abstract supertype of the spin-up that [`run!`](@ref) performs before the first forcing year.
 
-Couple a model configuration with forcing, reference state, current state, and
-execution/output options. `years` repeats the forcing that many times. The
-keywords override the corresponding `RunOptions` fields; without them a
-`Simulation` runs the forcing once, on the CPU, without NetCDF output.
-`sim.ref` is a copy of the initial state and `sim.now` the evolving state.
+Available subtypes: [`NoSpinup`](@ref), [`CycledSpinup`](@ref), [`ClimatologySpinup`](@ref).
 """
-mutable struct Simulation{M<:AbstractSnowModel, F<:SnowpackForcing, S}
-    model::M
+abstract type AbstractSpinup end
+
+"""$(TYPEDEF)
+
+No spin-up: start from the model's state."""
+struct NoSpinup <: AbstractSpinup end
+
+"""
+$(TYPEDEF)
+
+Run the forcing years `years` in order, `cycles` times, without output.
+
+    CycledSpinup(years; cycles = 5)
+
+# Fields
+$(TYPEDFIELDS)
+"""
+struct CycledSpinup <: AbstractSpinup
+    "forcing years of one cycle"
+    years::Vector{Int}
+    "number of cycles"
+    cycles::Int
+end
+function CycledSpinup(years; cycles::Integer = 5)
+    _require(cycles >= 1, "`cycles` must be at least 1.")
+    return CycledSpinup(collect(Int, years), Int(cycles))
+end
+
+"""
+$(TYPEDEF)
+
+Run the years of another forcing (e.g. a day-by-day climatology) `years` times, without output.
+
+    ClimatologySpinup(forcing::Forcing; years = 200)
+
+# Fields
+$(TYPEDFIELDS)
+"""
+struct ClimatologySpinup{F <: Forcing} <: AbstractSpinup
+    "the forcing of the spin-up"
     forcing::F
-    ref::S
-    now::S
-    options::RunOptions
+    "number of repetitions of its years"
+    years::Int
+end
+ClimatologySpinup(forcing::Forcing; years::Integer = 200) = ClimatologySpinup(forcing, Int(years))
+
+describe(::NoSpinup) = "none"
+describe(s::CycledSpinup) = "$(s.cycles) cycles of the forcing years $(first(s.years))–$(last(s.years))"
+describe(s::ClimatologySpinup) = "$(s.years) repetitions of $(s.forcing.description)"
+
+_validate_spinup(::AbstractSpinup, source) = nothing
+function _validate_spinup(spinup::CycledSpinup, source)
+    missing_years = setdiff(spinup.years, forcing_years(source))
+    isempty(missing_years) ||
+        throw(ArgumentError("The forcing has no data for the spin-up years $(join(sort(missing_years), ", "))."))
+    return nothing
 end
 
-function Simulation(
-    model;
-    forcing::SnowpackForcing,
-    state=nothing,
-    options::RunOptions=RunOptions(years=1, write_netcdf=false, netcdf_variables=Symbol[]),
-    years::Union{Nothing, Integer}=nothing,
-    backend=nothing,
-    history_year_stride::Union{Nothing, Integer}=nothing,
-    compute_year_metrics::Union{Nothing, Bool}=nothing,
-    netcdf_variables=nothing,
-    output_dir::Union{Nothing, AbstractString}=nothing,
-    netcdf_path::Union{Nothing, AbstractString}=nothing,
-    write_netcdf::Union{Nothing, Bool}=nothing,
-    name::Union{Nothing, AbstractString}=nothing,
-    input_label::Union{Nothing, AbstractString}=nothing,
-)
-    resolved_netcdf_variables = isnothing(netcdf_variables) ? options.netcdf_variables : normalize_netcdf_variables(netcdf_variables)
-    resolved_write_netcdf = isnothing(write_netcdf) ? options.write_netcdf : write_netcdf
-    run_options = RunOptions(
-        name=isnothing(name) ? options.name : name,
-        input_label=isnothing(input_label) ? options.input_label : input_label,
-        output_dir=isnothing(output_dir) ? options.output_dir : output_dir,
-        netcdf_path=isnothing(netcdf_path) ? options.netcdf_path : netcdf_path,
-        write_netcdf=resolved_write_netcdf,
-        netcdf_variables=resolved_netcdf_variables,
-        years=isnothing(years) ? options.years : years,
-        backend=isnothing(backend) ? options.backend : backend,
-        history_year_stride=isnothing(history_year_stride) ? options.history_year_stride : history_year_stride,
-        compute_year_metrics=isnothing(compute_year_metrics) ? options.compute_year_metrics : compute_year_metrics,
+# ---------------------------------------------------------------------------
+# Debug options
+# ---------------------------------------------------------------------------
+
+"""
+$(TYPEDEF)
+
+Debug options of a [`Simulation`](@ref).
+
+Set `check_nans = true` to check the prognostic state of the active columns for NaN and Inf after
+every launch of the column step (one step when outputs accumulate every step, else up to the next
+output period). The run then errors at once, naming the first variable to blow up, the column and
+the date. Costs a host copy of the state per launch.
+
+# Fields
+$(TYPEDFIELDS)
+"""
+@kwdef struct DebugConfig
+    "check the state for NaN and Inf after every launch of the column step (default `false`)"
+    check_nans::Bool = false
+end
+
+_checked_fields(::BESSIModel) = (:mass, :mass_w, :density, :temperature, :ice_temperature, :Tsrf, :albedo,
+    :smb_ice, :runoff, :melt, :refreezing, :vapor_mass)
+_checked_fields(model::AbstractSnowModel) = fieldnames(typeof(model.state))
+
+function _check_finite(debug::DebugConfig, model, time)
+    debug.check_nans || return nothing
+    active = model.cache.active
+    for name in _checked_fields(model)
+        values = _primal.(Array(getproperty(model.state, name)))
+        bad = values isa AbstractMatrix ? findfirst(c -> active[c] && !all(isfinite, view(values, :, c)), axes(values, 2)) :
+            findfirst(c -> active[c] && !isfinite(values[c]), eachindex(values))
+        bad === nothing ||
+            error("Non-finite `$name` in column $bad at $(Dates.format(time, "yyyy-mm-dd HH:MM")) (DebugConfig(check_nans = true)).")
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Clock and simulation
+# ---------------------------------------------------------------------------
+
+"""
+$(TYPEDEF)
+
+Position of a [`Simulation`](@ref) in its forcing years. Never reset by `run!`, so successive
+calls continue where the previous one stopped.
+
+# Fields
+$(TYPEDFIELDS)
+"""
+mutable struct Clock
+    "index in `sim.years` of the current year (`length(sim.years) + 1` when finished)"
+    year_index::Int
+    "next forcing step of the current year"
+    step::Int
+    "forcing steps taken (spin-up excluded)"
+    iteration::Int
+    "start of the next forcing step (the end of the last one when finished)"
+    time::DateTime
+end
+
+"""
+$(TYPEDEF)
+
+Run-time state of the outputs: the open recorders and whether the spin-up is done.
+
+# Fields
+$(TYPEDFIELDS)
+"""
+mutable struct IOState
+    "one recorder per `Output`, opened at the first forcing step"
+    recorders::Vector{OutputRecorder}
+    "whether the spin-up has run"
+    spun_up::Bool
+    "whether the outputs are closed (the simulation finished)"
+    closed::Bool
+    "wall-clock seconds spent in `run!` and `time_step!`"
+    wall_seconds::Float64
+end
+
+"""
+$(TYPEDEF)
+
+A model with its forcing years, spin-up and outputs. Build with
+[`Simulation(model; …)`](@ref Simulation(::AbstractSnowModel)) and advance with [`run!`](@ref) or
+[`time_step!`](@ref).
+
+# Fields
+$(TYPEDFIELDS)
+"""
+struct Simulation{M <: AbstractSnowModel, SP <: AbstractSpinup}
+    "the model being integrated"
+    model::M
+    "position in the forcing years"
+    clock::Clock
+    "forcing years, in the order they are run (they may repeat)"
+    years::Vector{Int}
+    "spin-up before the first year"
+    spinup::SP
+    "run directory, field outputs, log, metadata and restarts"
+    output::OutputConfig
+    "run-time state of the outputs"
+    io::IOState
+    "name of the run (in logs and output metadata)"
+    name::String
+    "whether `run!` prints a line per year"
+    verbose::Bool
+    "debug options"
+    debug::DebugConfig
+end
+
+"""
+    Simulation(model; years = all forcing years, spinup = NoSpinup(), output = OutputConfig(),
+               restart = nothing, name = "chion", verbose = true, debug = DebugConfig())
+
+Wrap `model` for a run over the forcing `years` (in order; they may repeat, e.g.
+`repeat(1940:1969, 5)`), after `spinup`, writing `output` (an [`OutputConfig`](@ref), or one
+[`Output`](@ref) or a list of them without a run directory). The model's state is the initial
+state; `restart` (a file from [`write_restart`](@ref)) replaces it and skips the spin-up.
+
+```julia
+forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes = :parameterized)
+model = BESSIModel(Grid(forcing); forcing, params = Params())
+sim = Simulation(model; years = 1940:2026, spinup = CycledSpinup(1940:1969; cycles = 5),
+    output = OutputConfig(dir = "output/gris", restart_every = 10,
+        outputs = [Output("monthly.nc"; variables = :monthly, frequency = :monthly)]))
+run!(sim)
+```
+"""
+function Simulation(model::AbstractSnowModel; years = nothing, spinup::AbstractSpinup = NoSpinup(),
+        output = OutputConfig(), restart::Union{Nothing, AbstractString} = nothing,
+        name::AbstractString = "chion", verbose::Bool = true, debug::DebugConfig = DebugConfig())
+    source = model.forcing.source
+    run_years = years === nothing ? forcing_years(source) : collect(Int, years)
+    isempty(run_years) && throw(ArgumentError("`years` is empty."))
+    missing_years = setdiff(run_years, forcing_years(source))
+    isempty(missing_years) || throw(ArgumentError("The forcing has no data for $(join(sort(missing_years), ", "))."))
+    _validate_spinup(spinup, source)
+    config = _output_config(output)
+    restart === nothing || _read_restart!(model, restart, run_years)
+    update_forcing!(model, first(run_years))
+    clock = Clock(1, 1, 0, first(model.forcing.data.time_values))
+    io = IOState(OutputRecorder[], restart !== nothing, false, 0.0)
+    return Simulation(model, clock, run_years, spinup, config, io, String(name), verbose, debug)
+end
+
+"""Whether all forcing years of `sim` have been run."""
+finished(sim::Simulation) = sim.clock.year_index > length(sim.years)
+
+"""
+    to_backend(sim, backend)
+
+A simulation of `to_backend(sim.model, backend)` with the same years, spin-up and outputs, before
+it has started.
+"""
+function to_backend(sim::Simulation, backend)
+    sim.clock.iteration == 0 && !sim.io.spun_up ||
+        throw(ArgumentError("Move a simulation to another backend before it starts (or move its model)."))
+    return Simulation(to_backend(sim.model, backend); years = sim.years, spinup = sim.spinup,
+        output = sim.output, name = sim.name, verbose = sim.verbose, debug = sim.debug)
+end
+
+_log(sim::Simulation, message) = sim.verbose && (println(stdout, "[", sim.name, "] ", message); flush(stdout))
+
+# ---------------------------------------------------------------------------
+# Spin-up
+# ---------------------------------------------------------------------------
+
+"""
+    spin_up!(sim)
+
+Run the spin-up of `sim` (once; `run!` and `time_step!` call it before the first step).
+"""
+function spin_up!(sim::Simulation)
+    sim.io.spun_up && return sim
+    _log(sim, "spin-up: $(describe(sim.spinup))")
+    _log_line(sim, "spin-up: $(describe(sim.spinup))")
+    _spin_up!(sim.model, sim.spinup, sim)
+    sim.io.spun_up = true
+    update_forcing!(sim.model, sim.years[min(sim.clock.year_index, length(sim.years))])
+    return sim
+end
+
+_spin_up!(model, ::NoSpinup, sim) = nothing
+
+function _spin_up!(model, spinup::CycledSpinup, sim)
+    for cycle in 1:spinup.cycles
+        for year in spinup.years
+            update_forcing!(model, year)
+            _step!(model, 1, forcing_steps(model))
+        end
+        _log(sim, "spin-up cycle $cycle of $(spinup.cycles) done")
+    end
+    return nothing
+end
+
+function _spin_up!(model::M, spinup::ClimatologySpinup, sim) where {M}
+    years = forcing_years(spinup.forcing)
+    forcing = AtmosphericForcing(spinup.forcing, first(years), model.params, _backend(model))
+    _validate_forcing(model.params, forcing.data)
+    # The same state and cache, driven by the spin-up forcing.
+    spinup_model = _replace(model; forcing)
+    for _ in 1:spinup.years, year in years
+        update_forcing!(spinup_model, year)
+        _step!(spinup_model, 1, forcing_steps(spinup_model))
+    end
+    return nothing
+end
+
+# ---------------------------------------------------------------------------
+# Time stepping
+# ---------------------------------------------------------------------------
+
+function _open_outputs!(sim::Simulation)
+    outputs = sim.output.outputs
+    (isempty(outputs) || !isempty(sim.io.recorders)) && return nothing
+    model = sim.model
+    area = forcing_area(model.forcing.source)
+    metadata = _output_metadata(sim)
+    try
+        for spec in outputs
+            mkpath(dirname(spec.path))
+            push!(sim.io.recorders, OutputRecorder(spec, model, model.state, model.grid, area, metadata))
+        end
+    catch
+        _close_outputs!(sim, :failed)
+        rethrow()
+    end
+    return nothing
+end
+
+function _output_metadata(sim::Simulation)
+    return Dict{String, Any}(
+        "title" => sim.name,
+        "source_model" => "Chion",
+        "model" => string(nameof(typeof(sim.model))),
+        "forcing" => sim.model.forcing.source.description,
+        "spinup" => describe(sim.spinup),
+        "years" => "$(first(sim.years))–$(last(sim.years))",
+        "created" => string(now()),
     )
-    now_state = isnothing(state) ? initial_state(model) : state
-    return Simulation(model, forcing, reference_state(now_state), now_state, run_options)
 end
 
-function _normalize_model_name(model)
-    name = lowercase(strip(String(model)))
-    name == "bessi" && return :bessi
-    name == "pdd" && return :pdd
-    name == "itm" && return :itm
-    error("Unsupported model '$model'. Use `:bessi`, `:pdd`, or `:itm`.")
+function _close_outputs!(sim::Simulation, status::Symbol)
+    for recorder in sim.io.recorders
+        _close_writer!(recorder.writer, status)
+    end
+    empty!(sim.io.recorders)
+    sim.io.closed = true
+    return nothing
 end
 
 """
-    build_model(name, grid; kwargs...)
+    _advance!(sim, last_step)
 
-Build `BESSIModel`, `PDDModel` or `ITMModel` from the name `:bessi`, `:pdd` or
-`:itm` (also as a string).
+Step the current year of `sim` from `sim.clock.step` to `last_step` and record the outputs.
+Without outputs that need every step, the steps up to the next end of an output period run in one
+launch sequence.
 """
-function build_model(model, grid::SnowpackGrid; kwargs...)
-    name = _normalize_model_name(model)
-    return build_model(Val(name), grid; kwargs...)
+function _advance!(sim::Simulation, last_step::Int)
+    model = sim.model
+    clock = sim.clock
+    year = sim.years[clock.year_index]
+    update_forcing!(model, year)
+    data = model.forcing.data
+    times = data.time_values
+    nsteps = length(times)
+    recorders = sim.io.recorders
+    # Output periods continue into the next run year only when it is the next calendar year.
+    next_first = clock.year_index < length(sim.years) && sim.years[clock.year_index + 1] == year + 1 ?
+        DateTime(year + 1) : nothing
+    closes_at(rec, k) = k < nsteps ?
+        _bucket(rec.spec.frequency, times[k], k) != _bucket(rec.spec.frequency, times[k + 1], k + 1) :
+        next_first === nothing || _bucket(rec.spec.frequency, times[k], k) != _bucket(rec.spec.frequency, next_first, k + 1)
+    every_step = any(rec -> rec.needs_every_step, recorders)
+    seconds_per_day = Float64(_primal(model.params.seconds_per_day))
+    k = clock.step
+    while k <= last_step
+        for rec in recorders
+            rec.period_start === nothing && _start_period!(rec, model.state, times[k])
+        end
+        stop = _block_end(recorders, every_step, closes_at, k, last_step)
+        _step!(model, k, stop)
+        _check_finite(sim.debug, model, times[stop])
+        for rec in recorders
+            _accumulate_forcing!(rec, data, k:stop, seconds_per_day)
+            if every_step
+                _accumulate_step!(rec, model.state, Float64(data.dt_days[k]))
+            else
+                rec.days += sum(Float64(data.dt_days[j]) for j in k:stop)
+            end
+        end
+        closing = [rec for rec in recorders if closes_at(rec, stop)]
+        if !isempty(closing)
+            host_state = any(rec -> rec.needs_host_state, closing) ? cpu_state(model) : nothing
+            for rec in closing
+                _close_period!(rec, model.state, host_state, times[stop])
+                rec.period_start = nothing
+            end
+        end
+        clock.iteration += stop - k + 1
+        k = stop + 1
+    end
+    clock.step = k
+    if k > nsteps
+        clock.year_index += 1
+        clock.step = 1
+        clock.time = times[end] + Millisecond(round(Int, Float64(data.dt_days[end]) * 86_400_000))
+    else
+        clock.time = times[k]
+    end
+    return nothing
 end
 
-build_model(::Val{:bessi}, grid::SnowpackGrid; kwargs...) = BESSIModel(grid; kwargs...)
-build_model(::Val{:pdd}, grid::SnowpackGrid; kwargs...) = PDDModel(grid; kwargs...)
-build_model(::Val{:itm}, grid::SnowpackGrid; kwargs...) = ITMModel(grid; kwargs...)
-build_model(::Type{M}, grid::SnowpackGrid; kwargs...) where {M<:AbstractSnowModel} = M(grid; kwargs...)
+# Last step of the next launch sequence: the whole range without outputs, one step when an output
+# accumulates every step, else the next end of an output period.
+function _block_end(recorders, every_step::Bool, closes_at, k::Int, last_step::Int)
+    isempty(recorders) && return last_step
+    every_step && return k
+    for j in k:last_step
+        any(rec -> closes_at(rec, j), recorders) && return j
+    end
+    return last_step
+end
 
-function Simulation(
-    model,
-    grid::SnowpackGrid;
-    model_kwargs=NamedTuple(),
-    kwargs...,
-)
-    built_model = build_model(model, grid; model_kwargs...)
-    return Simulation(built_model; kwargs...)
+function _start!(sim::Simulation)
+    if _has_dir(sim.output) && sim.clock.iteration == 0 && !sim.io.spun_up
+        mkpath(sim.output.dir)
+        _write_metadata(sim)
+        _log_line(sim, "run \"$(sim.name)\" of a $(nameof(typeof(sim.model))), years $(first(sim.years))–$(last(sim.years))")
+    end
+    spin_up!(sim)
+    sim.io.closed && throw(ArgumentError("The simulation has finished; build a new one to run on."))
+    _open_outputs!(sim)
+    return nothing
+end
+
+function _finish_if_done!(sim::Simulation)
+    finished(sim) && !sim.io.closed && _close_outputs!(sim, :complete)
+    return nothing
+end
+
+"""
+    time_step!(sim)
+
+Take one forcing step of `sim` (after the spin-up, on the first call), recording the outputs.
+"""
+function time_step!(sim::Simulation)
+    finished(sim) && throw(ArgumentError("The simulation has finished."))
+    t0 = time()
+    _start!(sim)
+    _advance!(sim, sim.clock.step)
+    _finish_if_done!(sim)
+    sim.io.wall_seconds += time() - t0
+    return sim
+end
+
+"""
+    run!(sim; years = nothing)
+
+Spin up (on the first call), then run the remaining forcing years of `sim`, or the next `years`
+of them, writing the outputs. Successive calls continue where the previous one stopped; the
+outputs are closed when the last year is done. Returns `sim`.
+"""
+function run!(sim::Simulation; years::Union{Nothing, Integer} = nothing)
+    t0 = time()
+    _start!(sim)
+    remaining = length(sim.years) - sim.clock.year_index + 1
+    nyears = years === nothing ? remaining : min(Int(years), remaining)
+    status = :incomplete
+    try
+        for _ in 1:nyears
+            year = sim.years[sim.clock.year_index]
+            t_year = time()
+            update_forcing!(sim.model, year)
+            _advance!(sim, forcing_steps(sim.model))
+            _log(sim, "year $year done ($(sim.clock.year_index - 1) of $(length(sim.years)))")
+            _log_year(sim, year, time() - t_year)
+            _write_scheduled_restart(sim)
+            GC.gc(false)
+        end
+        status = :complete
+    finally
+        status === :complete || _close_outputs!(sim, :failed)
+    end
+    _finish_if_done!(sim)
+    update_diagnostics!(sim.model)
+    sim.io.wall_seconds += time() - t0
+    return sim
 end
 
 function Base.show(io::IO, ::MIME"text/plain", sim::Simulation)
-    println(io, "Simulation")
-    println(io, "  model: ", typeof(sim.model))
-    println(io, "  ref: ", typeof(sim.ref))
-    println(io, "  now: ", typeof(sim.now))
-    println(io, "  columns: ", ncols(sim.model.grid))
-    println(io, "  forcing steps: ", length(sim.forcing.time_values))
-    println(io, "  backend: ", sim.options.backend)
-    println(io, "  years: ", sim.options.years)
-    println(io, "  netcdf vars: ", isempty(sim.options.netcdf_variables) ? "(none)" : join(string.(sim.options.netcdf_variables), ", "))
-end
-
-"""
-    init_integrator(sim; io=stdout)
-
-Initialize a runtime that can be advanced with `step!`, `run!`, and
-`finalize!`.
-"""
-function init_integrator(
-    sim::Simulation;
-    io::IO=stdout,
-)
-    timings = StepTimingStats()
-    validate_integrator_setup!(sim, sim.options)
-    model_runtime = init_model_runtime!(sim, sim.options, timings)
-    return _new_integrator(sim, io, timings, model_runtime)
-end
-
-"""
-    finished(integrator) -> Bool
-
-Whether all scheduled forcing steps of the simulation have been taken.
-"""
-finished(integrator::SimulationIntegrator) = _finished(integrator)
-
-step!(integrator::SimulationIntegrator) = _step_scheduled!(integrator)
-
-step!(integrator::SimulationIntegrator, n::Integer) = _step_n!(integrator, n)
-
-step!(integrator::SimulationIntegrator, Δt_days::Real, force_dt::Bool=true) =
-    _step_external!(integrator, Δt_days, force_dt)
-
-function _yearly_grid(values::Vector{Float64}, grid)
-    any(isnothing, (grid.x, grid.y, grid.js, grid.is, grid.mask)) &&
-        return Matrix{Float64}(undef, 0, 0)
-    return scatter_to_grid(values, grid.js, grid.is, size(grid.mask))
-end
-
-function _mask_inactive_yearly_outputs!(
-    ice_sheet_net_forcing_yearly::Vector{Float64},
-    mean_T_srf_K::Vector{Float64},
-    active::Vector{Bool},
-)
-    length(active) == length(ice_sheet_net_forcing_yearly) || error("Active mask length must match yearly output length.")
-    @inbounds for idx in eachindex(active)
-        if !active[idx]
-            ice_sheet_net_forcing_yearly[idx] = 0.0
-            mean_T_srf_K[idx] = NaN
-        end
-    end
+    println(io, "Simulation \"", sim.name, "\" of a ", nameof(typeof(sim.model)), "{", number_type(sim.model), "}")
+    println(io, "  years:   ", first(sim.years), "–", last(sim.years), " (", length(sim.years), " runs)",
+        finished(sim) ? ", finished" : ", next: $(sim.years[sim.clock.year_index]) step $(sim.clock.step)")
+    println(io, "  spin-up: ", describe(sim.spinup), sim.io.spun_up ? " (done)" : "")
+    _has_dir(sim.output) && println(io, "  run directory: ", sim.output.dir)
+    outputs = sim.output.outputs
+    print(io, "  outputs: ", isempty(outputs) ? "none" : join((basename(o.path) for o in outputs), ", "))
     return nothing
 end
 
-@inline _uses_monthly_output(::BESSIModel, options::RunOptions) =
-    :monthly in options.netcdf_variables ||
-    any(key -> key in MONTHLY_OUTPUT_VARS && !(key in DEFAULT_STATE_OUTPUT_VARS), options.netcdf_variables)
+# ---------------------------------------------------------------------------
+# Coupling and summaries
+# ---------------------------------------------------------------------------
 
-@inline _uses_monthly_output(::PDDModel, options::RunOptions) =
-    :monthly in options.netcdf_variables
+"""
+    set_active_mask!(sim, mask; reset_newly_inactive = true)
 
-@inline _uses_monthly_output(::ITMModel, options::RunOptions) =
-    :monthly in options.netcdf_variables
+[`set_active_mask!`](@ref) of the simulation's model.
+"""
+set_active_mask!(sim::Simulation, mask; kwargs...) = (set_active_mask!(sim.model, mask; kwargs...); sim)
 
-@inline function _is_month_boundary(time_values::Vector{DateTime}, k::Int)
-    k == length(time_values) && return true
-    return month(time_values[k + 1]) != month(time_values[k])
+"""
+    set_input!(sim, name, values)
+
+[`set_input!`](@ref) of the simulation's model, for the loaded forcing year.
+"""
+set_input!(sim::Simulation, name::Symbol, values) = (set_input!(sim.model, name, values); sim)
+
+"""
+    yearly_step!(sim::Simulation{<:BESSIModel}) -> NamedTuple
+
+Run the next forcing year of `sim` (which must be at the start of a year) and return the coupling
+fields of an ice-sheet model: `smb_ice_yearly`, the change of `smb_ice` over the year
+(kg m⁻², zero in inactive columns), and `mean_T_srf_K`, the time-mean surface temperature (K, NaN
+in inactive columns), as column vectors and, with a spatial grid, as y–x matrices (`*_grid`).
+"""
+function yearly_step!(sim::Simulation{<:BESSIModel})
+    sim.clock.step == 1 || throw(ArgumentError("`yearly_step!` must start at the beginning of a forcing year."))
+    finished(sim) && throw(ArgumentError("The simulation has finished."))
+    model = sim.model
+    _start!(sim)
+    year = sim.years[sim.clock.year_index]
+    update_forcing!(model, year)
+    dt_days = model.forcing.data.dt_days
+    smb_before = _host_vector(model.state.smb_ice; copy_array = true)
+    Tsrf_sum = fill!(similar(model.state.Tsrf), zero(eltype(model.state.Tsrf)))
+    for time_index in 1:forcing_steps(model)
+        _advance!(sim, time_index)
+        Tsrf_sum .+= model.state.Tsrf .* dt_days[time_index]
+    end
+    _finish_if_done!(sim)
+    smb_ice_yearly = _host_vector(model.state.smb_ice; copy_array = true) .- smb_before
+    mean_T_srf_K = _host_vector(Tsrf_sum; copy_array = true) ./ sum(dt_days)
+    inactive = .!model.cache.active
+    smb_ice_yearly[inactive] .= 0.0
+    mean_T_srf_K[inactive] .= NaN
+    on_grid(values) = has_spatial_coords(model.grid) ?
+        _scatter_to_grid(values, model.grid) : Matrix{Float64}(undef, 0, 0)
+    return (; year, smb_ice_yearly, mean_T_srf_K, smb_ice_yearly_grid = on_grid(smb_ice_yearly),
+        mean_T_srf_K_grid = on_grid(mean_T_srf_K))
 end
 
-@inline _monthly_records_per_cycle(time_values::Vector{DateTime}) =
-    count(k -> _is_month_boundary(time_values, k), eachindex(time_values))
-
-function _output_record_time_values(
-    time_values::Vector{DateTime},
-    years::Int;
-    monthly::Bool=false,
-)
-    indices = monthly ?
-        [k for k in eachindex(time_values) if _is_month_boundary(time_values, k)] :
-        collect(eachindex(time_values))
-    output = Vector{DateTime}(undef, years * length(indices))
-    record = 0
-    for cycle in 0:years-1
-        offset = Year(cycle)
-        for k in indices
-            record += 1
-            output[record] = time_values[k] + offset
-        end
+function _scatter_to_grid(values::Vector{Float64}, grid::Grid)
+    out = fill(NaN, size(grid.mask))
+    for (column, value) in enumerate(values)
+        out[grid.js[column], grid.is[column]] = value
     end
-    return output
-end
-
-function _state_output_from_options(sim::Simulation, options::RunOptions, state=sim.now)
-    options.write_netcdf || return nothing
-    monthly_mode = _uses_monthly_output(sim.model, options)
-    monthly_mode && length(options.netcdf_variables) > 1 &&
-        error("`monthly` NetCDF output cannot currently be combined with other selectors.")
-    monthly_vars = monthly_output_variables(sim.model)
-    vars = monthly_mode && :monthly in options.netcdf_variables ? monthly_vars :
-        monthly_mode ? intersect(options.netcdf_variables, monthly_vars) :
-        state_output_vars(sim.model, options.netcdf_variables)
-    isempty(vars) && return nothing
-    record_time_values = _output_record_time_values(
-        sim.forcing.time_values,
-        options.years;
-        monthly=monthly_mode,
-    )
-    return init_state_netcdf(
-        resolve_netcdf_path(options),
-        options,
-        record_time_values,
-        sim.model.grid,
-        state,
-        vars,
-        nlayer=hasproperty(state, :Ntot) ? getproperty(state, :Ntot) : 1,
-    )
-end
-
-function _bessi_step_kwargs(
-    model::BESSIModel{DiurnalShortwave, DiurnalTemperature},
-) where {DiurnalShortwave, DiurnalTemperature}
-    return (
-        diurnal_shortwave_substeps=Val(DiurnalShortwave),
-        diurnal_shortwave_threshold=model.diurnal_shortwave_threshold,
-        diurnal_shortwave_max_substeps=model.diurnal_shortwave_max_substeps,
-        diurnal_shortwave_min_air_temperature=model.diurnal_shortwave_min_air_temperature,
-        diurnal_temperature_cycle=Val(DiurnalTemperature),
-        diurnal_temperature_amplitude=model.diurnal_temperature_amplitude,
-        diurnal_temperature_amplitude_gradient=model.diurnal_temperature_amplitude_gradient,
-        diurnal_temperature_amplitude_reference_height=model.diurnal_temperature_amplitude_reference_height,
-        diurnal_temperature_amplitude_max=model.diurnal_temperature_amplitude_max,
-    )
-end
-
-_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel}}) =
-    _run_bessi_integrator!(integrator)
-
-_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:PDDModel}}) =
-    _run_pdd_integrator!(integrator)
-
-_run_integrator!(integrator::SimulationIntegrator{<:Simulation{<:ITMModel}}) =
-    _run_itm_integrator!(integrator)
-
-function _run_bessi_integrator!(integrator::SimulationIntegrator)
-    run_options = integrator.sim.options
-
-    sim = integrator.sim
-    timings = integrator.timings
-    runtime = integrator.model_runtime.data
-    backend_state = runtime.state
-    nc = _state_output_from_options(sim, run_options)
-    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, run_options)
-    monthly_state = monthly_mode ? MonthlyState(backend_state) : nothing
-    monthly_output = monthly_mode ? MonthlyOutputBuffer(
-        backend_state;
-        nmonth=run_options.years * _monthly_records_per_cycle(sim.forcing.time_values),
-    ) : nothing
-    record_index = 0
-    nsteps = length(sim.forcing.time_values)
-    year_summary = nothing
-    prev_year_summary = nothing
-    delta_thickness = nothing
-    delta_wet_mass = nothing
-    delta_base_mass = nothing
-    if run_options.compute_year_metrics
-        year_summary = _summary_buffers(backend_state, (:thickness, :wet_mass, :bulk_density, :base_mass))
-        time_block!(timings, :summarize_columns_initial) do
-            summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
-        end
-        prev_year_summary = map(copy, year_summary)
-        delta_thickness = similar(year_summary.thickness)
-        delta_wet_mass = similar(year_summary.wet_mass)
-        delta_base_mass = similar(year_summary.base_mass)
-    end
-    history = YearMetrics[]
-    progress = Progress(run_options.years; desc="Running years: ", output=integrator.io, showspeed=true)
-    while !_finished(integrator)
-        year = integrator.completed_years + 1
-        while integrator.completed_years < year
-            if nc === nothing
-                # No per-step output: advance the rest of the year at once
-                # (`_step_range!` splits it into kernel launches).
-                _step_scheduled_range!(integrator, integrator.time_index:nsteps)
-            else
-                k = integrator.time_index
-                _step_scheduled!(integrator)
-                if monthly_mode
-                    accumulate_monthly!(
-                        monthly_state,
-                        backend_state,
-                        runtime.step_fields,
-                        Int(k),
-                        sim.forcing.dt_days[Int(k)],
-                    )
-                    if _is_month_boundary(sim.forcing.time_values, Int(k))
-                        time_block!(timings, :write_netcdf) do
-                            finalize_monthly!(monthly_state, backend_state)
-                            store_monthly!(monthly_output, monthly_state)
-                        end
-                        reset_monthly!(monthly_state)
-                    end
-                elseif nc !== nothing
-                    _sync_bessi_state!(sim.now, runtime, timings)
-                    record_index += 1
-                    time_block!(timings, :write_netcdf) do
-                        write_nc!(nc, sim.now, record_index, sim.model.grid)
-                    end
-                end
-            end
-        end
-        if run_options.compute_year_metrics
-            time_block!(timings, :summarize_columns_year) do
-                summarize_year_state!(year_summary.thickness, year_summary.wet_mass, year_summary.bulk_density, year_summary.base_mass, backend_state)
-            end
-            record = time_block!(timings, :year_metrics) do
-                make_year_record_and_deltas!(
-                    year,
-                    delta_thickness,
-                    delta_wet_mass,
-                    delta_base_mass,
-                    year_summary.thickness,
-                    year_summary.wet_mass,
-                    year_summary.bulk_density,
-                    year_summary.base_mass,
-                    prev_year_summary.thickness,
-                    prev_year_summary.wet_mass,
-                    prev_year_summary.base_mass,
-                )
-            end
-            if should_record_year_metrics(year, run_options.years, run_options.history_year_stride)
-                push!(history, record)
-                time_block!(timings, :year_logging) do
-                    println(integrator.io, year_log_line(record))
-                    flush(integrator.io)
-                end
-            end
-            copyto!(prev_year_summary.thickness, year_summary.thickness)
-            copyto!(prev_year_summary.wet_mass, year_summary.wet_mass)
-            copyto!(prev_year_summary.base_mass, year_summary.base_mass)
-        end
-        next!(progress)
-    end
-    if monthly_mode
-        time_block!(timings, :write_netcdf) do
-            write_monthly_output_nc!(nc, monthly_output, 1, sim.model.grid)
-        end
-        record_index = monthly_output.count
-    end
-    status = :complete
-    nc_path = nc === nothing ? "" : resolve_netcdf_path(run_options)
-    nc !== nothing && close_output!(nc, status, record_index)
-
-    integrator.history = history
-    integrator.netcdf_path = nc_path
-
-    run_wall_sec = (time_ns() - integrator.wall_t0) * 1.0e-9
-    print_run_report(
-        integrator.io,
-        run_options,
-        sim.forcing.time_values,
-        history,
-        status,
-        run_wall_sec,
-        timings;
-        nc_path=nc_path,
-    )
-    return nothing
-end
-
-function _run_vector_model_integrator!(integrator::SimulationIntegrator, runtime, nc, monthly_output, store_monthly!)
-    sim = integrator.sim
-    state = runtime.state
-    options = sim.options
-    monthly_mode = monthly_output !== nothing
-    record_index = 0
-    while !_finished(integrator)
-        k = integrator.time_index
-        _step_scheduled!(integrator)
-        if monthly_mode && _is_month_boundary(sim.forcing.time_values, k)
-            record_index += 1
-            time_block!(integrator.timings, :write_netcdf) do
-                store_monthly!(record_index)
-            end
-        elseif nc !== nothing && !monthly_mode
-            record_index += 1
-            time_block!(integrator.timings, :write_netcdf) do
-                write_nc!(nc, state, record_index, sim.model.grid)
-            end
-        end
-    end
-
-    if monthly_mode
-        time_block!(integrator.timings, :write_netcdf) do
-            write_monthly_output_nc!(
-                nc,
-                (; monthly_output..., count=record_index),
-                1,
-                sim.model.grid,
-            )
-        end
-    end
-
-    integrator.netcdf_path = nc === nothing ? "" : resolve_netcdf_path(options)
-    nc !== nothing && close_output!(nc, :complete, record_index)
-    return nothing
-end
-
-function _run_pdd_integrator!(integrator::SimulationIntegrator)
-    sim = integrator.sim
-    options = sim.options
-    runtime = integrator.model_runtime.data
-    state = runtime.state
-    nc = _state_output_from_options(sim, options, state)
-    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, options)
-    monthly = monthly_mode ? (
-        snowpack_swe=state.snowpack_swe,
-        smb_ice=similar(state.smb_ice),
-        runoff=similar(state.runoff),
-        pdd_sum=similar(state.pdd_sum),
-    ) : nothing
-    previous = monthly_mode ? (
-        smb_ice=copy(state.smb_ice),
-        runoff=copy(state.runoff),
-        pdd_sum=copy(state.pdd_sum),
-    ) : nothing
-    monthly_output = monthly_mode ? pdd_monthly_output_buffer(
-        state; nmonth=options.years * _monthly_records_per_cycle(sim.forcing.time_values),
-    ) : nothing
-    store_monthly! = function (record_index)
-        @. monthly.smb_ice = state.smb_ice - previous.smb_ice
-        @. monthly.runoff = state.runoff - previous.runoff
-        @. monthly.pdd_sum = state.pdd_sum - previous.pdd_sum
-        store_pdd_monthly!(monthly_output, monthly, record_index)
-        copyto!(previous.smb_ice, state.smb_ice)
-        copyto!(previous.runoff, state.runoff)
-        copyto!(previous.pdd_sum, state.pdd_sum)
-        return nothing
-    end
-    return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
-end
-
-function _run_itm_integrator!(integrator::SimulationIntegrator)
-    sim = integrator.sim
-    runtime = integrator.model_runtime.data
-    state = runtime.state
-    nc = _state_output_from_options(sim, sim.options, state)
-    monthly_mode = nc !== nothing && _uses_monthly_output(sim.model, sim.options)
-    monthly_output = monthly_mode ? itm_monthly_output_buffer(
-        # Allow one terminal record beyond the precomputed calendar count.
-        # This also handles synthesized forcing timestamps at a month boundary.
-        state; nmonth=sim.options.years * (_monthly_records_per_cycle(sim.forcing.time_values) + 1),
-    ) : nothing
-    store_monthly! = record_index -> store_itm_monthly!(monthly_output, state, record_index)
-    return _run_vector_model_integrator!(integrator, runtime, nc, monthly_output, store_monthly!)
+    return out
 end
 
 """
-    yearly_step!(integrator)
+    smbstats(sim_or_model) -> NamedTuple
 
-Advance a scheduled BESSI simulation by one full forcing year and return annual
-coupling fields. `ice_sheet_net_forcing_yearly` is the yearly `smb_ice` delta in
-native Chion mass units, and `mean_T_srf_K` is the mean surface temperature.
+Column means (kg m⁻²) of the cumulative mass fluxes since the start of the model, and with column
+areas in the forcing their totals (Gt): `smb_ice`, `melt`, `runoff`, `refreezing` (BESSI also
+`sublimation`).
 """
-yearly_step!(::SimulationIntegrator) =
-    error("yearly_step! currently supports BESSIModel simulations.")
+smbstats(sim::Simulation) = smbstats(sim.model)
 
-function yearly_step!(integrator::SimulationIntegrator{<:Simulation{<:BESSIModel}})
-    integrator.time_index == 1 ||
-        error("yearly_step! must be called at the start of a forcing year.")
-
-    nsteps = length(integrator.sim.forcing.time_values)
-    nsteps > 0 || error("Cannot advance a yearly step without forcing time values.")
-    weights_days = integrator.sim.forcing.dt_days
-    total_days = sum(weights_days)
-    total_days > 0.0 || error("Cannot compute yearly means with non-positive total forcing duration.")
-
-    model = integrator.sim.model
-    state = integrator.sim.now
-    runtime = integrator.model_runtime.data
-    grid = model.grid
-
-    smb_before = _host_vector(runtime.state.smb_ice; copy_array=true)
-    Tsrf_sum = similar(runtime.state.Tsrf)
-    fill!(Tsrf_sum, zero(eltype(Tsrf_sum)))
-
-    for time_index in 1:nsteps
-        step!(integrator)
-        @. Tsrf_sum += runtime.state.Tsrf * weights_days[time_index]
-    end
-
-    ice_sheet_net_forcing_yearly = _host_vector(runtime.state.smb_ice; copy_array=true) .- smb_before
-    mean_T_srf_K = _host_vector(Tsrf_sum; copy_array=true) ./ total_days
-    _mask_inactive_yearly_outputs!(ice_sheet_net_forcing_yearly, mean_T_srf_K, integrator.model_runtime.active)
-
-    return (
-        year=integrator.completed_years,
-        mean_T_srf_K=mean_T_srf_K,
-        ice_sheet_net_forcing_yearly=ice_sheet_net_forcing_yearly,
-        mean_T_srf_K_grid=_yearly_grid(mean_T_srf_K, grid),
-        ice_sheet_net_forcing_yearly_grid=_yearly_grid(ice_sheet_net_forcing_yearly, grid),
-    )
+function smbstats(model::AbstractSnowModel)
+    names = _smbstats_fields(model)
+    area = forcing_area(model.forcing.source)
+    active = model.cache.active
+    means = NamedTuple{names}(map(name -> _active_mean(getproperty(model.state, name), active), names))
+    area === nothing && return (; mean_kg_m2 = means)
+    totals = NamedTuple{names}(map(name -> sum(_host_vector(getproperty(model.state, name))[active] .* area[active]) * 1e-6, names))
+    return (; mean_kg_m2 = means, total_Gt = totals)
 end
 
-run!(integrator::SimulationIntegrator) = _run_integrator!(integrator)
-
-"""
-    finalize!(integrator) -> SimulationResult
-
-Finish a stepped simulation: copy the state back to `sim.now`, close the
-NetCDF output and return the `SimulationResult` (status `:complete` or
-`:incomplete`). Calling it again returns the same result.
-"""
-finalize!(integrator::SimulationIntegrator) = _finalize_integrator!(integrator)
-
-"""
-    set_active_mask!(integrator, mask; reset_newly_inactive=true)
-
-Restrict stepping to the columns where `mask` is true (a column vector or a
-grid-shaped matrix). Columns that become inactive are reset to the initial
-state unless `reset_newly_inactive=false`.
-"""
-set_active_mask!(integrator::SimulationIntegrator, mask; kwargs...) =
-    _set_active_mask!(integrator, mask; kwargs...)
-
-function run!(
-    sim::Simulation;
-    io::IO=stdout,
-)
-    integrator = init_integrator(sim; io=io)
-    run!(integrator)
-    return finalize!(integrator)
-end
+_smbstats_fields(::BESSIModel) = (:smb_ice, :melt, :runoff, :refreezing, :sublimation)
+_smbstats_fields(::PDDModel) = (:smb_ice, :runoff)
+_smbstats_fields(::ITMModel) = (:smb_ice, :melt_cum, :runoff_cum, :refreezing_cum)
+_active_mean(values, active) = (host = _host_vector(values); sum(host[active]) / count(active))

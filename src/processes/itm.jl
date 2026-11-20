@@ -5,15 +5,6 @@
 @inline _itm_snow_albedo(model, ::Nothing) = model.alb_snow_wet
 @inline _itm_snow_albedo(model, melt) = ifelse(melt > model.melt_crit, model.alb_snow_wet, model.alb_snow_dry)
 
-@inline _itm_parameters(model::ITMModel) = (
-    c=model.c, trans_a=model.trans_a, trans_b=model.trans_b, itm_c=model.itm_c,
-    itm_t=model.itm_t, itm_b=model.itm_b, itm_lat0=model.itm_lat0,
-    H_snow_max=model.H_snow_max, Pmaxfrac=model.Pmaxfrac,
-    H_snow_crit_desert=model.H_snow_crit_desert, H_snow_crit_forest=model.H_snow_crit_forest,
-    melt_crit=model.melt_crit, alb_ocean=model.alb_ocean, alb_land=model.alb_land,
-    alb_forest=model.alb_forest, alb_ice=model.alb_ice, alb_snow_dry=model.alb_snow_dry,
-    alb_snow_wet=model.alb_snow_wet, firn_fac=model.firn_fac,
-)
 
 @inline function _itm_surface_albedo(model, z, H_ice, H_snow, PDDs, melt=nothing)
     transitional_critical_depth = model.H_snow_crit_desert +
@@ -48,8 +39,8 @@ end
         model.itm_c,
     )
     energy = _itm_transmissivity(z, model.trans_a, model.trans_b) * (1 - albedo) * insolation +
-             offset + model.itm_t * (Tair - model.c.T0)
-    return max(energy / (model.c.rho_w * model.c.Lm), zero(energy)) * model.c.seconds_per_day * 1000
+             offset + model.itm_t * (Tair - model.T0)
+    return max(energy / (model.rho_w * model.Lm), zero(energy)) * model.seconds_per_day * 1000
 end
 
 Base.@propagate_inbounds function _itm_apply_column!(
@@ -59,8 +50,8 @@ Base.@propagate_inbounds function _itm_apply_column!(
     q_sw_net, has_q_sw_net, z, H_ice, PDDs,
 )
     snow = H_snow[idx]
-    sf = snowfall_rate * model.c.seconds_per_day
-    rf = rainfall_rate * model.c.seconds_per_day
+    sf = snowfall_rate * model.seconds_per_day
+    rf = rainfall_rate * model.seconds_per_day
     precipitation = sf + rf
     albedo_pre = _itm_surface_albedo(model, z, H_ice, snow, PDDs)
     snow += sf * dt
@@ -101,7 +92,7 @@ Base.@propagate_inbounds function _itm_apply_column!(
     melt_net[idx] = melt_net_rate
     Tsrf[idx] = ifelse(
         H_ice > zero(H_ice),
-        min(model.c.T0, Tair + model.firn_fac * max(melt_net_rate, zero(melt_net_rate))),
+        min(model.T0, Tair + model.firn_fac * max(melt_net_rate, zero(melt_net_rate))),
         Tair,
     )
     smb_cum[idx] += smb_rate * dt
@@ -131,15 +122,13 @@ end
     end
 end
 
-function _itm_step_arrays!(state::ITMState, forcing, time_index::Int, model::ITMModel, active_indices)
-    isempty(active_indices) && return nothing
-    kernel! = _itm_step_kernel!(_ka_backend(state.H_snow))
-    kernel!(state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
+function _itm_step_arrays!(state::ITMState, forcing, time_index::Int, params::ITMParams, active_indices)
+    launch!(_itm_step_kernel!, state.H_snow, length(active_indices), state.H_snow, state.alb_s, state.smb, state.smbi, state.melt,
         state.runoff, state.refreezing, state.Tsrf, state.melt_net, state.smb_cum,
         state.smb_ice, state.melt_cum, state.runoff_cum, state.refreezing_cum,
         forcing.air_temperature, forcing.snowfall_rate, forcing.rainfall_rate, forcing.shortwave_down,
         forcing.q_sw_net, forcing.has_q_sw_net, forcing.latitude_deg, forcing.surface_height,
         forcing.ice_thickness, forcing.annual_pdd, time_index, _step_dt(forcing.dt_days, time_index),
-        _itm_parameters(model), active_indices; ndrange=length(active_indices))
+        params, active_indices)
     return nothing
 end

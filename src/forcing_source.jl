@@ -1,5 +1,5 @@
 """
-`Forcing`: where an `Experiment` takes its forcing from, one calendar year at a time.
+`Forcing`: where a model takes its forcing from, one calendar year at a time.
 
     Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; format=:mar, surface_fluxes=:parameterized)
     Forcing("/data/site.nc"; variables=(air_temperature="Tair", ...))     # one file, any length
@@ -62,6 +62,13 @@ end
 - `transform`: `(forcing, year) -> forcing`, applied to every year (e.g. a temperature change).
 - `variables`: NamedTuple of variable names for `:generic` files, e.g.
   `(air_temperature="t2m", snowfall="sf", rainfall="rf", shortwave_down="ssrd")`.
+- `cache`: a directory for decoded forcing years, or `nothing`. Reading a compressed MAR year
+  (decompression, column selection, unit conversion) takes seconds; with a cache the first run
+  writes every year it loads as a JLD2 file there, and later runs read it back in a fraction of a
+  second, bitwise identical. A cache file belongs to one forcing file (path, size, modification
+  time), the loader settings (`format`, `surface_fluxes`, `mask`, `wind`, `variables`, `kwargs`)
+  and the version of Chion's loaders; when one changes, the year is loaded again and the file
+  replaced. `transform` is applied after the cache. Runs may share a cache directory.
 """
 function Forcing(
     path::AbstractString;
@@ -75,6 +82,7 @@ function Forcing(
     area_file=nothing,
     transform=nothing,
     variables=nothing,
+    cache::Union{Nothing, AbstractString}=nothing,
     kwargs...,
 )
     surface_fluxes in (:prescribed, :parameterized, :albedo, :as_loaded) ||
@@ -100,7 +108,8 @@ function Forcing(
     probe = yearly ? file_years[minimum(keys(file_years))] : path
     fmt = format == :auto ? _detect_format(probe) : format
     fmt in (:mar, :alma, :generic) || error("`format` must be :auto, :mar, :alma or :generic.")
-    loader = p -> _load_file(p, fmt, surface_fluxes; mask, wind, variables, kwargs...)
+    settings = repr((; format=fmt, surface_fluxes, mask, wind, variables, kwargs=sort(collect(pairs(kwargs)); by=first)))
+    loader = _cached_loader(p -> _load_file(p, fmt, surface_fluxes; mask, wind, variables, kwargs...), cache, settings)
     area_loader = _area_loader(area, fmt, probe, area_file; kwargs...)
     desc = "$(yearly ? "yearly files " : "file ")$path (format $fmt, surface fluxes $surface_fluxes)"
     source = yearly ? YearFileSource(file_years, loader) : WholeSource(() -> loader(path), nothing)
@@ -108,13 +117,13 @@ function Forcing(
 end
 
 """
-    Forcing(forcing::SnowpackForcing; grid=SnowpackGrid(ncol), area=nothing, transform=nothing)
+    Forcing(forcing::SnowpackForcing; grid=Grid(ncol), area=nothing, transform=nothing)
 
 Wrap forcing that is already in memory. Years are sliced from its time axis.
 """
 function Forcing(forcing::SnowpackForcing; grid=nothing, area=nothing, transform=nothing, description="in-memory forcing")
     ncol = size(forcing.air_temperature, 1)
-    g = grid === nothing ? SnowpackGrid(ncol) : grid
+    g = grid === nothing ? Grid(ncol) : grid
     a = area === nothing ? nothing : Float64.(collect(area))
     return Forcing(WholeSource(() -> (grid=g, forcing=forcing), nothing), :as_loaded, transform, description,
         Ref{Any}(g), Ref{Any}(a), nothing)
@@ -124,7 +133,7 @@ end
     Forcing(f, years; grid, area=nothing, transform=nothing)
 
 Forcing from a user function `f(year) -> SnowpackForcing` (for preprocessing that the file
-loaders do not cover). `grid` is the `SnowpackGrid` of the columns.
+loaders do not cover). `grid` is the `Grid` of the columns.
 """
 function Forcing(f::Function, years; grid, area=nothing, transform=nothing, description="user forcing function")
     a = area === nothing ? nothing : Float64.(collect(area))
@@ -184,7 +193,7 @@ function _load_alma(path)
         has_q_lw_down=isfinite.(met.lw), wind_speed=_forward_fill(met.wind, 5.0; nonnegative=true),
         relative_humidity=relative_humidity, has_relative_humidity=trues(n), air_pressure=air_pressure,
         time_values=met.dates)
-    return (grid=SnowpackGrid(1), forcing=forcing)
+    return (grid=Grid(1), forcing=forcing)
 end
 
 function _median(v)
@@ -283,6 +292,72 @@ function _without_surface_fluxes(forcing; keep_albedo::Bool=false)
         latitude_deg=forcing.latitude_deg)
 end
 
+# ---------------------------------------------------------------------------
+# Cache of decoded forcing years
+# ---------------------------------------------------------------------------
+
+# Bumped when the layout of a cache file changes.
+const FORCING_CACHE_VERSION = 1
+
+# The loaders' source code: a change to it invalidates every cache file (precompilation reruns
+# whenever these files change, so the constant follows them).
+const _FORCING_CODE_KEY = string(hash(map(f -> read(joinpath(@__DIR__, f), String),
+    ("forcing_source.jl", "dataloaders.jl", "forcing.jl"))); base=16)
+
+"""The loader `path -> (grid, forcing)` reading from and writing to the cache directory `dir`."""
+_cached_loader(loader, ::Nothing, settings) = loader
+function _cached_loader(loader, dir::AbstractString, settings)
+    cache_dir = abspath(dir)
+    mkpath(cache_dir)
+    return function (path)
+        key = _forcing_cache_key(path, settings)
+        file = joinpath(cache_dir, string(splitext(basename(path))[1], "_", string(hash(key); base=16), ".jld2"))
+        cached = _read_forcing_cache(file, key)
+        cached === nothing || return cached
+        loaded = loader(path)
+        _write_forcing_cache(file, key, loaded)
+        return loaded
+    end
+end
+
+function _forcing_cache_key(path, settings)
+    source = abspath(path)
+    return string("version ", FORCING_CACHE_VERSION, "; loaders ", _FORCING_CODE_KEY, "; file ", source,
+        "; size ", filesize(source), "; modified ", mtime(source), "; settings ", settings)
+end
+
+# `(grid, forcing)` from a cache file, or `nothing` if it is missing, stale or unreadable.
+function _read_forcing_cache(file, key)
+    isfile(file) || return nothing
+    try
+        return jldopen(file, "r") do io
+            get(io, "key", "") == key || return nothing
+            return (grid=io["grid"], forcing=io["forcing"])
+        end
+    catch err
+        @warn "Unreadable forcing cache $file; loading the year again." exception = err
+        return nothing
+    end
+end
+
+# Written to a temporary file and moved into place, so that runs sharing the cache never read a
+# partly written file.
+function _write_forcing_cache(file, key, loaded)
+    tmp = string(file, ".", getpid(), ".", rand(UInt32), ".tmp")
+    try
+        jldopen(tmp, "w") do io
+            io["key"] = key
+            io["grid"] = loaded.grid
+            io["forcing"] = loaded.forcing
+        end
+        mv(tmp, file; force=true)
+    catch err
+        rm(tmp; force=true)
+        @warn "Could not write the forcing cache $file." exception = err
+    end
+    return nothing
+end
+
 function _area_loader(area, fmt, probe, area_file; kwargs...)
     area === nothing && return nothing
     area isa AbstractVector && (v = Float64.(area); return _ -> v)
@@ -372,10 +447,10 @@ function load_forcing_year(f::Forcing, y::Integer)
     return forcing
 end
 
-_same_columns(a::SnowpackGrid, b::SnowpackGrid) = ncols(a) == ncols(b) &&
+_same_columns(a::Grid, b::Grid) = ncols(a) == ncols(b) &&
     (!has_spatial_coords(a) || !has_spatial_coords(b) || (a.x == b.x && a.y == b.y && a.js == b.js && a.is == b.is))
 
-"""The `SnowpackGrid` of the forcing columns."""
+"""The `Grid` of the forcing columns (default layering, Float64)."""
 function forcing_grid(f::Forcing; loaded=nothing)
     if f.grid_ref[] === nothing
         l = loaded === nothing ? _load_year(f, first(forcing_years(f))) : loaded

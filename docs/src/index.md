@@ -48,8 +48,8 @@ using Chion
 
 NetCDF input and output use `NCDatasets.jl` (installed with Chion). The GPU
 backend needs `CUDA.jl`, a weak dependency: add it to your environment
-(`Pkg.add("CUDA")`) and load it with `using CUDA` before running with
-`backend=:gpu`. Configuration files run with `run_config` load it
+(`Pkg.add("CUDA")`) and load it with `using CUDA` before building a model with
+`backend = CUDABackend()`. Configuration files run with `run_config` load it
 automatically.
 
 ## Quick Start
@@ -67,42 +67,44 @@ forcing = SnowpackForcing(
     shortwave_down=[120.0, 160.0],
     latitude_deg=72.0,          # used by the diurnal substeps and the longwave
 )
-model = BESSIModel(SnowpackGrid(1))
-sim = Simulation(model; forcing)
+model = BESSIModel(Grid(1); forcing)
+sim = Simulation(model)
 run!(sim)
-sim.now.temperature          # the final state: layer temperatures (K), …
+model.temperature            # the final state: layer temperatures (K), …
 ```
 
 A gridded run from yearly MAR files with a spin-up and several outputs:
 
 ```julia
 using Chion
-using CUDA                                  # only for backend=:gpu
+using CUDA                                  # only for the GPU
 
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc";
     surface_fluxes=:parameterized)          # Chion computes the energy balance
-model = BESSIModel(forcing)
+model = BESSIModel(forcing;                 # the grid of the forcing columns
+    params=Params(),                        # the Greenland calibration; ParamsAISv1() for Antarctica
+    backend=CUDABackend())                  # CPU() by default
 
-experiment = Experiment(model, forcing;
+sim = Simulation(model;
     years=1940:2026,
     spinup=CycledSpinup(1940:1969; cycles=5),
-    outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
-             Output("budget_yearly.csv"; variables=:budget, frequency=:yearly,
-                    aggregate=:area_sum)],
-    backend=:gpu)
-result = run!(experiment)
+    output=OutputConfig(dir="output/greenland",     # run directory: outputs, log, restarts
+        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
+                 Output("budget_yearly.csv"; variables=:budget, frequency=:yearly,
+                        aggregate=:area_sum)]))
+run!(sim)
 ```
 
-[Running Experiments](experiments.md) describes this workflow and the
+[Running Simulations](simulations.md) describes this workflow and the
 equivalent TOML configuration files.
 
 ## Where To Go Next
 
 | If you want to | Read |
 | --- | --- |
-| run the model on files, with spin-up and outputs | [Running Experiments](experiments.md) |
-| drive it step by step (coupling, custom loops) | [Simulation API](case_api.md) |
+| run the model on files, with spin-up and outputs | [Running Simulations](simulations.md) |
+| drive it step by step (coupling, GPUs, custom loops) | [Models And Coupling](models.md) |
 | understand the state and the order of processes | [Model State And Step Flow](model_state.md) |
 | look up the physics of one process | the Processes pages, e.g. [Energy Balance](processes/energy.md) |
-| find a default value | [Default Parameters](parameters.md) |
+| find a default value or choose a scheme | [Parameters](parameters.md) |
 | see how the numerics are verified | [Verification](validation.md) |

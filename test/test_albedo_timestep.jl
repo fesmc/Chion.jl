@@ -3,7 +3,7 @@ using Chion
 
 @testset "Dynamic albedo wetness elapsed time" begin
     for NF in (Float32, Float64)
-        c = Chion.SnowpackPhysicalConstants(NF; albedo_scheme=:dynamic)
+        c = Params(; NF, albedo_scheme = DynamicAlbedo())
         mass = fill(NF(100), 1, 1)
         density = fill(NF(300), 1, 1)
         # Disable temperature aging to isolate wetness subdivision invariance.

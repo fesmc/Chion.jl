@@ -223,7 +223,7 @@ end
 """
     load_forcing_file(path; kwargs...) -> (grid, forcing)
 
-Load a generic NetCDF forcing file into a `SnowpackGrid` and
+Load a generic NetCDF forcing file into a `Grid` and
 `SnowpackForcing`. Required variables default to `x`, `y`, `time`, `TT`, `SF`,
 `RF`, and `SWD`; optional turbulent/radiative flux fields and prescribed
 surface albedo are loaded when present and requested. If no explicit pressure
@@ -343,7 +343,7 @@ function load_forcing_file(
 
         js = repeat(collect(1:ny), inner=nx)[rows]
         is = repeat(collect(1:nx), outer=ny)[rows]
-        grid = SnowpackGrid(ncol; x=x, y=y, js=js, is=is, mask=mask)
+        grid = Grid(ncol; x=x, y=y, js=js, is=is, mask=mask)
         forcing = SnowpackForcing(
             time_values=time_values,
             dt_days=dt_days,

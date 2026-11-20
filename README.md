@@ -195,11 +195,12 @@ Where it is available, it contains:
 | --- | --- |
 | `examples/configs/` | complete experiments as TOML files, run with `julia --project -m Chion <file>.toml` |
 | `examples/runs/` | short scripts for experiments that need code: Northern Hemisphere snow from ERA5, the ten ESM-SnowMIP sites |
-| `examples/figures/` | the paper figures, and `compare_with_mar.jl <run dir>` for the yearly budget against MAR |
-| `examples/research/` | native 3-hourly forcing, longwave fit and benchmarks behind the paper (low-level API, settings from `CHION_*` environment variables) |
+| `examples/figures/` | `compare_with_mar.jl <run dir>` for the yearly budget against MAR, and older figure scripts |
+| `examples/research/` | native 3-hourly forcing, longwave fit and benchmarks (low-level API, settings from `CHION_*` environment variables) |
 
-All runs behind the paper figures are in `run_paper_experiments.sh` (`sbatch run_paper_experiments.sh
-greenland|native|antarctica|snow`); it shows how each output is made from a config and `--set` overrides.
+The runs and figures of the Chion model description paper are in a separate repository, Chion-paper
+(a checkout next to this one): one short Julia file per model run and per figure, with Chion as a path
+dependency and a committed manifest.
 
 The configs cover Greenland and Antarctica (parameterized, prescribed, firn
 profiles for SUMup). Each run writes its output and a copy of its configuration to `output_dir`.

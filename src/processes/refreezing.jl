@@ -112,12 +112,14 @@ function go_refreezing!(
 end
 
 """
-    go_refreezing!(state, idx)
+    go_refreezing!(model, idx)
 
-Run the refreezing scheme for column `idx` of `state`. Mutates the state
-state in-place and returns the refrozen mass and released latent heat.
+Run the refreezing scheme for column `idx` of a CPU `model`. Mutates its state in place and
+returns the refrozen mass and released latent heat.
 """
-function go_refreezing!(state, idx::Int)
+function go_refreezing!(model, idx::Int)
+    state = model.state
+    c = model.params
     if _n_active(state.N, idx) <= 0
         return (
             refrozen_mass=zero(eltype(state.mass)),
@@ -132,14 +134,14 @@ function go_refreezing!(state, idx::Int)
         state.density,
         state.temperature,
         idx,
-        state.c.T0,
-        state.c.ci,
-        state.c.Lm,
-        state.c.rho_i,
-        state.refreezing_correction,
+        c.T0,
+        c.ci,
+        c.Lm,
+        c.rho_i,
+        c.refreezing_correction,
     )
     return (
         refrozen_mass=refrozen_mass,
-        released_latent_heat=refrozen_mass * state.c.Lm,
+        released_latent_heat=refrozen_mass * c.Lm,
     )
 end

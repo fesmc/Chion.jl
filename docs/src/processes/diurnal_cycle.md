@@ -15,8 +15,8 @@ substeps capture this without sub-daily forcing. They redistribute shortwave
 energy within the day but never change its daily total.
 
 The feature is enabled by default (calibrated for daily GrIS forcing) and applies only to `BESSIModel`.
-The low-level `step!` methods, used without a `BESSIModel`, default to no
-substeps.
+It is the `diurnal_cycle` slot of [`Params`](@ref): [`DiurnalSubsteps`](@ref)`()`
+(the default) or [`NoDiurnalCycle`](@ref)`()`.
 
 ![Reconstructed diurnal cycle of the shortwave radiation](../assets/diurnal_shortwave_lon_090p00.png)
 
@@ -30,31 +30,28 @@ substeps. The default uses 8.*
 The defaults correspond to:
 
 ```julia
-model = BESSIModel(grid;
-    diurnal_shortwave_substeps=true,
-    diurnal_shortwave_threshold=0.0,
-    diurnal_shortwave_max_substeps=8,
-    diurnal_shortwave_min_air_temperature_c=-8.0,
-    diurnal_temperature_cycle=true,
-    diurnal_temperature_amplitude_c=1.0,
-)
+params = Params(diurnal_cycle=DiurnalSubsteps(
+    max_substeps=8,
+    threshold=0.0,
+    min_air_temperature=273.15 - 8.0,
+    temperature_cycle=DiurnalTemperatureCycle(amplitude=1.0),
+))
 ```
 
-Set `diurnal_shortwave_substeps=false` for forcing that is already sub-daily.
+Set `diurnal_cycle=NoDiurnalCycle()` for forcing that is already sub-daily.
 
-The options mean:
+The coefficients mean:
 
-| Option | Default | Meaning |
+| Coefficient | Default | Meaning |
 | --- | ---: | --- |
-| `diurnal_shortwave_substeps` | `true` | enable adaptive subdivision |
-| `diurnal_shortwave_threshold` | `0 W m^-2` | required noon-peak-minus-mean excess of the selected shortwave (`q_sw_net` if prescribed, otherwise `shortwave_down`) |
-| `diurnal_shortwave_max_substeps` | `8` | exact number of substeps when subdivision activates; valid range 1–24 |
-| `diurnal_shortwave_min_air_temperature_c` | `-8 degC` | subdivision requires daily mean air temperature above this value |
-| `diurnal_temperature_cycle` | `true` | reconstruct a diurnal air-temperature cycle |
-| `diurnal_temperature_amplitude_c` | `1 degC` | half-amplitude ``A_0`` of that temperature cycle |
-| `diurnal_temperature_amplitude_gradient_c_per_km` | `0 degC km^-1` | increase ``g`` of the amplitude with surface height |
-| `diurnal_temperature_amplitude_reference_height_m` | `0 m` | height ``z_{\mathrm{ref}}`` above which the gradient acts |
-| `diurnal_temperature_amplitude_max_c` | `1 degC` | upper bound ``A_{\max}`` of the amplitude |
+| `DiurnalSubsteps(threshold)` | `0 W m^-2` | required noon-peak-minus-mean excess of the selected shortwave (`q_sw_net` if prescribed, otherwise `shortwave_down`) |
+| `DiurnalSubsteps(max_substeps)` | `8` | exact number of substeps when subdivision activates; valid range 1–24 |
+| `DiurnalSubsteps(min_air_temperature)` | `265.15 K` (−8 °C) | subdivision requires daily mean air temperature above this value |
+| `DiurnalSubsteps(temperature_cycle)` | `DiurnalTemperatureCycle()` | reconstruct a diurnal air-temperature cycle; `NoDiurnalTemperatureCycle()` disables it |
+| `DiurnalTemperatureCycle(amplitude)` | `1 K` | half-amplitude ``A_0`` of that temperature cycle |
+| `DiurnalTemperatureCycle(amplitude_gradient)` | `0 K m^-1` | increase ``g`` of the amplitude with surface height |
+| `DiurnalTemperatureCycle(reference_height)` | `0 m` | height ``z_{\mathrm{ref}}`` above which the gradient acts |
+| `DiurnalTemperatureCycle(amplitude_max)` | `1 K` | upper bound ``A_{\max}`` of the amplitude |
 
 Finite `latitude_deg` forcing is required when diurnal shortwave substeps are
 enabled. Solar longitude is derived from each forcing timestamp.
@@ -146,22 +143,22 @@ S\left(\sin\phi\sin\delta+\cos\phi\cos\delta\right).
 The step is subdivided only when all of the following are true:
 
 1. diurnal substeps are enabled
-2. `diurnal_shortwave_max_substeps > 1`
+2. `max_substeps > 1`
 3. the forcing duration is between `0.75` and `1.25` days
 4. the selected daily mean shortwave is positive
 5. daily mean air temperature is strictly above the configured minimum
 6. air temperature, latitude, and solar longitude are finite
 7. `Q_peak - Q_mean` is strictly greater than
-   `diurnal_shortwave_threshold`
+   `threshold`
 8. the column is not in polar night
 
 If every condition passes, the code uses exactly
-`diurnal_shortwave_max_substeps`; otherwise it uses one normal forcing step.
+`max_substeps`; otherwise it uses one normal forcing step.
 It does not select an intermediate number of substeps.
 
 ## Optional Temperature Cycle
 
-When `diurnal_temperature_cycle=true`, the reconstructed temperature follows
+With `temperature_cycle=DiurnalTemperatureCycle()`, the reconstructed temperature follows
 a cosine cycle centered on the supplied daily mean:
 
 ```math
@@ -174,9 +171,8 @@ with the hour angle ``h \in [-\pi, \pi]`` (``h = 0`` at local noon). By
 default ``A_T = 1`` K everywhere. Forcing without a surface height gets no
 elevation term. The elevation dependence follows the diurnal temperature range
 over Greenland in SEMIC (Krapp et al., 2017):
-`diurnal_temperature_amplitude_c=2.0`,
-`diurnal_temperature_amplitude_gradient_c_per_km=1.0`,
-`diurnal_temperature_amplitude_max_c=5.0` reproduce
+`DiurnalTemperatureCycle(amplitude=2.0, amplitude_gradient=0.001,
+amplitude_max=5.0)` reproduce
 ``A_T = \min(5\,\mathrm{K}, 2\,\mathrm{K} + 1\,\mathrm{K\,km^{-1}}\,z_s)``.
 
 The value passed to a substep is its interval average,
@@ -190,7 +186,7 @@ A_T\frac{\sin h_b-\sin h_a}{h_b-h_a}.
 This places the warmest point at solar noon and preserves the full-day mean
 temperature. The temperature cycle only acts on days that are subdivided by
 the shortwave criteria above. A day computed as one interval uses the daily
-mean. When the option is disabled, every substep uses the original air
+mean. With `NoDiurnalTemperatureCycle()`, every substep uses the original air
 temperature.
 
 ## Substep Forcing

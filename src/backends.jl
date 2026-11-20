@@ -1,53 +1,62 @@
-"""
-Compute backends.
+#=
+Compute backends. Models live on a KernelAbstractions backend: `CPU()` (threads), or
+`CUDABackend()` from CUDA.jl, whose support is the `ChionCUDAExt` package extension (`using CUDA`).
+The names `:threads` and `:gpu` (keywords, TOML) map to them through `_ka_backend_from`.
+=#
 
-`RunOptions(backend=...)` selects a `ComputeBackend`; runtime preparation
-dispatches on it. GPU support lives in the `ChionCUDAExt` package extension,
-which is loaded by `using CUDA` and adds the `GPUBackend` methods of the hooks
-below (`backend_functional`, `storage_type`, `_tune_ka_backend`,
-`_multiprocessor_count`).
-"""
-
+"""Name of a compute backend in keywords and TOML files: `:threads` or `:gpu`."""
 abstract type ComputeBackend end
-"""Multithreaded CPU execution (`backend=:threads`)."""
+"""Multithreaded CPU execution (`:threads`)."""
 struct ThreadsBackend <: ComputeBackend end
-"""CUDA GPU execution (`backend=:gpu`); requires `using CUDA`."""
+"""CUDA GPU execution (`:gpu`); requires `using CUDA`."""
 struct GPUBackend <: ComputeBackend end
 
-const _COMPUTE_BACKENDS = (threads=ThreadsBackend(), gpu=GPUBackend())
+_compute_backend(name::Symbol) = name === :threads ? ThreadsBackend() : name === :gpu ? GPUBackend() :
+    throw(ArgumentError("Unknown backend `:$name`; use `:threads` or `:gpu`."))
 
-backend_name(::ThreadsBackend) = :threads
-backend_name(::GPUBackend) = :gpu
-Base.show(io::IO, backend::ComputeBackend) = print(io, backend_name(backend))
-
-is_gpu(::ComputeBackend) = false
-is_gpu(::GPUBackend) = true
-
-"""Whether `backend` can run in the current session."""
+"""Whether `backend` can run in the current session (the CUDA extension adds the GPU)."""
 backend_functional(::ThreadsBackend) = true
 backend_functional(::ComputeBackend) = false
 
-"""Array type holding model data on `backend`."""
-storage_type(::ThreadsBackend) = Array
-storage_type(backend::ComputeBackend) = _require_functional(backend)
-
 _cuda_extension_loaded() = !isnothing(Base.get_extension(@__MODULE__, :ChionCUDAExt))
 
-function _require_functional(backend::ComputeBackend)
-    backend_functional(backend) && return backend
-    is_gpu(backend) && !_cuda_extension_loaded() &&
-        error("`backend=gpu` requires CUDA.jl: run `using CUDA` before setting up the simulation.")
-    error("`backend=$(backend_name(backend))` requested, but it is not functional in the current environment.")
-end
+"""
+    _ka_backend_from(backend)
+
+The KernelAbstractions backend of `backend`: a KernelAbstractions backend as it is, or the name
+`:threads` / `:gpu`.
+"""
+_ka_backend_from(backend::KernelAbstractions.Backend) = backend
+_ka_backend_from(name::Union{Symbol, AbstractString}) = _ka_backend_from(_compute_backend(Symbol(name)))
+_ka_backend_from(::ThreadsBackend) = KernelAbstractions.CPU()
+_ka_backend_from(::GPUBackend) = _cuda_ka_backend(nothing)
+
+# The CUDA extension adds the method for `::Nothing`.
+_cuda_ka_backend(::Any) = error("`backend = :gpu` requires CUDA.jl: run `using CUDA` first.")
+
+"""
+    ReactantBackend()
+
+Run a [`BESSIModel`](@ref) through Reactant.jl (XLA) on the device Reactant targets:
+`to_backend(model, ReactantBackend())` or `BESSIModel(grid; forcing, backend = ReactantBackend())`.
+Needs `using Reactant, CUDA` (the `ChionReactantExt` extension; CUDA.jl also on the CPU, since the
+kernels are compiled through it). The column step is compiled once per `integrate!` call or forcing
+year and stepped from the host; results agree with the other backends to roundoff. Not supported:
+PDD/ITM models, resetting columns with `set_active_mask!`, and outputs that accumulate on the device.
+"""
+struct ReactantBackend end
+
+# The Reactant extension adds the method for `::Nothing`.
+_reactant_ka_backend(::Any) = error("`ReactantBackend()` requires Reactant.jl and CUDA.jl: run `using Reactant, CUDA` first.")
+_ka_backend_from(::ReactantBackend) = _reactant_ka_backend(nothing)
 
 """
     cuda_available() -> Bool
 
-Whether the GPU backend can be used: CUDA.jl is loaded (`using CUDA`, which
-activates the `ChionCUDAExt` extension) and a functional GPU is present.
+Whether the GPU backend can be used: CUDA.jl is loaded (`using CUDA`, which activates the
+`ChionCUDAExt` extension) and a functional GPU is present.
 """
 @inline cuda_available() = backend_functional(GPUBackend())
-@inline gpu_storage_type() = storage_type(GPUBackend())
 
 # KernelAbstractions backend for kernels launched on the storage of `array`.
 @inline _ka_backend(array) = _tune_ka_backend(KernelAbstractions.get_backend(array))
@@ -56,3 +65,24 @@ activates the `ChionCUDAExt` extension) and a functional GPU is present.
 
 """Multiprocessor count of the device behind `backend` (0 when unknown)."""
 @inline _multiprocessor_count(::KernelAbstractions.Backend) = 0
+
+"""Workgroup size chosen by KernelAbstractions (the `launch!` default)."""
+struct DefaultWorkgroup end
+
+@inline _instantiate(kernel!, backend, ::DefaultWorkgroup) = kernel!(backend)
+@inline _instantiate(kernel!, backend, workgroupsize) = kernel!(backend, workgroupsize)
+
+"""
+    launch!(kernel!, reference, ndrange, args...; workgroupsize = DefaultWorkgroup())
+
+Launch the KernelAbstractions kernel `kernel!` with `args` over `ndrange` work items on the
+backend of the array `reference` (the CPU backend in its static-threads form, see
+`_tune_ka_backend`). An empty range launches nothing. The one place where kernels are
+instantiated, as Laddie's `launch!`.
+"""
+@inline function launch!(kernel!, reference, ndrange, args...; workgroupsize = DefaultWorkgroup())
+    prod(ndrange) == 0 && return nothing
+    backend = _ka_backend(reference)
+    _instantiate(kernel!, backend, workgroupsize)(args...; ndrange)
+    return nothing
+end

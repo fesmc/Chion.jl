@@ -6,9 +6,9 @@ CurrentModule = Chion
 
 Accumulation and melt are handled by the internal helpers
 `_apply_accumulation_resolved!` and `_melt_surface_layers!`, which are called
-from [`step!`](@ref). They are documented
+from [`column_step!`](@ref). They are documented
 here because they define the model behavior, but the intended public entry
-point is [`step!`](@ref).
+points are `run!` and `integrate!`.
 
 ## Accumulation
 
@@ -30,19 +30,20 @@ layer.
 
 ### Fresh-Snow Density
 
-The scheme is selected with the `BESSIModel` keyword `fresh_snow_density`.
-With `fresh_snow_density=:constant` (the default), the code uses `rho_s`
-(315 kg m⁻³) clamped to `[50, rho_i]`.
+The scheme is selected with the `fresh_snow_density_scheme` slot of
+[`Params`](@ref). With [`ConstantFreshSnowDensity`](@ref)`()` (the default),
+the code uses its `density` (315 kg m⁻³) clamped to `[50, rho_i]`.
 
-With `fresh_snow_density=:parameterized`, the code uses the HTESSEL
+With [`ParameterizedFreshSnowDensity`](@ref)`()`, the code uses the HTESSEL
 formulation (Dutra et al., 2010)
 
 ```math
 \rho_\mathrm{fresh} = a + b\,(T_\mathrm{air} - T_0) + c\,\sqrt{V},
 ```
 
-with default coefficients `rho_s_a = 109` kg m⁻³, `rho_s_b = 6` kg m⁻³ K⁻¹
-and `rho_s_c = 26` kg m⁻⁷ᐟ² s¹ᐟ², wind speed `V` in m s⁻¹ (5 m s⁻¹ without
+with default coefficients `intercept = 109` kg m⁻³,
+`temperature_coefficient = 6` kg m⁻³ K⁻¹ and `wind_coefficient = 26`
+kg m⁻⁷ᐟ² s¹ᐟ², wind speed `V` in m s⁻¹ (5 m s⁻¹ without
 wind forcing), and a final clamp to ``[50, \rho_i]``.
 
 ![Fresh-snow density vs wind speed](../assets/fresh_snow_density_vs_wind.png)
@@ -104,9 +105,9 @@ On bare ice, melt follows from the same energy balance with the top
 ice-substrate layer as the surface (see
 [Layer Structure](layer_structure.md#Ice-Substrate)).
 
-## Interaction In `step!`
+## Interaction In The Column Step
 
-The accumulation-and-melt-related ordering in one call to [`step!`](@ref) is:
+The accumulation-and-melt-related ordering in one call to [`column_step!`](@ref) is:
 
 1. accumulation, removal of trace layers, and near-surface remeshing (or the
    bare-ice branch if no snow is left)

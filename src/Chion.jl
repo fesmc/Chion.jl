@@ -5,19 +5,34 @@ using Dates
 using NCDatasets
 using Adapt: Adapt, adapt, @adapt_structure
 using KernelAbstractions
-using ProgressMeter: Progress, next!, update!
+using KernelAbstractions: CPU
+using DocStringExtensions: TYPEDEF, TYPEDFIELDS, TYPEDSIGNATURES
 using SpecialFunctions: erfc
+using TOML
 
 # ---------------------------------------------------------------------------
-# Core domain, forcing, and physics
+# Numerics, schemes, parameters and grid
 # ---------------------------------------------------------------------------
 include("backends.jl")
 include("constants.jl")
-include("domain.jl")
+include("numerics.jl")
+include("schemes.jl")
+include("boundary_conditions.jl")
+include("kinks.jl")
+include("params.jl")
+include("grid.jl")
+
+# ---------------------------------------------------------------------------
+# Forcing
+# ---------------------------------------------------------------------------
 include("forcing.jl")
-include("timing.jl")
+include("dataloaders.jl")
+include("forcing_source.jl")
+
+# ---------------------------------------------------------------------------
+# State and column physics
+# ---------------------------------------------------------------------------
 include("column_state_utils.jl")
-include("models.jl")
 include("state.jl")
 include("processes/albedo.jl")
 include("processes/layer_structure.jl")
@@ -32,59 +47,62 @@ include("processes/refreezing.jl")
 include("processes/pdd.jl")
 include("processes/itm.jl")
 include("step.jl")
+
+# ---------------------------------------------------------------------------
+# Model, outputs, simulation
+# ---------------------------------------------------------------------------
+include("model.jl")
 include("diagnostics.jl")
-include("dataloaders.jl")
 include("io.jl")
-include("monthly_output.jl")
-include("run_types.jl")
-include("reporting.jl")
-include("runtime.jl")
-include("integrators.jl")
-include("simulation.jl")
 include("outputs.jl")
-include("forcing_source.jl")
-include("experiment.jl")
+include("run_output.jl")
+include("simulation.jl")
+include("setups.jl")
 include("config.jl")
 
 # ---------------------------------------------------------------------------
 # Exports — public API
 # ---------------------------------------------------------------------------
 
-# Grid
-export SnowpackGrid
+# Grid and parameters
+export Grid, Layering, SpatialLayout
+export Params, PDDParams, ITMParams, ParamsGrISv1, ParamsAISv1
+export SimulationGreenlandMARv1, SimulationAntarcticaMARv1
+
+# Schemes
+export ConstantFreshSnowDensity, ParameterizedFreshSnowDensity
+export ConstantAlbedo, DynamicAlbedo, PrescribedAlbedo, AgingAlbedo, SemixAlbedo
+export DangSnowAlbedo, WarrenWiscombeSnowAlbedo
+export BESSIDensification, HTESSELDensification
+export SemixSurfaceEnergyBalance, BESSISurfaceEnergyBalance
+export SemixTurbulentFluxes, BESSITurbulentFluxes
+export CloudProxyLongwave, GraybodyLongwave
+export NoDiurnalCycle, DiurnalSubsteps, DiurnalTemperatureCycle, NoDiurnalTemperatureCycle
+export SimplePDD, PISMPDD
+export ExactKinks, SmoothKinks
+
+# Boundary conditions
+export BoundaryConditions, SurfaceEnergyBalance, PrescribedSurfaceFlux, PrescribedSurfaceTemperature
+export Insulated, GeothermalFlux, PrescribedBottomTemperature, set_boundary!
 
 # Models
 export BESSIModel, PDDModel, ITMModel
-export BESSIState, PDDState, ITMState
-export build_model, initial_state
+export BESSIState, PDDState, ITMState, initial_state
+export CPU, ReactantBackend, to_backend, cpu_state, set_state!, set_active_mask!, set_input!, sync_forcing!, update_forcing!
+export integrate!, update_diagnostics!, column_enthalpy, column_profile
 
 # Forcing
-export SnowpackForcing
+export SnowpackForcing, Forcing
+export forcing_grid, forcing_area, forcing_years, load_forcing_year, slice_forcing, relabel_year
+export load_forcing_file, read_forcing_columns
 export clear_sky_transmissivity
 export shortwave_down_from_transmissivity, wind_speed_from_geometry
-export temperature_variability_sigma, red_noise_monthly
+export temperature_variability_sigma, red_noise_monthly, update_air_pressure!
 
-# Simulation
-export Simulation, SimulationResult, RunOptions
-export SimulationIntegrator
-export init_integrator, step!, yearly_step!, run!, finalize!, finished, set_active_mask!
-export update_air_pressure!, sync_forcing!
-
-# Experiments: forcing sources, spin-up, outputs
-export Forcing, Output, Experiment, ExperimentResult
+# Simulation and output
+export Simulation, Clock, DebugConfig, run!, time_step!, spin_up!, finished, yearly_step!, smbstats
 export NoSpinup, CycledSpinup, ClimatologySpinup
-export forcing_grid, forcing_area, forcing_years, load_forcing_year, slice_forcing, relabel_year
-export available_output_variables, run_config
+export Output, OutputConfig, EveryStep, Daily, Monthly, Yearly, Every, Columns, AreaSum, AreaMean, Mean, Snapshot, available_output_variables, run_config, write_restart
 export Hour, Day, Week, Month, Year     # output frequencies, from Dates
-
-# Data loading
-export load_forcing_file, read_forcing_columns
-
-# Low-level / power-user exports
-export update_diagnostics!
-export cpu_state, gpu_state
-export get_state, print_state
-export add_timing!, timing_rows, print_timing_summary
-export StepTimingStats
 
 end

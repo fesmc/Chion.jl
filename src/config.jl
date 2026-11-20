@@ -1,5 +1,5 @@
 """
-Run an `Experiment` from a TOML file:
+Run a `Simulation` from a TOML file:
 
     julia --project -m Chion greenland.toml          # Julia ≥ 1.11
     julia --project -e 'using Chion; run_config("greenland.toml")'
@@ -8,10 +8,107 @@ See `examples/configs/` for complete files. Relative output paths are taken rela
 `output_dir` (default: the directory of the TOML file).
 """
 
-using TOML
 
-const _SYMBOL_KWARGS = (:albedo, :seb_scheme, :turbulent_flux_scheme, :densification, :fresh_snow_density,
-    :longwave_scheme, :low_density_densification, :pdd_method)
+# ---------------------------------------------------------------------------
+# Scheme names: TOML strings are converted once, by dispatch, into scheme instances
+# ---------------------------------------------------------------------------
+
+# The abstract type of every scheme field of the parameter structs and schemes.
+const _SCHEME_SLOTS = (
+    fresh_snow_density_scheme = AbstractFreshSnowDensityScheme,
+    albedo_scheme = AbstractAlbedoScheme,
+    densification_scheme = AbstractDensificationScheme,
+    surface_energy_balance_scheme = AbstractSurfaceEnergyBalanceScheme,
+    turbulent_flux_scheme = AbstractTurbulentFluxScheme,
+    longwave_scheme = AbstractLongwaveScheme,
+    diurnal_cycle = AbstractDiurnalCycle,
+    snow_bands = AbstractSemixSnowAlbedo,
+    temperature_cycle = AbstractDiurnalTemperatureCycle,
+    method = AbstractPDDMethod,
+    surface = AbstractSurfaceBoundaryCondition,
+    bottom = AbstractBottomBoundaryCondition,
+    kinks = AbstractKinks,
+)
+
+# One table of the scheme names: it defines the `_scheme_type(kind, ::Val{name})` methods and the
+# names listed in errors.
+const _SCHEME_TABLE = (
+    (AbstractFreshSnowDensityScheme, "fresh-snow density scheme",
+        (constant = ConstantFreshSnowDensity, parameterized = ParameterizedFreshSnowDensity)),
+    (AbstractAlbedoScheme, "albedo scheme",
+        (constant = ConstantAlbedo, dynamic = DynamicAlbedo, prescribed = PrescribedAlbedo,
+         aging = AgingAlbedo, semix = SemixAlbedo)),
+    (AbstractDensificationScheme, "densification scheme", (bessi = BESSIDensification, htessel = HTESSELDensification)),
+    (AbstractSurfaceEnergyBalanceScheme, "surface-energy-balance scheme",
+        (semix = SemixSurfaceEnergyBalance, bessi = BESSISurfaceEnergyBalance)),
+    (AbstractTurbulentFluxScheme, "turbulent flux scheme", (semix = SemixTurbulentFluxes, bessi = BESSITurbulentFluxes)),
+    (AbstractLongwaveScheme, "longwave scheme", (cloud_proxy = CloudProxyLongwave, graybody = GraybodyLongwave)),
+    (AbstractSemixSnowAlbedo, "SEMIX snow albedo", (dang = DangSnowAlbedo, warren_wiscombe = WarrenWiscombeSnowAlbedo)),
+    (AbstractDiurnalCycle, "diurnal cycle", (substeps = DiurnalSubsteps, none = NoDiurnalCycle)),
+    (AbstractDiurnalTemperatureCycle, "diurnal temperature cycle",
+        (sinusoidal = DiurnalTemperatureCycle, none = NoDiurnalTemperatureCycle)),
+    (AbstractPDDMethod, "PDD method", (simple = SimplePDD, pism = PISMPDD)),
+    (AbstractSurfaceBoundaryCondition, "surface boundary condition",
+        (energy_balance = SurfaceEnergyBalance, prescribed_flux = PrescribedSurfaceFlux,
+         prescribed_temperature = PrescribedSurfaceTemperature)),
+    (AbstractKinks, "kink treatment", (exact = ExactKinks, smooth = SmoothKinks)),
+    (AbstractBottomBoundaryCondition, "bottom boundary condition",
+        (insulated = Insulated, geothermal_flux = GeothermalFlux, prescribed_temperature = PrescribedBottomTemperature)),
+)
+
+for (kind, description, schemes) in _SCHEME_TABLE
+    @eval _scheme_names(::Type{$kind}) = $(keys(schemes))
+    @eval _scheme_description(::Type{$kind}) = $description
+    for (name, scheme) in pairs(schemes)
+        @eval _scheme_type(::Type{$kind}, ::Val{$(QuoteNode(name))}) = $scheme
+    end
+end
+
+function _scheme_type(::Type{K}, ::Val{name}) where {K, name}
+    names = join(("\"" * String(n) * "\"" for n in _scheme_names(K)), ", ")
+    throw(ArgumentError("Unknown $(_scheme_description(K)) \"$name\". Use $names."))
+end
+
+"""
+    _scheme_from_config(kind, value)
+
+The scheme of abstract type `kind` that a TOML value describes: a name (`"semix"`) for the scheme
+with its default coefficients, or a table with the name under `type` and coefficients
+(`{type = "aging", cold_timescale_days = 15}`), nested schemes included.
+"""
+_scheme_from_config(::Type{K}, name::AbstractString) where {K} = _scheme_type(K, Val(Symbol(name)))()
+function _scheme_from_config(::Type{K}, table::AbstractDict) where {K}
+    haskey(table, "type") || throw(ArgumentError("A $(_scheme_description(K)) table needs a `type`."))
+    T = _scheme_type(K, Val(Symbol(table["type"])))
+    kwargs = [Symbol(k) => _config_value(Symbol(k), v) for (k, v) in table if k != "type"]
+    isempty(kwargs) && return T()
+    fieldcount(T) == 0 && throw(ArgumentError("$(nameof(T)) has no coefficients."))
+    return T(; kwargs...)
+end
+
+# A TOML value of a parameter or scheme field: schemes by name or table, arrays as tuples.
+_config_value(name::Symbol, value) =
+    haskey(_SCHEME_SLOTS, name) ? _scheme_from_config(_SCHEME_SLOTS[name], value) :
+    value isa AbstractVector ? Tuple(value) : value
+
+"""
+    _scheme_name(scheme)
+
+The TOML name of `scheme` (e.g. `:semix` for `SemixSurfaceEnergyBalance()`), or its type name.
+"""
+function _scheme_name(scheme)
+    for (kind, _, schemes) in _SCHEME_TABLE
+        scheme isa kind || continue
+        for (name, T) in pairs(schemes)
+            scheme isa T && return name
+        end
+    end
+    return nameof(typeof(scheme))
+end
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
 
 function _config_years(v)
     v isa AbstractString && (p = parse.(Int, split(v, ':')); return p[1]:p[end])
@@ -32,18 +129,33 @@ function _config_frequency(v)
     return unit == "hour" ? Hour(n) : unit == "day" ? Day(n) : unit == "week" ? Week(n) : unit == "month" ? Month(n) : Year(n)
 end
 
-function _config_model_kwargs(d)
-    kw = Pair{Symbol, Any}[]
-    for (k, v) in d
-        k == "type" && continue
-        key = Symbol(k)
-        val = key == :number_type ? (v == "Float32" ? Float32 : Float64) :
-            v isa AbstractString && key in _SYMBOL_KWARGS ? Symbol(v) :
-            v isa AbstractVector ? Tuple(v) : v
-        push!(kw, key => val)
+const _NAMED_PARAMS = (grisv1 = ParamsGrISv1, aisv1 = ParamsAISv1)
+const _MODEL_TYPES = (bessi = (BESSIModel, Params), pdd = (PDDModel, PDDParams), itm = (ITMModel, ITMParams))
+
+_config_number_type(name) = name == "Float32" ? Float32 : name == "Float64" ? Float64 :
+    throw(ArgumentError("`number_type` must be \"Float64\" or \"Float32\"."))
+
+"""The model type and its parameters from the `[model]` table."""
+function _config_params(d)
+    mtype = Symbol(lowercase(get(d, "type", "bessi")))
+    haskey(_MODEL_TYPES, mtype) || throw(ArgumentError("Unknown model type \"$mtype\"; use bessi, pdd or itm."))
+    M, P = _MODEL_TYPES[mtype]
+    NF = _config_number_type(get(d, "number_type", "Float64"))
+    kwargs = [Symbol(k) => _config_value(Symbol(k), v) for (k, v) in d if !(k in ("type", "number_type", "setup"))]
+    setup = Symbol(lowercase(get(d, "setup", "grisv1")))
+    if P === Params
+        haskey(_NAMED_PARAMS, setup) || throw(ArgumentError("Unknown setup \"$setup\"; use GrISv1 or AISv1."))
+        return M, _NAMED_PARAMS[setup](; NF, kwargs...)
     end
-    return kw
+    haskey(d, "setup") && throw(ArgumentError("`setup` applies to BESSI models only."))
+    return M, P(; NF, kwargs...)
 end
+
+"""The boundary conditions from the `[boundary]` table (`surface`, `bottom`)."""
+_config_boundary(d) = BoundaryConditions(; (Symbol(k) => _config_value(Symbol(k), v) for (k, v) in d)...)
+
+"""The layering from the `[grid]` table."""
+_config_layering(d) = Layering(; (Symbol(k) => _config_value(Symbol(k), v) for (k, v) in d)...)
 
 function _config_forcing(d, base)
     path = d["path"]
@@ -56,6 +168,7 @@ function _config_forcing(d, base)
     haskey(d, "wind") && push!(kw, :wind => d["wind"])
     haskey(d, "area") && push!(kw, :area => d["area"] isa AbstractString ? d["area"] : nothing)
     haskey(d, "area_file") && push!(kw, :area_file => d["area_file"])
+    haskey(d, "cache") && push!(kw, :cache => isabspath(d["cache"]) ? d["cache"] : joinpath(base, d["cache"]))
     haskey(d, "variables") && push!(kw, :variables => NamedTuple(Symbol(k) => v for (k, v) in d["variables"]))
     for (k, v) in get(d, "options", Dict())
         push!(kw, Symbol(k) => v)
@@ -115,35 +228,46 @@ function _apply_overrides!(cfg, set)
 end
 
 """
-    run_config(path; backend=nothing, output_dir=nothing, set=(), dry_run=false) -> ExperimentResult
+    run_config(path; backend = nothing, output_dir = nothing, set = (), dry_run = false) -> Simulation
 
-Build the `Experiment` described by the TOML file `path` and run it. `backend` and `output_dir`
-override the values in the file; `set` overrides any entry, e.g.
-`set=["model.diurnal_shortwave_max_substeps" => 4, "forcing.surface_fluxes" => "prescribed"]`.
-`dry_run=true` returns the `Experiment` without running it.
+Build the [`Simulation`](@ref) described by the TOML file `path` and run it. `backend` (`:threads`
+or `:gpu`) and `output_dir` override the values in the file; `set` overrides any entry, e.g.
+`set = ["model.alpha_dry" => 0.84, "model.diurnal_cycle.max_substeps" => 4]`. `dry_run = true`
+returns the simulation without running it.
+
+The file has the run settings (`name`, `backend`, `years`, `repeat`, `output_dir`, the run directory,
+and `restart_every`) and the tables
+`[forcing]`, `[grid]` (the [`Layering`](@ref)), `[boundary]` (`surface`, `bottom`), `[model]` (`type`, `setup`, `number_type` and any
+field of the parameters; a scheme as a name or a table with `type`), `[spinup]` and `[[output]]`;
+see `examples/configs/`.
 """
 function run_config(path::AbstractString; backend=nothing, output_dir=nothing, set=(), dry_run::Bool=false)
     cfg = _apply_overrides!(TOML.parsefile(path), set)
     base = dirname(abspath(path))
     outdir = output_dir === nothing ? get(cfg, "output_dir", base) : output_dir
     isabspath(outdir) || (outdir = joinpath(output_dir === nothing ? base : pwd(), outdir))
+    backend_name = Symbol(backend === nothing ? get(cfg, "backend", "threads") : backend)
+    backend_name === :gpu && !cuda_available() && Core.eval(Main, :(using CUDA))
+    return Base.invokelatest(_run_config, path, cfg, set, base, outdir, backend_name, dry_run)
+end
+
+function _run_config(path, cfg, set, base, outdir, backend_name, dry_run)
     forcing = _config_forcing(cfg["forcing"], base)
-    mcfg = get(cfg, "model", Dict{String, Any}())
-    mtype = lowercase(get(mcfg, "type", "bessi"))
-    builder = mtype == "bessi" ? BESSIModel : mtype == "pdd" ? PDDModel : mtype == "itm" ? ITMModel :
-        error("Unknown model type \"$mtype\".")
-    model = builder(forcing; _config_model_kwargs(mcfg)...)
+    M, params = _config_params(get(cfg, "model", Dict{String, Any}()))
+    grid = Grid(forcing; NF = number_type(params), layering = _config_layering(get(cfg, "grid", Dict{String, Any}())))
+    boundary_kwargs = M === BESSIModel ? (; boundary = _config_boundary(get(cfg, "boundary", Dict{String, Any}()))) :
+        (haskey(cfg, "boundary") ? throw(ArgumentError("`[boundary]` applies to BESSI models only.")) : (;))
+    model = M(grid; forcing, params, backend = _ka_backend_from(backend_name), boundary_kwargs...)
     outputs = [_config_output(o, outdir) for o in get(cfg, "output", Any[])]
-    exp = Experiment(model, forcing;
+    sim = Simulation(model;
         # `repeat = n` runs the years n times (e.g. to record every cycle of an equilibrium run)
-        years=haskey(cfg, "years") ? repeat(collect(_config_years(cfg["years"])), get(cfg, "repeat", 1)) : nothing,
-        spinup=_config_spinup(get(cfg, "spinup", nothing), cfg["forcing"], base),
-        outputs, backend=backend === nothing ? Symbol(get(cfg, "backend", "threads")) : backend,
-        name=get(cfg, "name", splitext(basename(path))[1]))
-    dry_run && return exp
-    exp.backend == :gpu && !cuda_available() && return Base.invokelatest(_run_with_gpu, path, cfg, set, exp, outdir)
+        years = haskey(cfg, "years") ? repeat(collect(_config_years(cfg["years"])), get(cfg, "repeat", 1)) : nothing,
+        spinup = _config_spinup(get(cfg, "spinup", nothing), cfg["forcing"], base),
+        output = OutputConfig(; dir = outdir, outputs, restart_every = get(cfg, "restart_every", 0)),
+        name = get(cfg, "name", splitext(basename(path))[1]))
+    dry_run && return sim
     _keep_config(path, cfg, set, outdir)
-    return run!(exp)
+    return run!(sim)
 end
 
 """Keep the configuration with the results (with the overrides applied, if any)."""
@@ -158,17 +282,9 @@ function _keep_config(path, cfg, set, outdir)
     end
 end
 
-"""Load CUDA (a weak dependency that activates the GPU backend) and run `exp`."""
-function _run_with_gpu(path, cfg, set, exp, outdir)
-    Core.eval(Main, :(using CUDA))
-    Base.invokelatest(cuda_available) || error("The GPU backend is not available (CUDA failed to load or no GPU).")
-    _keep_config(path, cfg, set, outdir)
-    return Base.invokelatest(run!, exp)
-end
-
 """
 Command line: `julia --project -m Chion config.toml [--backend=gpu] [--output-dir=DIR] [--set key=value …]`,
-e.g. `--set model.alpha_dry=0.84 --set forcing.surface_fluxes=prescribed`.
+e.g. `--set model.alpha_dry=0.84 --set model.albedo_scheme=semix --set forcing.surface_fluxes=prescribed`.
 """
 function main(args::Vector{String})
     isempty(args) && (println(stderr, "usage: julia --project -m Chion config.toml [--backend=threads|gpu] " *
@@ -192,8 +308,8 @@ function main(args::Vector{String})
         end
     end
     for f in files
-        result = run_config(f; backend, output_dir, set)
-        println(result)
+        sim = run_config(f; backend, output_dir, set)
+        println(sim.name, ": ", length(sim.years), " years in ", round(sim.io.wall_seconds; digits=1), " s")
     end
     return 0
 end

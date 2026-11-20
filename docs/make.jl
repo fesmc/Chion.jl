@@ -1,7 +1,6 @@
-#import Pkg
-#Pkg.activate(joinpath(@__DIR__, ".."))
-
 using Documenter, Chion
+
+DocMeta.setdocmeta!(Chion, :DocTestSetup, :(using Chion); recursive=true)
 
 makedocs(
     modules=[Chion],
@@ -11,7 +10,8 @@ makedocs(
     warnonly=[:docs_block, :missing_docs],
     pages=[
         "Home" => "index.md",
-        "Running Experiments" => "experiments.md",
+        "Running Simulations" => "simulations.md",
+        "Models And Coupling" => "models.md",
         "Model State And Step Flow" => "model_state.md",
         "Processes" => [
             "Albedo" => "processes/albedo.md",
@@ -23,9 +23,7 @@ makedocs(
             "Percolation" => "processes/percolation.md",
             "Refreezing" => "processes/refreezing.md",
         ],
-        "Default Parameters" => "parameters.md",
-        "Simulation API And Outputs" => "case_api.md",
-        "Reference Utilities" => "reference.md",
+        "Parameters" => "parameters.md",
         "Verification" => [
             "Verification And Validation" => "validation.md",
             "Fresh-Snow Density Test" => "tests/fresh_snow_density.md",
