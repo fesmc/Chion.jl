@@ -78,7 +78,7 @@ struct DefaultWorkgroup end
 Launch the KernelAbstractions kernel `kernel!` with `args` over `ndrange` work items on the
 backend of the array `reference` (the CPU backend in its static-threads form, see
 `_tune_ka_backend`). An empty range launches nothing. The one place where kernels are
-instantiated, as Laddie's `launch!`.
+instantiated.
 """
 @inline function launch!(kernel!, reference, ndrange, args...; workgroupsize = DefaultWorkgroup())
     prod(ndrange) == 0 && return nothing

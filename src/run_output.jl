@@ -1,5 +1,5 @@
 #=
-Run-level output of a Simulation, as Laddie's `OutputConfig`: one run directory with the field
+Run-level output of a Simulation (`OutputConfig`): one run directory with the field
 outputs, a log, the run metadata (a TOML file that `run_config` reruns) and restart files.
 =#
 

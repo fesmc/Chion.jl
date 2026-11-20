@@ -1,6 +1,6 @@
 #=
 The models: grid, prognostic state, cache (diagnostics, scratch, active columns), parameters and
-the atmospheric forcing, as Laddie's `Model`. A model knows nothing about time beyond the loaded
+the atmospheric forcing. A model knows nothing about time beyond the loaded
 forcing year; a `Simulation` advances it.
 =#
 

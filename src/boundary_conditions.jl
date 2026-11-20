@@ -1,6 +1,5 @@
 #=
-Boundary conditions of the column heat equation (as Laddie's `BoundaryConditions` slot of the
-model). The surface condition closes row 1 of the implicit heat solve, the bottom condition the
+Boundary conditions of the column heat equation (the `BoundaryConditions` slot of the model). The surface condition closes row 1 of the implicit heat solve, the bottom condition the
 last row (the snow/firn or, with a substrate, the bottom of the ice substrate); both enter the
 enthalpy budget through `boundary_enthalpy`.
 =#

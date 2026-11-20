@@ -1,7 +1,7 @@
 #=
 Simulation: a model with its time integration — the clock, the forcing years, the spin-up and the
 outputs. `run!` continues from where the previous call stopped, `time_step!` takes one forcing
-step. As Laddie's `Simulation`; the time step is set by the forcing calendar.
+step; the time step is set by the forcing calendar.
 =#
 
 # ---------------------------------------------------------------------------

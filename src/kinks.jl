@@ -1,6 +1,6 @@
 #=
 Treatment of the kinks of the column physics: the switches of `max`, `min` and `clamp` that the
-state crosses. As Laddie's `AbstractKinks`: exact by default (bit-identical), or smoothed over a
+state crosses: exact by default (bit-identical), or smoothed over a
 band of half-width ε per physical quantity for smoother gradients.
 =#
 

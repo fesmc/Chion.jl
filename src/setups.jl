@@ -1,5 +1,5 @@
 #=
-Named setups (as Laddie's reproductions): the simulations of published experiments, built in one
+Named setups: the simulations of published experiments, built in one
 call and pinned by `test/reproductions.jl`.
 =#
 

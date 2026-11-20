@@ -1,6 +1,6 @@
 #=
 Physical constants and scheme choices of the models, one immutable, concretely typed struct per
-model (as Laddie's `Params`): `Params` for `BESSIModel`, `PDDParams` and `ITMParams` for the bulk
+model: `Params` for `BESSIModel`, `PDDParams` and `ITMParams` for the bulk
 models. Every keyword of the constructors is a field; unknown keywords throw.
 =#
 

@@ -14,14 +14,15 @@ using Chion
 using CUDA                        # only for the GPU
 
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc"; surface_fluxes=:parameterized)
-model = BESSIModel(forcing; backend=CUDABackend())    # CPU() (threads) by default
+grid = Grid(forcing; layering=Layering(Ntot=15))
+model = BESSIModel(grid; forcing, backend=CUDABackend())    # CPU() (threads) by default
 
 sim = Simulation(model;
     years=1940:2026,
     spinup=CycledSpinup(1940:1969; cycles=5),
     output=OutputConfig(dir="output/greenland", restart_every=10,
-        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
-                 Output("budget_yearly.csv"; variables=:budget, frequency=:yearly, aggregate=:area_sum)]))
+        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=Monthly()),
+                 Output("budget_yearly.csv"; variables=:budget, frequency=Yearly(), aggregate=AreaSum())]))
 run!(sim)                         # returns sim; the final state is sim.model.state
 smbstats(sim)                     # column means (kg m⁻²) and totals (Gt) of the mass fluxes
 ```
@@ -122,28 +123,31 @@ of an equilibrium run.
 ## Outputs
 
 ```julia
-Output(path; variables=:default, frequency=:monthly, aggregate=:columns, kind=:mean,
+Output(path; variables=:default, frequency=Monthly(), aggregate=Columns(), kind=Mean(),
        period=nothing, regions=nothing, area=nothing, depths=0:0.5:20, snow_cover_threshold=5.0,
        columns=nothing, grid=nothing)
 ```
 
 - `path`: `.nc` (NetCDF, CF time axis with period bounds) or `.csv` (area aggregates or one column).
-- `frequency`: `:step`, `:daily`, `:monthly`, `:yearly`, or a period: `Hour(3)`, `Day(5)`,
-  `Week(1)`, `Month(6)`, `Year(10)`. Periods follow the calendar (months from January, days from
+- `frequency`: `EveryStep()`, `Daily()`, `Monthly()`, `Yearly()`, or `Every(period)` with a
+  period such as `Hour(3)`, `Day(5)`, `Week(1)`, `Month(6)`, `Year(10)` (a bare period works too). Periods follow the calendar (months from January, days from
   1970-01-01). Each record covers one period; its time is the start of the period and
   `time_bnds` gives the first and last step.
-- `aggregate`: `:columns` (one value per column, on the x–y grid when the grid has
-  coordinates), `:area_sum` (fluxes and stores in Gt, snow cover in km², firn air content in
-  km³, intensive quantities as area-weighted means) or `:area_mean`. `regions` takes a
+- `aggregate`: `Columns()` (one value per column, on the x–y grid when the grid has
+  coordinates), `AreaSum()` (fluxes and stores in Gt, snow cover in km², firn air content in
+  km³, intensive quantities as area-weighted means) or `AreaMean()`. `regions` takes a
   NamedTuple of column masks for several regions.
-- `kind`: state variables as period means (`:mean`) or end-of-period values (`:snapshot`).
+- `kind`: state variables as period means (`Mean()`) or end-of-period values (`Snapshot()`).
+
+The choices may also be given by name (`frequency=:monthly`, `aggregate=:area_sum`,
+`kind=:snapshot`), as in TOML files.
 - `period = (1980, 2017)` writes only those years.
 - `columns` records only a range of columns (e.g. one member of an ensemble run side by side),
   with `grid` their `Grid`.
 
 NetCDF files from a `Simulation` use a `time` dimension with `time_bnds`. The full model state
 at every forcing step is `Output(path; variables=[:mass, :density, :temperature, …],
-frequency=:step, kind=:snapshot)`.
+frequency=EveryStep(), kind=Snapshot())`.
 `available_output_variables(model)` lists the variables a model can write. The table below is
 for `BESSIModel`; `PDDModel` and `ITMModel` write the forcing fluxes and their own state and
 budget fields (`snowpack_swe`, `smb_ice`, `runoff`, … and `H_snow`, `melt`, `refreezing`, …).
@@ -242,7 +246,7 @@ the coefficients of a scheme table, e.g. `--set model.diurnal_cycle.max_substeps
 ## Published Setups
 
 `SimulationGreenlandMARv1(path)` and `SimulationAntarcticaMARv1(path, climatology)` build the
-Greenland and Antarctic runs of the Chion paper in one call (as Laddie's reproductions):
+Greenland and Antarctic runs of the Chion paper in one call:
 forcing, grid, calibration, spin-up, years and, with `dir`, the outputs. `test/reproductions.jl`
 pins their totals for one MAR year.
 

@@ -81,7 +81,8 @@ using CUDA                                  # only for the GPU
 
 forcing = Forcing("/data/MAR/MARv3.14.3-10km-daily-ERA5-{year}.nc";
     surface_fluxes=:parameterized)          # Chion computes the energy balance
-model = BESSIModel(forcing;                 # the grid of the forcing columns
+grid = Grid(forcing; layering=Layering(Ntot=15))   # the forcing columns and their layers
+model = BESSIModel(grid; forcing,
     params=Params(),                        # the Greenland calibration; ParamsAISv1() for Antarctica
     backend=CUDABackend())                  # CPU() by default
 
@@ -89,9 +90,9 @@ sim = Simulation(model;
     years=1940:2026,
     spinup=CycledSpinup(1940:1969; cycles=5),
     output=OutputConfig(dir="output/greenland",     # run directory: outputs, log, restarts
-        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=:monthly),
-                 Output("budget_yearly.csv"; variables=:budget, frequency=:yearly,
-                        aggregate=:area_sum)]))
+        outputs=[Output("smb_monthly.nc"; variables=:monthly, frequency=Monthly()),
+                 Output("budget_yearly.csv"; variables=:budget, frequency=Yearly(),
+                        aggregate=AreaSum())]))
 run!(sim)
 ```
 
